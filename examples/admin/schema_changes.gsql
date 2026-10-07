@@ -1,0 +1,27 @@
+// Evolving the Social graph schema.
+USE GRAPH Social
+
+CREATE SCHEMA_CHANGE JOB add_profiles FOR GRAPH Social {
+    ADD VERTEX Company (PRIMARY_ID name STRING, industry STRING, founded INT);
+    ADD DIRECTED EDGE Works_At (FROM Person, TO Company, since DATETIME, title STRING) WITH REVERSE_EDGE="employs";
+    ALTER VERTEX Person ADD ATTRIBUTE (email STRING DEFAULT "", verified BOOL DEFAULT FALSE);
+    ALTER VERTEX Person ADD INDEX person_email ON (email);
+    ALTER EDGE Likes DROP ATTRIBUTE (at);
+}
+RUN SCHEMA_CHANGE JOB add_profiles
+
+CREATE SCHEMA_CHANGE JOB remove_legacy FOR GRAPH Social {
+    ALTER VERTEX Person DROP INDEX person_email;
+    DROP EDGE Tagged;
+    DROP VERTEX Tag;
+}
+RUN SCHEMA_CHANGE JOB remove_legacy
+
+// Global types, shared by several graphs.
+USE GLOBAL
+CREATE GLOBAL SCHEMA_CHANGE JOB add_locations {
+    ADD VERTEX City (PRIMARY_ID name STRING, country STRING, population UINT);
+    ADD UNDIRECTED EDGE Lives_In (FROM Person, TO City);
+    ALTER GRAPH Social ADD VERTEX City, EDGE Lives_In;
+}
+RUN GLOBAL SCHEMA_CHANGE JOB add_locations

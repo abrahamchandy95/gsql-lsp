@@ -1,0 +1,29 @@
+[build-system]
+build-backend = "setuptools.build_meta"
+requires = [ "setuptools>=62.4.0", "wheel" ]
+
+[project]
+authors = [ { email = "PARSER_AUTHOR_EMAIL", name = "gsql-lsp contributors" } ]
+classifiers = [
+  "Intended Audience :: Developers",
+  "Topic :: Software Development :: Compilers",
+  "Topic :: Text Processing :: Linguistic",
+  "Typing :: Typed",
+]
+description = "TigerGraph GSQL grammar for tree-sitter"
+keywords = [ "incremental", "parsing", "tree-sitter", "gsql" ]
+license.text = "MIT"
+name = "tree-sitter-gsql"
+readme = "README.md"
+requires-python = ">=3.10"
+version = "0.1.0"
+
+[project.urls]
+Homepage = "https://github.com/gsql-lsp/gsql-lsp"
+
+[project.optional-dependencies]
+core = [ "tree-sitter~=0.24" ]
+
+[tool.cibuildwheel]
+build = "cp310-*"
+build-frontend = "build"

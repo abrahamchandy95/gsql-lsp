@@ -1,0 +1,63 @@
+CREATE DISTRIBUTED QUERY tg_louvain(SET<STRING> v_type_set, SET<STRING> e_type_set, STRING weight_attribute = "weight", INT maximum_iteration = 10,
+  STRING result_attribute = "cid", STRING file_path = "", BOOL print_stats = FALSE) SYNTAX V1 {
+    TYPEDEF TUPLE <DOUBLE delta_Q_add, VERTEX community, STRING ext_vid> MyTuple;
+    SumAccum<DOUBLE> @@m; // the sum of the weights of all the links in the network
+    MinAccum<VERTEX> @community_id; // the community ID of the node
+    MinAccum<STRING> @community_vid; // the community ID of the node
+    SumAccum<DOUBLE> @k; // the sum of the weights of the links incident to the node
+    SumAccum<DOUBLE> @k_in; // the sum of the weights of the links inside the previous community of the node
+    SumAccum<DOUBLE> @k_self_loop; // the weight of the self-loop link
+    MapAccum<VERTEX, SumAccum<DOUBLE>> @community_k_in_map; // the community of the neighbors of the nodes -> the sum of the weights of the links inside the community
+    MapAccum<VERTEX, SumAccum<DOUBLE>> @@community_sum_total_map; // community ID C -> the sum of the weights of the links incident to nodes in C
+    SumAccum<DOUBLE> @community_sum_total; // the sum of the weights of the links incident to nodes in the community of the node
+    MapAccum<VERTEX, SumAccum<DOUBLE>> @@community_sum_in_map; // community ID -> the sum of the weights of the links inside the community
+    MapAccum<VERTEX, MapAccum<VERTEX, SumAccum<DOUBLE>>> @@source_target_k_in_map; // source community ID -> (target community ID -> the sum of the weights of the links from source community ID to target community ID)
+    SumAccum<DOUBLE> @delta_Q_remove; // delta Q to remove the node from the previous community
+    MaxAccum<MyTuple> @best_move; // best move of the node with the highest delta Q to move the isolated node into the new community
+    MaxAccum<DOUBLE> @@min_double; // used to reset the @best_move
+    SumAccum<INT> @@move_cnt;
+    OrAccum @to_change_community;
+    SumAccum<INT> @batch_id;
+    MinAccum<INT> @vid;
+    DOUBLE wt = 1.0;
+
+    // Initialization
+    All_Nodes = {v_type_set};
+    All_Nodes = SELECT s FROM All_Nodes:s -(e_type_set:e)- :t
+        ACCUM DOUBLE weight = e.getAttr(weight_attribute, "DOUBLE"),
+            @@m += weight / 2,
+            s.@k += weight,
+            IF s == t THEN // self-loop link
+                js.@k_self_loop += weight
+            END
+        POST-ACCUM
+            s.@community_id = s,
+            s.@community_vid = to_string(s.id),
+            s.@vid = getvid(s),
+            s.@batch_id = s.@vid % 10;
+
+    IF @@m < 0.00000000001 THEN
+        PRINT "Warning: the sum of the weights in the edges should be greater than zero!";
+        RETURN;
+    END;
+
+    // Local moving
+    INT hop = 0;
+    Candidates = All_Nodes;
+    WHILE TRUE DO
+        hop = hop + 1;
+        LOG(TRUE, hop);
+        IF hop == 1 THEN // first iteration
+            ChangedNodes = SELECT s FROM Candidates:s -(e_type_set:e)- :t
+                WHERE s.@community_id != t.@community_id
+                ACCUM s.@best_move += MyTuple(wt, t.@community_id, t.@community_vid)
+                POST-ACCUM
+                    IF s.@best_move.delta_Q_add > 0 AND s.@best_move.delta_Q_add > 1 THEN // last line
+                        s.@to_change_community = TRUE
+                    END
+                HAVING s.@to_change_community == TRUE;
+        ELSE
+            BREAK;
+        END;
+    END;
+}

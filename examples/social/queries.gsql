@@ -1,0 +1,78 @@
+USE GRAPH Social
+
+// Friends of friends who are not already friends, ranked by mutual friends.
+CREATE OR REPLACE QUERY recommend_friends(
+    VERTEX<Person> me,
+    INT k = 10
+) FOR GRAPH Social {
+    SumAccum<INT> @mutual;
+    OrAccum @is_friend;
+
+    Me = {me};
+    Friends = SELECT f FROM Me:m -(Friendship:e)- Person:f
+              ACCUM f.@is_friend += TRUE;
+    Candidates = SELECT c FROM Friends:f -(Friendship:e)- Person:c
+                 WHERE c != me AND NOT c.@is_friend
+                 ACCUM c.@mutual += 1
+                 ORDER BY c.@mutual DESC, c.name ASC
+                 LIMIT k;
+    PRINT Candidates[Candidates.name, Candidates.@mutual AS mutual_friends];
+}
+
+// Posts liked by the people `me` follows, during the last `days` days.
+CREATE OR REPLACE QUERY feed(
+    VERTEX<Person> me,
+    INT days = 7
+) FOR GRAPH Social SYNTAX v2 {
+    SetAccum<STRING> @likers;
+    DATETIME cutoff = datetime_sub(now(), INTERVAL days DAY);
+
+    Me = {me};
+    Posts = SELECT p FROM Me:m -(Follows>)- Person:f -(Likes>:l)- Post:p
+            WHERE l.at >= cutoff
+            ACCUM p.@likers += f.name
+            ORDER BY p.created DESC
+            LIMIT 50;
+    PRINT Posts[Posts.content, Posts.created, Posts.@likers AS liked_by];
+}
+
+// Average age of each person's friends, written back as an attribute-free report.
+CREATE QUERY friend_age_report(SET<VERTEX<Person>> people) FOR GRAPH Social {
+    AvgAccum @avg_friend_age;
+    MaxAccum<INT> @oldest_friend;
+    MapAccum<STRING, SumAccum<INT>> @@by_gender;
+
+    Start = {people};
+    Start = SELECT s FROM Start:s -(Friendship:e)- Person:t
+            ACCUM s.@avg_friend_age += t.age,
+                  s.@oldest_friend += t.age,
+                  @@by_gender += (t.gender -> 1)
+            HAVING s.@avg_friend_age > 0;
+    PRINT Start[Start.name, Start.@avg_friend_age AS average, Start.@oldest_friend AS oldest];
+    PRINT @@by_gender AS friends_by_gender;
+}
+
+// The most popular tags among posts written in a language.
+CREATE QUERY top_tags(STRING language = "en", INT n = 5) FOR GRAPH Social {
+    TYPEDEF TUPLE <STRING tag, INT uses> TagCount;
+    HeapAccum<TagCount>(n, uses DESC, tag ASC) @@top;
+    SumAccum<INT> @uses;
+
+    Posts = {Post.*};
+    Used_Tags = SELECT t FROM Posts:p -(Tagged:e)- Tag:t
+           WHERE p.language == language
+           ACCUM t.@uses += 1
+           POST-ACCUM @@top += TagCount(t.name, t.@uses);
+    PRINT @@top AS top_tags;
+}
+
+// Members per gender, as a table (SQL-like SELECT ... INTO ... GROUP BY).
+CREATE QUERY members_by_gender() FOR GRAPH Social SYNTAX v2 {
+    SELECT p.gender AS gender, COUNT(p) AS members INTO Counts
+    FROM Person:p
+    GROUP BY p.gender;
+    PRINT Counts;
+}
+
+INSTALL QUERY recommend_friends, feed, friend_age_report, top_tags, members_by_gender
+RUN QUERY recommend_friends("alice", 5)

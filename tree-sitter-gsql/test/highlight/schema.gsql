@@ -1,0 +1,28 @@
+CREATE DIRECTED EDGE Follows (FROM Person, TO Person, since DATETIME) WITH REVERSE_EDGE="followed_by"
+//     ^ keyword.modifier
+//              ^ keyword
+//                   ^ type.definition
+//                                 ^ type
+//                                                    ^ variable.member
+//                                                          ^ type.builtin
+//                                                                         ^ property
+//                                                                                      ^ string
+CREATE LOADING JOB load FOR GRAPH Social {
+  LOAD f TO VERTEX Person VALUES ($0, _) USING SEPARATOR=",";
+//^ keyword
+//                 ^ type
+//                                ^ variable.builtin
+//                                    ^ character.special
+//                                             ^ property
+}
+RUN QUERY pr("x")
+// <- keyword
+//        ^ function.call
+CREATE VERTEX User (PRIMARY_ID id UINT, age UINT NULLABLE)
+//                                               ^ keyword.modifier
+CREATE GRAPH Mixed AS Social(User:public&vip) WITH ADMIN alice
+//           ^ module
+//                    ^ module
+//                           ^ type
+//                                ^ label
+//                                                 ^ keyword

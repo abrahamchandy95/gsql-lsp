@@ -1,0 +1,28 @@
+# Add these sections to ~/.config/helix/languages.toml, then run
+#   hx --grammar fetch && hx --grammar build
+# and copy editors/helix/queries/gsql into ~/.config/helix/runtime/queries/.
+
+[[language]]
+name = "gsql"
+scope = "source.gsql"
+file-types = ["gsql", "gsq"]
+comment-tokens = ["//", "#"]
+block-comment-tokens = { start = "/*", end = "*/" }
+indent = { tab-width = 4, unit = "    " }
+roots = [".gsqlroot", ".git"]
+language-servers = ["gsql-lsp"]
+
+[language-server.gsql-lsp]
+command = "gsql-lsp"
+
+[language-server.gsql-lsp.config.gsql]
+format = { keywordCase = "preserve" }
+diagnostics = { unknownTypes = true, unknownAttributes = true, undefinedNames = true, unused = true, languageRules = true, floatEquality = true, noSchemaNotice = true, duplicateDefinitions = true, style = true }
+inlayHints = { enabled = true }
+semanticTokens = { lexical = false }
+
+[[grammar]]
+name = "gsql"
+# Pin `rev` to a commit of the repository; for a local checkout use
+#   source = { path = "/path/to/gsql-lsp/tree-sitter-gsql" }
+source = { git = "https://github.com/gsql-lsp/gsql-lsp", rev = "main", subpath = "tree-sitter-gsql" }

@@ -1,0 +1,59 @@
+CREATE QUERY tg_shortest_ss_no_wt (
+    VERTEX source,
+    SET<STRING> v_type_set,
+    SET<STRING> e_type_set,
+    INT print_limit = -1,
+    BOOL print_results = TRUE,
+    STRING result_attribute ="",
+    STRING file_path = "",
+    BOOL display_edges = FALSE
+) SYNTAX V1 {
+
+    FILE f(file_path);
+    MinAccum<INT> @min_dis;
+    OrAccum @or_visited;
+    ListAccum<VERTEX> @path_list;
+    SetAccum<EDGE> @@edge_set;
+
+    //#### Initialization  #####
+    Source = {source};
+    Source = SELECT s
+             FROM Source:s
+             ACCUM s.@or_visited += TRUE,
+                   s.@min_dis = 0,
+                   s.@path_list = s;
+    ResultSet = {source};
+
+    //#### Calculate distances and paths #####
+    WHILE(Source.size()>0) DO
+        Source = SELECT t
+                 FROM Source:s -(e_type_set:e)- v_type_set:t
+                 WHERE t.@or_visited == FALSE
+                 ACCUM t.@min_dis += s.@min_dis + 1,
+                       t.@path_list = s.@path_list + [t],
+                       t.@or_visited += TRUE
+                 ORDER BY getvid(t);
+        ResultSet = ResultSet UNION Source;
+    END;
+
+    //#### Print the results #####
+    IF print_results THEN
+        IF print_limit > 0 THEN
+            ResultSet = SELECT s FROM ResultSet:s LIMIT print_limit;
+        END;
+        PRINT ResultSet[ResultSet.@min_dis, ResultSet.@path_list];
+        IF display_edges THEN
+            ResultSet = SELECT s
+                        FROM ResultSet:s -(e_type_set:e)- v_type_set:t
+                        ACCUM @@edge_set += e;
+            PRINT @@edge_set;
+        END;
+    END;
+
+    IF file_path != "" THEN
+        f.println("Vertex_ID","Distance","Shortest_Path");
+        ResultSet = SELECT s
+                    FROM ResultSet:s
+                    POST-ACCUM f.println(s, s.@min_dis, s.@path_list);
+    END;
+}

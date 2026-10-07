@@ -1,0 +1,46 @@
+// Day-to-day administration from the GSQL shell.
+
+USE GRAPH Social
+LS
+SHOW VERTEX *
+SHOW QUERY recommend_friends
+
+// Users and roles
+CREATE ROLE analyst
+GRANT ROLE analyst ON GRAPH Social TO alice, bob
+GRANT READ_DATA, READ_SCHEMA ON GRAPH Social TO analyst
+REVOKE ROLE analyst ON GRAPH Social FROM bob
+SHOW ROLE
+
+// Installing and running queries
+INSTALL QUERY -OPTIMIZE recommend_friends
+RUN QUERY -d recommend_friends("alice", 3)
+INTERPRET QUERY recommend_friends("bob", 3)
+
+// An ad-hoc interpreted query
+INTERPRET QUERY () FOR GRAPH Social {
+    SumAccum<INT> @@people;
+    All = {Person.*};
+    All = SELECT p FROM All:p ACCUM @@people += 1;
+    PRINT @@people AS people;
+}
+
+// Template queries live in packages.
+CREATE PACKAGE social_lib
+CREATE TEMPLATE QUERY social_lib.degree(VERTEX v, STRING e_type) {
+    PRINT v.outdegree(e_type) AS degree;
+}
+
+// openCypher queries (TigerGraph 4.x)
+CREATE OR REPLACE OPENCYPHER QUERY adults(INT min_age) FOR GRAPH Social {
+  MATCH (p:Person) WHERE p.age >= $min_age
+  RETURN p.name AS name, p.age AS age
+}
+
+// Multi-line mode in the interactive shell
+BEGIN
+CREATE VERTEX Scratch (PRIMARY_ID id INT, note STRING)
+END
+
+EXPORT GRAPH ALL TO "/tmp/social-export"
+DROP QUERY recommend_friends

@@ -1,0 +1,11 @@
+  -- Insert between `groq` and `gstlaunch`. Set `revision` to a commit of the
+  -- repository that contains tree-sitter-gsql/src/parser.c (the all-zero
+  -- value is a placeholder); the repository URL is the placeholder, too.
+  gsql = {
+    install_info = {
+      location = 'tree-sitter-gsql',
+      revision = '0000000000000000000000000000000000000000',
+      url = 'https://github.com/gsql-lsp/gsql-lsp',
+    },
+    tier = 2,
+  },

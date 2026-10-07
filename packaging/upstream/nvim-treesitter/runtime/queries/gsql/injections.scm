@@ -1,0 +1,8 @@
+; The body of an OPENCYPHER query is openCypher.
+((opencypher_body
+  (cypher_text) @injection.content)
+  (#set! injection.language "cypher")
+  (#set! injection.include-children))
+
+((comment) @injection.content
+  (#set! injection.language "comment"))

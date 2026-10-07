@@ -1,0 +1,18 @@
+id = "gsql"
+name = "GSQL"
+description = "TigerGraph GSQL: tree-sitter highlighting and the gsql-lsp language server."
+version = "0.1.0"
+schema_version = 1
+authors = ["gsql-lsp contributors"]
+repository = "https://github.com/gsql-lsp/gsql-lsp"
+
+[grammars.gsql]
+repository = "https://github.com/gsql-lsp/gsql-lsp"
+# Zed requires a commit SHA here: replace it with a commit that contains
+# tree-sitter-gsql/src/parser.c.
+rev = "0000000000000000000000000000000000000000"
+path = "tree-sitter-gsql"
+
+[language_servers.gsql-lsp]
+name = "gsql-lsp"
+languages = ["GSQL"]

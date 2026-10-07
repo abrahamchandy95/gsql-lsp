@@ -1,0 +1,16 @@
+[package]
+name = "zed-gsql"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+zed_extension_api = "0.6"
+
+# Built by Zed as a standalone WebAssembly crate, not as part of the repository workspace.
+[workspace]

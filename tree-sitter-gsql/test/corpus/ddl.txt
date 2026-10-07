@@ -1,0 +1,236 @@
+================================================================================
+Vertex with PRIMARY_ID, defaults and collection types
+================================================================================
+
+CREATE VERTEX Person (PRIMARY_ID id STRING, name STRING, age INT DEFAULT 0, emails SET<STRING>, props MAP<STRING, INT>) WITH primary_id_as_attribute="true"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (vertex_definition
+    name: (identifier)
+    attributes: (vertex_attribute_list
+      (primary_id_definition
+        name: (identifier)
+        type: (primitive_type))
+      (attribute_definition
+        name: (identifier)
+        type: (primitive_type))
+      (attribute_definition
+        name: (identifier)
+        type: (primitive_type)
+        (default_value
+          value: (integer)))
+      (attribute_definition
+        name: (identifier)
+        type: (collection_type
+          element: (primitive_type)))
+      (attribute_definition
+        name: (identifier)
+        type: (collection_type
+          key: (primitive_type)
+          value: (primitive_type))))
+    (with_clause
+      (option_assignment
+        key: (identifier)
+        value: (string
+          (string_content))))))
+
+================================================================================
+Vertex with PRIMARY KEY forms
+================================================================================
+
+CREATE VERTEX Account (id STRING PRIMARY KEY, balance DOUBLE)
+create vertex Employee (fname STRING, lname STRING, title STRING COMPRESS, PRIMARY KEY (fname, lname))
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (vertex_definition
+    name: (identifier)
+    attributes: (vertex_attribute_list
+      (attribute_definition
+        name: (identifier)
+        type: (primitive_type)
+        primary_key: (primary_key))
+      (attribute_definition
+        name: (identifier)
+        type: (primitive_type))))
+  (vertex_definition
+    name: (identifier)
+    attributes: (vertex_attribute_list
+      (attribute_definition
+        name: (identifier)
+        type: (primitive_type))
+      (attribute_definition
+        name: (identifier)
+        type: (primitive_type))
+      (attribute_definition
+        name: (identifier)
+        type: (primitive_type))
+      (primary_key_constraint
+        attribute: (identifier)
+        attribute: (identifier)))))
+
+================================================================================
+Directed and undirected edges
+================================================================================
+
+CREATE UNDIRECTED EDGE Friendship (FROM Person, TO Person, connect_day DATETIME)
+CREATE DIRECTED EDGE Follows (FROM Person, TO Person) WITH REVERSE_EDGE="followed_by"
+CREATE DIRECTED EDGE Purchased (FROM Person, TO Product, DISCRIMINATOR(ts DATETIME), amount DOUBLE)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (edge_definition
+    name: (identifier)
+    attributes: (edge_attribute_list
+      (edge_pair
+        from: (identifier)
+        to: (identifier))
+      (attribute_definition
+        name: (identifier)
+        type: (primitive_type))))
+  (edge_definition
+    name: (identifier)
+    attributes: (edge_attribute_list
+      (edge_pair
+        from: (identifier)
+        to: (identifier)))
+    (with_clause
+      (option_assignment
+        key: (identifier)
+        value: (string
+          (string_content)))))
+  (edge_definition
+    name: (identifier)
+    attributes: (edge_attribute_list
+      (edge_pair
+        from: (identifier)
+        to: (identifier))
+      (discriminator
+        (attribute_definition
+          name: (identifier)
+          type: (primitive_type)))
+      (attribute_definition
+        name: (identifier)
+        type: (primitive_type)))))
+
+================================================================================
+Edges with multiple endpoint pairs and wildcards
+================================================================================
+
+CREATE DIRECTED EDGE Links (FROM Person, TO Account | FROM Employee, TO Account|Person, w FLOAT)
+CREATE UNDIRECTED EDGE Any2Any (FROM *, TO *)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (edge_definition
+    name: (identifier)
+    attributes: (edge_attribute_list
+      (edge_pair
+        from: (identifier)
+        to: (identifier))
+      (edge_pair
+        from: (identifier)
+        to: (identifier)
+        to: (identifier))
+      (attribute_definition
+        name: (identifier)
+        type: (primitive_type))))
+  (edge_definition
+    name: (identifier)
+    attributes: (edge_attribute_list
+      (edge_pair
+        from: (wildcard)
+        to: (wildcard)))))
+
+================================================================================
+Graphs, tuples and USE
+================================================================================
+
+CREATE GRAPH Social (Person, Friendship, Follows)
+CREATE GRAPH Everything (*)
+TYPEDEF TUPLE <f1 INT (1), f2 UINT, f3 STRING (10), f4 DOUBLE> myTuple
+USE GRAPH Social
+USE GLOBAL
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (graph_definition
+    name: (identifier)
+    member: (identifier)
+    member: (identifier)
+    member: (identifier))
+  (graph_definition
+    name: (identifier)
+    (wildcard))
+  (typedef_statement
+    (tuple_field
+      name: (identifier)
+      type: (primitive_type)
+      (type_size
+        (integer)))
+    (tuple_field
+      name: (identifier)
+      type: (primitive_type))
+    (tuple_field
+      name: (identifier)
+      type: (primitive_type)
+      (type_size
+        (integer)))
+    (tuple_field
+      name: (identifier)
+      type: (primitive_type))
+    name: (identifier))
+  (use_statement
+    graph: (identifier))
+  (use_statement))
+
+================================================================================
+NULLABLE attributes, tag graphs and graph admins
+================================================================================
+
+CREATE VERTEX User (PRIMARY_ID id UINT, age UINT NULLABLE, nick STRING NULLABLE DEFAULT "x")
+CREATE GRAPH Social (User) WITH ADMIN alice
+CREATE GRAPH Mixed AS Social(User:public&vip, Knows)
+CREATE GRAPH Public_Net AS Social:public
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (vertex_definition
+    name: (identifier)
+    attributes: (vertex_attribute_list
+      (primary_id_definition
+        name: (identifier)
+        type: (primitive_type))
+      (attribute_definition
+        name: (identifier)
+        type: (primitive_type))
+      (attribute_definition
+        name: (identifier)
+        type: (primitive_type)
+        (default_value
+          value: (string
+            (string_content))))))
+  (graph_definition
+    name: (identifier)
+    member: (identifier)
+    admin: (identifier))
+  (graph_definition
+    name: (identifier)
+    base: (identifier)
+    member: (identifier)
+    (tag_expression
+      tag: (identifier)
+      tag: (identifier))
+    member: (identifier))
+  (graph_definition
+    name: (identifier)
+    base: (identifier)
+    (tag_expression
+      tag: (identifier))))

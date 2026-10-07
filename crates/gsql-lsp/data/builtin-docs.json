@@ -1,0 +1,4343 @@
+{
+ "version": "4.3",
+ "entries": [
+  {
+   "name": "avg",
+   "group": "functions",
+   "syntax": [
+    "avg( [DISTINCT] setExp )"
+   ],
+   "description": [
+    "Returns the average of all elements in a set or bag. The function can only take set/bag expressions whose members are numeric types. Returns 0 if the input set is empty."
+   ],
+   "returns": "A numeric type. If all members of the set/bag expression are integers, the return value will also be rounded down to be an integer.",
+   "parameters": [
+    {
+     "name": "setExp",
+     "description": "An expression that evaluates to a `SET`, `BAG`, `SetAccum` or `BagAccum`",
+     "type": "SET, BAG, SetAccum, BagAccum"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "avg([5, 4, 1, 0, 0, 0]) -> 1\navg([3, 2, 1]) -> 2"
+   ]
+  },
+  {
+   "name": "count",
+   "group": "functions",
+   "syntax": [
+    "count( [DISTINCT] setExp )"
+   ],
+   "description": [
+    "Returns the size of the set or bag. Returns 0 if the input set is empty."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "setExp",
+     "description": "An expression that evaluates to a `SET`, `BAG`, `SetAccum` or `BagAccum`",
+     "type": "SET, BAG, SetAccum, BagAccum"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "count([1, 2, 3]) => 3\ncount([1, 1, 2, 2) => 4"
+   ]
+  },
+  {
+   "name": "max",
+   "group": "functions",
+   "syntax": [
+    "max( [DISTINCT] setExp )"
+   ],
+   "description": [
+    "Returns the member with the maximum value in a set or bag. The function can only take set/bag expressions whose members are numeric types."
+   ],
+   "returns": "A numeric type.",
+   "parameters": [
+    {
+     "name": "setExp",
+     "description": "An expression that evaluates to a `SET`, `BAG`, `SetAccum` or `BagAccum`",
+     "type": "SET, BAG, SetAccum, BagAccum"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "max([1, 2, -3, 4]) => 4\nmax([1, 1, 3, 3]) => 3"
+   ]
+  },
+  {
+   "name": "min",
+   "group": "functions",
+   "syntax": [
+    "min( [DISTINCT] setExp )"
+   ],
+   "description": [
+    "Returns the member with the minimum value in a set or bag. The function can only take set/bag expressions whose members are numeric types. Returns 0 if the input set is empty."
+   ],
+   "returns": "A numeric type.",
+   "parameters": [
+    {
+     "name": "setExp",
+     "description": "An expression that evaluates to a `SET`, `BAG`, `SetAccum` or `BagAccum`",
+     "type": "SET, BAG, SetAccum, BagAccum"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "min([1, 2, -3, 4]) => -3\nmin([1, 1, 3, 3]) => 1"
+   ]
+  },
+  {
+   "name": "stdev",
+   "group": "functions",
+   "syntax": [
+    "stdev( [DISTINCT] setExp )"
+   ],
+   "description": [
+    "Returns the standard deviation of all members in a set or bag, assuming the input is a sample. Returns 0 if the input set is empty.",
+    "This function uses `N - 1` as the denominator, and should be used when taking a sample of the population for an unbiased estimate. When the standard variation of the entire population is being calculated, `stdevp` should be used.",
+    "The function can only take set/bag expressions whose members are numeric types."
+   ],
+   "returns": "`double`",
+   "parameters": [
+    {
+     "name": "setExp",
+     "description": "An expression that evaluates to a `SET`, `BAG`, `SetAccum` or `BagAccum`",
+     "type": "SET, BAG, SetAccum, BagAccum"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "stdev([1]) => 0\nstdev([1, 2, 3, 4, 5]) => 1.5811388300842"
+   ]
+  },
+  {
+   "name": "stdevp",
+   "group": "functions",
+   "syntax": [
+    "stdevp( [DISTINCT] setExp )"
+   ],
+   "description": [
+    "Returns the standard deviation of all members in a set or bag, assuming the input is the population. Returns 0 if the input set is empty.",
+    "This function uses `N` as the denominator, and should be used when calculating the standard deviation for an entire population. When the standard variation of only a sample of the population is being calculated, `stDev` should be used.",
+    "The function can only take set/bag expressions whose members are numeric types."
+   ],
+   "returns": "`double`",
+   "parameters": [
+    {
+     "name": "setExp",
+     "description": "An expression that evaluates to a `SET`, `BAG`, `SetAccum` or `BagAccum`",
+     "type": "SET, BAG, SetAccum, BagAccum"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "stdevp([1]) => 0\nstdevp([1, 2, 3, 4, 5]) => 1.4142135623731"
+   ]
+  },
+  {
+   "name": "sum",
+   "group": "functions",
+   "syntax": [
+    "sum( [DISTINCT] setExp )"
+   ],
+   "description": [
+    "Returns the sum of all members in a set or bag. The function can only take set/bag expressions whose members are numeric types. Returns 0 if the input set is empty."
+   ],
+   "returns": "A numeric type.",
+   "parameters": [
+    {
+     "name": "setExp",
+     "description": "An expression that evaluates to a `SET`, `BAG`, `SetAccum` or `BagAccum`",
+     "type": "SET, BAG, SetAccum, BagAccum"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "sum([1, 2, -3, 4]) => 4\nsum([1, 1, 3, 3]) => 8"
+   ]
+  },
+  {
+   "name": "current_roles",
+   "group": "functions",
+   "syntax": [
+    "current_roles()"
+   ],
+   "description": [
+    "Returns a `SetAccum` of strings of role names granted to the current user."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "None",
+     "description": "None",
+     "type": "None"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "GSQL > create query test() {\nprint current_roles();\n}",
+    "GSQL > run query test()\n{\n    \"version\": {\n        \"edition\": \"enterprise\",\n        \"api\": \"v2\",\n        \"schema\": 0\n    },\n    \"error\": false,\n    \"message\": \"\",\n    \"results\": [\n    {\n        \"current_roles()\": [\n            \"USregion\",\n            \"NAregion\"\n        ]\n    }\n    ]\n}"
+   ]
+  },
+  {
+   "name": "is_granted_to_current_roles",
+   "group": "functions",
+   "syntax": [
+    "is_granted_to_current_roles( \"roleName\" )"
+   ],
+   "description": [
+    "Returns true/false if the current user holds a particular role specified in the parameter."
+   ],
+   "returns": "`BOOL`",
+   "parameters": [
+    {
+     "name": "roleName",
+     "description": "A role name to check against current users roles.",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "create query test2() {\nprint is_granted_to_current_roles(\"USregion\");\n}",
+    "GSQL > run query test2()\n{\n    \"version\": {\n        \"edition\": \"enterprise\",\n        \"api\": \"v2\",\n        \"schema\": 0\n    },\n    \"error\": false,\n    \"message\": \"\",\n    \"results\": [\n    {\n        \"is_granted_to_current_roles(\\\"USregion\\\")\": true\n    }\n    ]\n}"
+   ]
+  },
+  {
+   "name": "datetime_add",
+   "group": "functions",
+   "syntax": [
+    "datetime_add( date, INTERVAL int_value time_unit )"
+   ],
+   "description": [
+    "Calculates a new `DATETIME` from a specified datepart multiplied by a specified amount, added to a specified `DATETIME`.",
+    "`INTERVAL` is a keyword that must be entered exactly as shown. `time_unit` is one of the keywords `YEAR`, `MONTH`, `DAY`, `HOUR`, `MINUTE`, or `SECOND`."
+   ],
+   "returns": "`DATETIME`",
+   "parameters": [
+    {
+     "name": "date",
+     "description": "The `DATETIME` to add to.",
+     "type": "DATETIME"
+    },
+    {
+     "name": "int_value",
+     "description": "An integer value",
+     "type": "INT"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "datetime_add(to_datetime(\"1970-01-01 00:00:00\"), INTERVAL 1 MONTH)\n    -> 1970-02-01 00:00:00"
+   ]
+  },
+  {
+   "name": "datetime_diff",
+   "group": "functions",
+   "syntax": [
+    "datetime_diff( date1, date2 )"
+   ],
+   "description": [
+    "Calculates the difference in seconds between two `DATETIME` values."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "date1",
+     "description": "A `DATETIME` value",
+     "type": "DATETIME"
+    },
+    {
+     "name": "date2",
+     "description": "A `DATETIME` value",
+     "type": "DATETIME"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "datetime_diff(to_datetime(\"2020-01-01 00:00:00\"), to_datetime(\"2020-02-03 04:13:12\"))\n    -> -2866392"
+   ]
+  },
+  {
+   "name": "datetime_format",
+   "group": "functions",
+   "syntax": [
+    "datetime_format(date[, str])"
+   ],
+   "description": [
+    "Prints a `DATETIME` value in a specific format indicated by a provided string."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "date",
+     "description": "A `DATETIME` value",
+     "type": "DATETIME"
+    },
+    {
+     "name": "str",
+     "description": "A string pattern expressing the format to print `date` in. Use the following specifiers in your string to insert the corresponding value in the output. `%Y` - year `%m` - month `%d` - day of month `%H` - hour `%M` - minute `%S` - second The default value for this parameter is `\"%Y-%m-%d %H:%M:%S\"`",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "(datetime_format(\"2020-01-02 05:30:12\"), \"hi, it's %Y-%m-%d\")\n    -> \"hi, it's 2020-01-02\""
+   ]
+  },
+  {
+   "name": "datetime_sub",
+   "group": "functions",
+   "syntax": [
+    "datetime_sub(date, INTERVAL int_value time_unit)"
+   ],
+   "description": [
+    "Calculates a new `DATETIME` from a specified datepart multiplied by a specified amount, subtracted from a specified `DATETIME`.",
+    "`INTERVAL` is a keyword that must be entered exactly as shown. `time_unit` is one of the keywords `YEAR`, `MONTH`, `DAY`, `HOUR`, `MINUTE`, or `SECOND`."
+   ],
+   "returns": "`DATETIME`",
+   "parameters": [
+    {
+     "name": "date",
+     "description": "The `DATETIME` to subtract from",
+     "type": "DATETIME"
+    },
+    {
+     "name": "int_value",
+     "description": "An integer value",
+     "type": "INT"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "datetime_sub(to_datetime(\"1970-02-01 00:00:00\"), INTERVAL 1 MONTH) -> 1970-01-01 00:00:00"
+   ]
+  },
+  {
+   "name": "datetime_to_epoch",
+   "group": "functions",
+   "syntax": [
+    "datetime_to_epoch( date )"
+   ],
+   "description": [
+    "Converts a `DATETIME` value to epoch time."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "date",
+     "description": "A `DATETIME` value",
+     "type": "DATETIME"
+    }
+   ],
+   "notes": [
+    "The result is in seconds, not milliseconds: the example turns one minute (00:01:00) into 60."
+   ],
+   "examples": [
+    "datetime_to_epoch(to_datetime(\"1970-01-01 00:01:00\")) -> 60"
+   ]
+  },
+  {
+   "name": "day",
+   "group": "functions",
+   "syntax": [
+    "day( date )"
+   ],
+   "description": [
+    "Returns the day of the month of a `DATETIME` value."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "date",
+     "description": "A `DATETIME` value",
+     "type": "DATETIME"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "day(to_datetime(\"1973-01-05 00:00:00\")) -> 5"
+   ]
+  },
+  {
+   "name": "epoch_to_datetime",
+   "group": "functions",
+   "syntax": [
+    "epoch_to_datetime(int_value)"
+   ],
+   "description": [
+    "Converts an epoch time value to a `DATETIME` value."
+   ],
+   "returns": "`DATETIME`",
+   "parameters": [
+    {
+     "name": "int_value",
+     "description": "An epoch time value",
+     "type": "INT"
+    }
+   ],
+   "notes": [
+    "The argument is in seconds, not milliseconds: 1 gives 00:00:01."
+   ],
+   "examples": [
+    "epoch_to_datetime(1) -> 1970-01-01 00:00:01"
+   ]
+  },
+  {
+   "name": "hour",
+   "group": "functions",
+   "syntax": [
+    "hour(date)"
+   ],
+   "description": [
+    "Extracts the hour of the day from a `DATETIME` value."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "date",
+     "description": "A `DATETIME` value",
+     "type": "DATETIME"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "hour(to_datetime(\"1980-01-01 15:01:02\")) -> 15"
+   ]
+  },
+  {
+   "name": "minute",
+   "group": "functions",
+   "syntax": [
+    "minute(date)"
+   ],
+   "description": [
+    "Extracts the minute of the hour from a `DATETIME` value."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "date",
+     "description": "A `DATETIME` value",
+     "type": "DATETIME"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "minute(to_datetime(\"1980-02-05 03:04:05\")) -> 4"
+   ]
+  },
+  {
+   "name": "month",
+   "group": "functions",
+   "syntax": [
+    "month(date)"
+   ],
+   "description": [
+    "Extracts the month of the year from a `DATETIME` value."
+   ],
+   "returns": "",
+   "parameters": [
+    {
+     "name": "date",
+     "description": "A `DATETIME` value",
+     "type": "DATETIME"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "month(to_datetime(\"1980-02-05 03:04:05\")) -> 2"
+   ]
+  },
+  {
+   "name": "now",
+   "group": "functions",
+   "syntax": [
+    "now()"
+   ],
+   "description": [
+    "Returns the current UTC time in `DATETIME`."
+   ],
+   "returns": "`DATETIME`",
+   "parameters": [],
+   "notes": [
+    "None."
+   ],
+   "examples": [
+    "now() => \"2021-11-13 00:32:16\""
+   ]
+  },
+  {
+   "name": "second",
+   "group": "functions",
+   "syntax": [
+    "second(date)"
+   ],
+   "description": [
+    "Extracts the seconds value from a `DATETIME` value."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "date",
+     "description": "A `DATETIME` value",
+     "type": "DATETIME"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "second(to_datetime(\"1980-02-05 03:04:05\")) -> 5"
+   ]
+  },
+  {
+   "name": "year",
+   "group": "functions",
+   "syntax": [
+    "year(date)"
+   ],
+   "description": [
+    "Extracts the year from a `DATETIME` value."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "date",
+     "description": "A `DATETIME` value",
+     "type": "DATETIME"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "year(to_datetime(\"1980-02-05 03:04:05\")) -> 1980"
+   ]
+  },
+  {
+   "name": "head",
+   "group": "functions",
+   "syntax": [
+    "head(list)"
+   ],
+   "description": [
+    "`head()` returns the first element in a list. It is semantically the same as `list.get(0)`"
+   ],
+   "returns": "`ELEMENT`",
+   "parameters": [
+    {
+     "name": "list",
+     "description": "A ListAccum parameter, where we want to retrieve the first element in the list",
+     "type": "ListAccum<ELEMENT>"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "head([\"a\", \"b\", \"c\"]) -> \"a\""
+   ]
+  },
+  {
+   "name": "last",
+   "group": "functions",
+   "syntax": [
+    "last(list)"
+   ],
+   "description": [
+    "`last()` returns the last element in a list. It is semantically the same as `list.get(list.size() - 1)`"
+   ],
+   "returns": "`ELEMENT`",
+   "parameters": [
+    {
+     "name": "list",
+     "description": "A ListAccum parameter, where we want to retrieve the last element in the list",
+     "type": "ListAccum<ELEMENT>"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "last([\"a\", \"b\", \"c\"]) -> \"c\""
+   ]
+  },
+  {
+   "name": "range",
+   "group": "functions",
+   "syntax": [
+    "range(start, end [, step])"
+   ],
+   "description": [
+    "`range()` returns a `ListAccum` of integer values within a range bounded by a start value `start` and end value `end`, and an optional step size `step`. The range is inclusive, so the arithmetic progression will always contain `start`, and it may contain `end`value, depending on the step size."
+   ],
+   "returns": "`ListAccum<INT>`",
+   "parameters": [
+    {
+     "name": "start",
+     "description": "The starting value of the range",
+     "type": "UINT, INT"
+    },
+    {
+     "name": "end",
+     "description": "The ending value of the range",
+     "type": "UINT, INT"
+    },
+    {
+     "name": "step",
+     "description": "(Optional) The difference between any two consecutive values in the range",
+     "type": "UINT, INT"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "range(0, 5) -> [0, 1, 2, 3, 4, 5]\nrange(5, 0, -1) -> [5, 4, 3, 2, 1, 0]\nrange(2, 18, 3) -> [2, 5, 8, 11, 14, 17]"
+   ]
+  },
+  {
+   "name": "size",
+   "group": "functions",
+   "syntax": [
+    "size(list)"
+   ],
+   "description": [
+    "`size()` returns the number of elements in a `ListAccum`"
+   ],
+   "returns": "`UINT`",
+   "parameters": [
+    {
+     "name": "list",
+     "description": "A ListAccum parameter",
+     "type": "ListAccum<ELEMENT>"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "size([\"a\", \"b\", \"c\"]) -> 3"
+   ]
+  },
+  {
+   "name": "split",
+   "group": "functions",
+   "syntax": [
+    "split(original, splitDelimiter)"
+   ],
+   "description": [
+    "`split()` returns a list of strings resulting from the splitting of the original string on matches of the given delimiter."
+   ],
+   "returns": "`ListAccum<STRING>`",
+   "parameters": [
+    {
+     "name": "original",
+     "description": "The original string to split",
+     "type": "STRING"
+    },
+    {
+     "name": "splitDelimiter",
+     "description": "The delimiter to split the original string on",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "split(\"one,two\", \",\") -> [\"one\", \"two\"]\nsplit(\"aaabcaabca\", \"abc\") -> [\"aa\", \"a\", \"a\"]"
+   ]
+  },
+  {
+   "name": "tail",
+   "group": "functions",
+   "syntax": [
+    "tail(list)"
+   ],
+   "description": [
+    "`tail()` returns the copy of the list that includes all but the first element in the parameter list."
+   ],
+   "returns": "`ListAccum<ELEMENT>`",
+   "parameters": [
+    {
+     "name": "list",
+     "description": "A ListAccum parameter",
+     "type": "ListAccum<ELEMENT>"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "tail([\"a\", \"b\", \"c\"]) -> [\"b\", \"c\"]"
+   ]
+  },
+  {
+   "name": "abs",
+   "group": "functions",
+   "syntax": [
+    "abs( num )"
+   ],
+   "description": [
+    "Returns the absolute value of a number."
+   ],
+   "returns": "Number",
+   "parameters": [
+    {
+     "name": "num",
+     "description": "The number to return the absolute value for",
+     "type": "Number"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "ceil",
+   "group": "functions",
+   "syntax": [
+    "ceil(num)"
+   ],
+   "description": [
+    "Rounds a number up to the smallest integer that’s greater than or equal to the number."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "num",
+     "description": "The number to round up from",
+     "type": "num"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "exp",
+   "group": "functions",
+   "syntax": [
+    "exp(num)"
+   ],
+   "description": [
+    "Returns the base-e exponential of a number."
+   ],
+   "returns": "`FLOAT`",
+   "parameters": [
+    {
+     "name": "num",
+     "description": "The exponent",
+     "type": "Number"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "float_to_int",
+   "group": "functions",
+   "syntax": [
+    "float_to_int (num)"
+   ],
+   "description": [
+    "Converts a floating-point number to an integer by truncating the floating part."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "num",
+     "description": "The floating-point number to convert to integer",
+     "type": "FLOAT"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "floor",
+   "group": "functions",
+   "syntax": [
+    "floor(num)"
+   ],
+   "description": [
+    "Rounds a number down to the biggest integer that is smaller than or equal to the number."
+   ],
+   "returns": "`INT`",
+   "parameters": [],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "fmod",
+   "group": "functions",
+   "syntax": [
+    "fmod(numer, denom)"
+   ],
+   "description": [
+    "Returns the floating-point remainder of `numer` divided by `denom`"
+   ],
+   "returns": "`FLOAT`",
+   "parameters": [
+    {
+     "name": "numer",
+     "description": "The dividend",
+     "type": "Number"
+    },
+    {
+     "name": "denom",
+     "description": "The divisor",
+     "type": "Number"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "ldexp",
+   "group": "functions",
+   "syntax": [
+    "ldexp(x, exp)"
+   ],
+   "description": [
+    "Returns `x` multiplied by 2 raised to the power of `exp`"
+   ],
+   "returns": "`FLOAT`",
+   "parameters": [
+    {
+     "name": "x",
+     "description": "The base",
+     "type": "Number"
+    },
+    {
+     "name": "exp",
+     "description": "The exponent of 2",
+     "type": "Number"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "PI",
+   "group": "functions",
+   "syntax": [
+    "PI()"
+   ],
+   "description": [
+    "Returns the value of π."
+   ],
+   "returns": "`DOUBLE`",
+   "parameters": [],
+   "notes": [
+    "None."
+   ],
+   "examples": [
+    " PI() * 1000000000 -> 3.141592653589793E9"
+   ]
+  },
+  {
+   "name": "pow",
+   "group": "functions",
+   "syntax": [
+    "pow(base, exp)"
+   ],
+   "description": [
+    "Returns the power of a number."
+   ],
+   "returns": "`FLOAT`",
+   "parameters": [
+    {
+     "name": "base",
+     "description": "The base",
+     "type": "Number"
+    },
+    {
+     "name": "exp",
+     "description": "The exponent",
+     "type": "Number"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "rand",
+   "group": "functions",
+   "syntax": [
+    "rand( [seed] )"
+   ],
+   "description": [
+    "Returns a completely random number >= 0 and <1. If `seed` is specified, it returns a repeatable sequence of random numbers. If no seed is specified, it returns a completely random number."
+   ],
+   "returns": "`DOUBLE`",
+   "parameters": [
+    {
+     "name": "seed",
+     "description": "Optional. If `seed` is specified, it returns a repeatable sequence of random numbers. If no seed is specified, it returns a completely random number",
+     "type": "UINT"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "rand(5) -> 0.05518\nrand(5) -> 0.83133\nrand(5) -> 0.36374"
+   ]
+  },
+  {
+   "name": "round",
+   "group": "functions",
+   "syntax": [
+    "round ( num[, integer] )"
+   ],
+   "description": [
+    "Rounds a number to a specified place relative to the decimal point and returns the result."
+   ],
+   "returns": "A numeric type.",
+   "parameters": [
+    {
+     "name": "num",
+     "description": "The number to be rounded",
+     "type": "NUM"
+    },
+    {
+     "name": "integer",
+     "description": "Optional. An integer value indicating the place to round the first argument to. + If `integer` is positive, the function returns `num` rounded to `integer` places to the right of the decimal point. If you omit `integer`, then `num` is rounded to zero places. If `integer` is negative, then `num` is rounded off to the left of the decimal point.",
+     "type": "INT"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "round(15.213) => 15\nround(15.213, -1) => 20\nround(2.15, 1) => 2.2\nround(2.25, 1) => 2.3"
+   ]
+  },
+  {
+   "name": "sign",
+   "group": "functions",
+   "syntax": [
+    "sign( num )"
+   ],
+   "description": [
+    "Returns the sign of a number. If the number is positive, return `1`; if the number is negative, return `-1`; if the number is `0`, return `0`"
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "num",
+     "description": "A numeric value",
+     "type": "INT, DOUBLE"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "sign(100) => 1\nsign(0) => 0\nsign(-1.23) => -1"
+   ]
+  },
+  {
+   "name": "square",
+   "group": "functions",
+   "syntax": [
+    "square( num )"
+   ],
+   "description": [
+    "Returns the square of a number."
+   ],
+   "returns": "A numeric type.",
+   "parameters": [
+    {
+     "name": "num",
+     "description": "A numeric value.",
+     "type": "INT, FLOAT, or DOUBLE"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "square(0) => 0\nsquare(50) => 2500\nsquare(-50) => 2500"
+   ]
+  },
+  {
+   "name": "sqrt",
+   "group": "functions",
+   "syntax": [
+    "sqrt(num)"
+   ],
+   "description": [
+    "Returns the square root of a number"
+   ],
+   "returns": "`FLOAT`",
+   "parameters": [
+    {
+     "name": "num",
+     "description": "The number to get square root for.",
+     "type": "Number"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "trunc",
+   "group": "functions",
+   "syntax": [
+    "trunc( num, [decimal_places] )"
+   ],
+   "description": [
+    "Returns a number truncated to the specified number of decimal places.",
+    "If the number of decimal places is either 0 or omitted, then the number is truncated to an integer value. The `decimal_places` parameter can be negative, meaning the target precision is to the left of the decimal point. This effectively rounds the number to some power of 10."
+   ],
+   "returns": "`DOUBLE`",
+   "parameters": [
+    {
+     "name": "num",
+     "description": "The number to be truncated",
+     "type": "INT, FLOAT or DOUBLE"
+    },
+    {
+     "name": "decimal_place",
+     "description": "Optional. The output’s number of significant digits to the right of the decimal point.",
+     "type": "INT"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    " trunc(3.14159, 4) -> 3.1415\n trunc(3.14, 0) -> 3\n trunc(-3.14) -> -3\n trunc(314159, -3) --> 314000"
+   ]
+  },
+  {
+   "name": "log",
+   "group": "functions",
+   "syntax": [
+    "log(num)"
+   ],
+   "description": [
+    "Returns the natural logarithm of a number (base e)."
+   ],
+   "returns": "`DOUBLE`",
+   "parameters": [
+    {
+     "name": "num",
+     "description": "The number to compute natural logarithm for",
+     "type": "Number"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "log2",
+   "group": "functions",
+   "syntax": [
+    "log2( num )"
+   ],
+   "description": [
+    "Returns the base-2 logarithm of a number."
+   ],
+   "returns": "`DOUBLE`",
+   "parameters": [
+    {
+     "name": "num",
+     "description": "A numeric value",
+     "type": "INT, FLOAT, DOUBLE"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "log2(0.5) => -1\nlog2(1) => 0\nlog2(3) => 1.58"
+   ]
+  },
+  {
+   "name": "log10",
+   "group": "functions",
+   "syntax": [
+    "log10(num)"
+   ],
+   "description": [
+    "Return the common logarithm of a number (base 10)."
+   ],
+   "returns": "`FLOAT`",
+   "parameters": [
+    {
+     "name": "num",
+     "description": "The number to compute common logarithm for",
+     "type": "Number"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "acos",
+   "group": "functions",
+   "syntax": [
+    "acos(num)"
+   ],
+   "description": [
+    "Returns the arc cosine of a number."
+   ],
+   "returns": "`FLOAT`",
+   "parameters": [
+    {
+     "name": "num",
+     "description": "The number to compute arccosine for",
+     "type": "Number"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "asin",
+   "group": "functions",
+   "syntax": [
+    "asin(num)"
+   ],
+   "description": [
+    "Returns the arc sine of a number."
+   ],
+   "returns": "`FLOAT`",
+   "parameters": [
+    {
+     "name": "num",
+     "description": "The number to compute arcsine for",
+     "type": "Number"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "atan",
+   "group": "functions",
+   "syntax": [
+    "atan(num)"
+   ],
+   "description": [
+    "Returns the arctangent of a number."
+   ],
+   "returns": "`FLOAT`",
+   "parameters": [
+    {
+     "name": "num",
+     "description": "The number to compute arctangent for",
+     "type": "Number"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "atan2",
+   "group": "functions",
+   "syntax": [
+    "atan2(y, x)"
+   ],
+   "description": [
+    "Returns the arctangent of a fraction."
+   ],
+   "returns": "`FLOAT`",
+   "parameters": [
+    {
+     "name": "y",
+     "description": "The dividend of the fraction to compute arctangent for",
+     "type": "Number"
+    },
+    {
+     "name": "x",
+     "description": "The divisor of the fraction to compute arctangent for",
+     "type": "Number"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "cos",
+   "group": "functions",
+   "syntax": [
+    "cos(num)"
+   ],
+   "description": [
+    "Returns the cosine of a number."
+   ],
+   "returns": "`FLOAT`",
+   "parameters": [
+    {
+     "name": "num",
+     "description": "The number to return cosine for",
+     "type": "Number"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "cosh",
+   "group": "functions",
+   "syntax": [
+    "cosh(num)"
+   ],
+   "description": [
+    "Returns the hyperbolic cosine of a number."
+   ],
+   "returns": "`FLOAT`",
+   "parameters": [
+    {
+     "name": "num",
+     "description": "The number to compute hyperbolic cosine for",
+     "type": "Number"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "cot",
+   "group": "functions",
+   "syntax": [
+    "cot( num )"
+   ],
+   "description": [
+    "Returns the cotangent of a number."
+   ],
+   "returns": "`DOUBLE`",
+   "parameters": [
+    {
+     "name": "num",
+     "description": "A numeric value",
+     "type": "INT, FLOAT, or DOUBLE"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "cot(6) => -3.4363530041801278\ncot(-1) => -0.64209261593433065"
+   ]
+  },
+  {
+   "name": "degrees",
+   "group": "functions",
+   "syntax": [
+    "degrees( num )"
+   ],
+   "description": [
+    "Converts a value in radians to degrees."
+   ],
+   "returns": "`DOUBLE`",
+   "parameters": [
+    {
+     "name": "num",
+     "description": "A numeric value",
+     "type": "INT, FLOAT, or DOUBLE"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "degrees(2) => 114.59155902616465\ndegrees(1) => -57.29577951308232"
+   ]
+  },
+  {
+   "name": "radians",
+   "group": "functions",
+   "syntax": [
+    "radians( num )"
+   ],
+   "description": [
+    "Converts a value in degrees to radians."
+   ],
+   "returns": "`DOUBLE`",
+   "parameters": [
+    {
+     "name": "num",
+     "description": "A numeric value",
+     "type": "INT, FLOAT, or DOUBLE"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "radians( 45 ) => -0.7853981633974483\nradians( 30 ) => 0.5235987755982988\nradians( 50 ) => 0.8726646259971648"
+   ]
+  },
+  {
+   "name": "sin",
+   "group": "functions",
+   "syntax": [
+    "sin(num)"
+   ],
+   "description": [
+    "Returns the sine of a number."
+   ],
+   "returns": "`FLOAT`",
+   "parameters": [
+    {
+     "name": "num",
+     "description": "The number to compute sine for",
+     "type": "Number"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "sinh",
+   "group": "functions",
+   "syntax": [
+    "sinh(num)"
+   ],
+   "description": [
+    "Returns the hyperbolic sine of a number."
+   ],
+   "returns": "`FLOAT`",
+   "parameters": [
+    {
+     "name": "num",
+     "description": "The number to compute hyperbolic sine for",
+     "type": "Number"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "tan",
+   "group": "functions",
+   "syntax": [
+    "tan(num)"
+   ],
+   "description": [
+    "Returns the tangent of a number."
+   ],
+   "returns": "`FLOAT`",
+   "parameters": [
+    {
+     "name": "num",
+     "description": "The number to compute tangent for",
+     "type": "Number"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "tanh",
+   "group": "functions",
+   "syntax": [
+    "tanh(num)"
+   ],
+   "description": [
+    "Returns the hyperbolic tangent of a number."
+   ],
+   "returns": "`FLOAT`",
+   "parameters": [
+    {
+     "name": "num",
+     "description": "The number to compute hyperbolic tangent for",
+     "type": "Number"
+    }
+   ],
+   "notes": [
+    "Copyright © 2026 TigerGraph"
+   ],
+   "examples": []
+  },
+  {
+   "name": "coalesce",
+   "group": "functions",
+   "syntax": [
+    "coalesce( exp [, exp ...] )"
+   ],
+   "description": [
+    "Returns the first expression that isn’t `NULL`.",
+    "This function requires all its arguments have the same data type (`BOOL`, `INT`, `FLOAT, DOUBLE`, `STRING`, or `VERTEX`). The only exception is that different numeric types can be used together. In this case, all values are converted into the first argument type."
+   ],
+   "returns": "`BOOL`, `INT`, `FLOAT, DOUBLE`, `STRING`, or `VERTEX`",
+   "parameters": [],
+   "notes": [
+    "The function takes a number of parameters and returns the first one that does not evaluate to `NULL`"
+   ],
+   "examples": [
+    "CREATE QUERY coalesceFuncEx (INT p1, DOUBLE p2) FOR GRAPH social {\n  PRINT COALESCE(p1, p2, 999.5);  # p2 and the last value will be converted into first argument type, which is INT.\n}",
+    "GSQL > RUN QUERY coalesceFuncEx(_,_)\n{\n  \"error\": false,\n  \"message\": \"\",\n  \"version\": {\n    \"schema\": 1,\n    \"edition\": \"enterprise\",\n    \"api\": \"v2\"\n  },\n  \"results\": [{\"coalesce(p1,p2,999.5)\": 999}]\n}\n\nGSQL > RUN QUERY coalesceFuncEx(1,2)\n{\n  \"error\": false,\n  \"message\": \"\",\n  \"version\": {\n    \"schema\": 1,\n    \"edition\": \"enterprise\",\n    \"api\": \"v2\"\n  },\n  \"results\": [{\"coalesce(p1,p2,999.5)\": 1}]\n}"
+   ]
+  },
+  {
+   "name": "evaluate",
+   "group": "functions",
+   "syntax": [
+    "evaluate( expressionStr, typeStr )"
+   ],
+   "description": [
+    "Takes a string argument and interprets it as an expression which is evaluated during run-time. This enables users to create a general purpose query instead of separate queries for each specific computation.",
+    "This function cannot be nested.",
+    "The following situations generate a run-time error:",
+    "The expression string expressionStr cannot be compiled (unless the error is due to a non-existent vertex or edge attribute).",
+    "The result type of the expression does not match the parameter typeStr."
+   ],
+   "returns": "Type indicated by `typeStr`",
+   "parameters": [
+    {
+     "name": "expressionStr",
+     "description": "The expression to evaluate typed as a string. Identifiers used in the expression can refer only to a vertex or edge aliases, vertex-attached accumulators, global accumulators, parameters, or scalar function calls involving the above variables. The expression may not refer to local variables, global variables, or to FROM clause vertices or edges by type. Any accumulators in the expression must be scalar accumulators (e.g., MaxAccum) for primitive-type data. Container accumulators (e.g., SetAccum) or scalar accumulators with non-primitive type (e.g. VERTEX, EDGE, DATETIME) are not supported. Container type attributes are not supported.",
+     "type": "STRING"
+    },
+    {
+     "name": "typeStr",
+     "description": "The return type for the function call. It must be a string literal for a primitive data type, e.g., one of `\"int\"`, `\"float\"`, `\"double\"`, `\"bool\"`, `\"string\"` (case insensitive). The default value is `\"bool\"`.",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "CREATE QUERY evaluateEx (STRING whereCond = \"TRUE\", STRING postAccumIntExpr = \"1\") FOR GRAPH socialNet {\n  SetAccum<INT> @@timeSet;\n  MaxAccum<INT> @latestLikeTime, @latestLikePostTime;\n\n  S = {person.*};\n  S2 = SELECT s\n       FROM S:s - (liked>:e) - post:t\n       WHERE evaluate(whereCond)\n       ACCUM s.@latestLikeTime += datetime_to_epoch( e.actionTime ),\n             s.@latestLikePostTime += datetime_to_epoch( t.postTime )\n       POST-ACCUM @@timeSet += evaluate(postAccumIntExpr, \"int\")\n       ;\n  PRINT @@timeSet;\n}",
+    "GSQL > RUN QUERY evaluateEx(\"s.gender==\\\"Male\\\"\", \"s.@latestLikePostTime\")\n{\n  \"error\": false,\n  \"message\": \"\",\n  \"results\": [\n    {\n      \"@@timeSet\": [1263295325,1296752752,1297054971,1296788551]\n    }\n  ]\n}\n\nGSQL > RUN QUERY evaluateEx(\"s.gender==\\\"Female\\\"\", \"s.@latestLikeTime + 1\")\n{\n  \"error\": false,\n  \"message\": \"\",\n  \"results\": [\n    {\n      \"@@timeSet\": [1263293536,1263352566,1263330726]\n    }\n  ]\n}"
+   ]
+  },
+  {
+   "name": "ascii",
+   "group": "functions",
+   "syntax": [
+    "ascii( str )"
+   ],
+   "description": [
+    "Returns the ASCII (numeric) position of the first character in a string. If the argument is an empty string, returns 0."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "A string value",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "ascii(\"\") => 0\nascii(\"A\") => 65"
+   ]
+  },
+  {
+   "name": "chr",
+   "group": "functions",
+   "syntax": [
+    "chr( n )"
+   ],
+   "description": [
+    "Converts an integer to a character according to its ASCII position. If the input value `n` is greater than 255, returns the character at the position of the modulo of `n / 256`."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "n",
+     "description": "An integer value",
+     "type": "INT"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "chr(65) => 'A'\nchr(322) => 'B'"
+   ]
+  },
+  {
+   "name": "difference",
+   "group": "functions",
+   "syntax": [
+    "difference(str1, str2)"
+   ],
+   "description": [
+    "Compares the Soundex codes of two strings and returns an integer. The return value ranges from 0 to 4, and it indicates the similarity between the input strings' phonetic representation values.",
+    "0 indicates weak similarity, and 4 indicates strong similarity with identical phonetic representation values."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "str1",
+     "description": "A string value",
+     "type": "STRING"
+    },
+    {
+     "name": "str2",
+     "description": "A string value",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "difference(\"Johnson\", \"Jonson\") => 4\ndifference(\"Adams\", \"Addamms\") => 4\ndifference(\"Mary\", \"Bob\") => 2"
+   ]
+  },
+  {
+   "name": "find_in_set",
+   "group": "functions",
+   "syntax": [
+    "find_in_set(str, str_list)"
+   ],
+   "description": [
+    "Returns the position of a string within a list of strings separated by commas.",
+    "If `string` is not found in `string_list`, this function returns -1."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "A string value",
+     "type": "STRING"
+    },
+    {
+     "name": "str_list",
+     "description": "A string representation of a list of strings.",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "find_in_set(\"a\",\"b,c,d\") => -1\nfind_in_set(\"a\",\"a,b,c\") => 0\nfind_in_set(\"a\",\"b,a,d\") => 1"
+   ]
+  },
+  {
+   "name": "gsql_uuid_v4",
+   "group": "functions",
+   "syntax": [
+    "gsql_uuid_v4()"
+   ],
+   "description": [
+    "Generates and returns a version-4 universally unique identifier (UUID)."
+   ],
+   "returns": "`STRING`",
+   "parameters": [],
+   "notes": [
+    "None."
+   ],
+   "examples": []
+  },
+  {
+   "name": "insert",
+   "group": "functions",
+   "syntax": [
+    "insert(str1, position[, number], str2)"
+   ],
+   "description": [
+    "Inserts a string within a string at the specified position and for a certain number of characters, and replaces a specified number of characters starting from the insertion position. The starting index is 0."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "str1",
+     "description": "The string to insert another string into",
+     "type": "STRING"
+    },
+    {
+     "name": "position",
+     "description": "The index of the starting position to insert the string",
+     "type": "INT"
+    },
+    {
+     "name": "number",
+     "description": "Optional. The number of characters from the original string that will be replaced. If the argument is left off, it defaults to 0.",
+     "type": "STRING"
+    },
+    {
+     "name": "str2",
+     "description": "The string to be inserted",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "insert(\"tigergraph.com\", 0, 10, \"Example\") => \"Example.com”\ninsert(\"tigergraph.com\", 0, 2, \"Example\") => \"Examplegergraph.com”\ninsert(\"tigergraph.com\", 2, 20, \"Example\") => ”tiExample”\ninsert(\"Complete blank.\", 9, \"every \") => \"Complete every blank.\""
+   ]
+  },
+  {
+   "name": "instr",
+   "group": "functions",
+   "syntax": [
+    "instr (str, substr [, position, occurrence])"
+   ],
+   "description": [
+    "Searches a string `str` for a substring `substr` and returns the location of the substring in the string. If a substring that is equal to `substr` is found, then the function returns an integer indicating the position of the first character of this substring. If no such substring is found, then the function returns -1."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "The string to search",
+     "type": "STRING"
+    },
+    {
+     "name": "substr",
+     "description": "The string to search for in `str`",
+     "type": "STRING"
+    },
+    {
+     "name": "position",
+     "description": "Optional. The position is a nonzero integer indicating the character of `str` from where the search begins. If omitted, it defaults to 0. The first position in the string is 0. If `position` is negative, then the function counts backward from the end of `str` and then searches backward from the resulting position.",
+     "type": "STRING"
+    },
+    {
+     "name": "occurrence",
+     "description": "Optional, The occurrence is an integer indicating which occurrence of `substr` in `str` the function should search for.",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "instr(\"This is the thing\", \"Th\") -> 0;\ninstr(\"This is the thing\", \"is\", 3) -> 5;"
+   ]
+  },
+  {
+   "name": "left",
+   "group": "functions",
+   "syntax": [
+    "left(str, number_of_chars)"
+   ],
+   "description": [
+    "Extracts a number of characters from a string starting from position 0 (capturing left to right)."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "A string value",
+     "type": "STRING"
+    },
+    {
+     "name": "number_of_chars",
+     "description": "The number of characters to extract",
+     "type": "INT"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "length",
+   "group": "functions",
+   "syntax": [
+    "length(str)"
+   ],
+   "description": [
+    "Returns the length of the input string."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "The string whose length to evaluate",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "length(\"hello world\") -> 11\nlength(\"\") -> 0"
+   ]
+  },
+  {
+   "name": "ltrim",
+   "group": "functions",
+   "syntax": [
+    "ltrim( str[, set] )"
+   ],
+   "description": [
+    "Removes all occurrences of the characters contained in a set from a string from the left side.",
+    "The function begins scanning the string from its first character, removing all characters that appear in `set` until reaching a character not in `set`, then returning the result."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "A string value",
+     "type": "STRING"
+    },
+    {
+     "name": "set",
+     "description": "Optional. A string of characters. The distinct characters from the string form the set. If not specified, it defaults to a single space.",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "lower",
+   "group": "functions",
+   "syntax": [
+    "lower(str)"
+   ],
+   "description": [
+    "Returns the input string with all letters in lowercase."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "The string to convert to lowercase",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "lower(\"GSQL\") -> \"gsql\""
+   ]
+  },
+  {
+   "name": "lpad",
+   "group": "functions",
+   "syntax": [
+    "lpad(str, padded_length [, pad_str] )"
+   ],
+   "description": [
+    "Pads the left side of a string with another pad string. If the pad string `pad_str` is omitted, it will pad with white space. If the parameter length is smaller than the original string, it will truncate the string from the right side."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "The string to pad characters to",
+     "type": "STRING"
+    },
+    {
+     "name": "padded_length",
+     "description": "The number of characters to return. If the `padded_length` is smaller than the original string, the `lpad` function will truncate the string to the size of `padded_length`.",
+     "type": "INT"
+    },
+    {
+     "name": "pad_str",
+     "description": "Optional. This is the string that will be padded to the left-hand side of `str`. If this parameter is omitted, the `lpad` function will pad spaces to the left side of `str`.",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    " lpad(\"PQR\", 5) -> \"  PQR\"\n lpad(\"PQR\", 2) -> \"PQ\"\n lpad(\"PQR\", 10, \"ABC\") -> \"ABCABCAPQR\""
+   ]
+  },
+  {
+   "name": "repeat",
+   "group": "functions",
+   "syntax": [
+    "repeat(str, repetitions)"
+   ],
+   "description": [
+    "Repeats a string the given number of times, with no intervening space."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "The original string",
+     "type": "STRING"
+    },
+    {
+     "name": "repetitions",
+     "description": "The number of times to include `str` in the output.",
+     "type": "INT"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    " repeat(\"Abcd\", 2) -> \"AbcdAbcd\""
+   ]
+  },
+  {
+   "name": "replace",
+   "group": "functions",
+   "syntax": [
+    "replace(str, str_to_replace [, replacement_str])"
+   ],
+   "description": [
+    "Replaces a sequence of characters in a string with another set of characters."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "The original string whose substrings are to be replaced",
+     "type": "STRING"
+    },
+    {
+     "name": "str_to_replace",
+     "description": "The string that will be searched for and replaced in `str`",
+     "type": "STRING"
+    },
+    {
+     "name": "replacement_str",
+     "description": "Optional. The string that will replace `str_to_replace`. If omitted, `replace()` removes all occurrences of `string_to_replace` and returns the resulting string.",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    " replace(\"SSQLL\", \"S\", \"G\") -> \"GGQLL\"\n replace(\"SSQLL\", \"SQL\", \"Q\") -> \"SQL\"\n replace(\"SSQLL\", \"L\") -> \"SSQ\""
+   ]
+  },
+  {
+   "name": "reverse",
+   "group": "functions",
+   "syntax": [
+    "reverse(str)"
+   ],
+   "description": [
+    "Returns a string with its characters in reverse order."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "The original string",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    " reverse(\"0246813579\") -> \"9753186420\"\n reverse(\"Never odd or even\") -> \"neve ro ddo reveN\""
+   ]
+  },
+  {
+   "name": "right",
+   "group": "functions",
+   "syntax": [
+    "right(str, number_of_chars)"
+   ],
+   "description": [
+    "Extracts a number of characters from a string starting from the right."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "A string value",
+     "type": "STRING"
+    },
+    {
+     "name": "number_of_chars",
+     "description": "The number of characters to extract",
+     "type": "INT"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "rpad",
+   "group": "functions",
+   "syntax": [
+    "rpad(str, padded_length [, pad_str] )"
+   ],
+   "description": [
+    "Pads the right side of a string (`str`) with another pad string. If the pad string (`pad_str`) is omitted, it will pad with white space. If the parameter length is smaller than the original string, it will truncate the string from the right side."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "The string to pad characters to",
+     "type": "STRING"
+    },
+    {
+     "name": "padded_length",
+     "description": "The number of characters to return. If the `padded_length` is smaller than the original string, the `lpad` function will truncate the string to the size of `padded_length`.",
+     "type": "INT"
+    },
+    {
+     "name": "pad_str",
+     "description": "Optional. This is the string that will be padded to the right-hand side of `str`. If this parameter is omitted, the `lpad` function will pad spaces to the right side of `str`.",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "rpad(\"PQR\", 5) -> \"PQF  \"\nlpad(\"PQR\", 2) -> \"PQ\"\nlpad(\"PQR\", 10, \"ABC\") -> \"ABCABCAPQR\""
+   ]
+  },
+  {
+   "name": "rtrim",
+   "group": "functions",
+   "syntax": [
+    "rtrim( str [,set] )"
+   ],
+   "description": [
+    "Removes all occurrences of the characters contained in a set from a string from the right side.",
+    "The function begins scanning the string from its last character and removes all characters that appear in `set` until reaching a character not in `set` and then returns the result."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "A string value",
+     "type": "STRING"
+    },
+    {
+     "name": "set",
+     "description": "Optional. A string of characters. The distinct characters from the string form the set. If not specified, it defaults to a single space.",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "soundex",
+   "group": "functions",
+   "syntax": [
+    "soundex( str )"
+   ],
+   "description": [
+    "Returns a character string containing the Soundex code of `str`. This function lets you compare words that are spelled differently, but sound alike in English.",
+    "Soundex is a phonetic algorithm defined in The Art of Computer Programming, Volume 3: Sorting and Searching, by Donald E. Knuth, as follows:",
+    "Retain the first letter of the string and remove all other occurrences of the following letters: a, e, h, i, o, u, w, y.",
+    "Assign numbers to the remaining letters (after the first) as follows:",
+    "If two or more letters with the same number were adjacent in the original name (before step 1), or adjacent except for any intervening h and w, then retain the first letter and omit the rest of all the adjacent letters with the same number.",
+    "Return the first four bytes padded with 0."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "A string value",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "soundex(\"Ashcraft\") => \"A261\"\nsoundex(\"Burroughs\") => \"B620\"\nsoundex(\"Burrows\") => \"B620\""
+   ]
+  },
+  {
+   "name": "space",
+   "group": "functions",
+   "syntax": [
+    "space( n )"
+   ],
+   "description": [
+    "Returns a string that contains the specified number of space characters"
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "n",
+     "description": "An integer value",
+     "type": "INT"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "space(0) = ””\nspace(1) = ” ”\nspace(5) = ”     ”"
+   ]
+  },
+  {
+   "name": "substr",
+   "group": "functions",
+   "syntax": [
+    "substr(str, start [, length])"
+   ],
+   "description": [
+    "Returns the substring indicated by the start point and length. If the parameter length is omitted, then the returned substring will extend to the end of the given input string."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "The string to extract substring from",
+     "type": "STRING"
+    },
+    {
+     "name": "start",
+     "description": "The position that indicates the start of the substring",
+     "type": "INT"
+    },
+    {
+     "name": "length",
+     "description": "Optional. The length of the substring. If omitted, the substring will extend from `start` to the end of `str`.",
+     "type": "INT"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "substr(\"ABCDE\", 2) -> \"CDE\"\nsubstr(\"ABCDE\", 2, 2) -> \"CD\"\nsubstr(\"ABCDE\", -2, 1) -> \"D\""
+   ]
+  },
+  {
+   "name": "translate",
+   "group": "functions",
+   "syntax": [
+    "translate( str_origin, characters, translations )"
+   ],
+   "description": [
+    "Returns the string from the first argument after the characters specified in the second argument are translated into the characters specified at the same index in the third argument.",
+    "The function will return an error if `characters` and `translations` have different lengths."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "str_origin",
+     "description": "A string value",
+     "type": "STRING"
+    },
+    {
+     "name": "characters",
+     "description": "A string of characters",
+     "type": "STRING"
+    },
+    {
+     "name": "translations",
+     "description": "A string of characters",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "translate(”Hello world”, \"\", \"\") => ”Hello world”\ntranslate(”Hello world”, \"o\", \"U\") => ”HellU wUrld”\ntranslate(”Hello world”, \"lo\", \"aU\") => ”HeaaU wUrad”\ntranslate(””, \"lo\", \"aU\") => ””"
+   ]
+  },
+  {
+   "name": "trim",
+   "group": "functions",
+   "syntax": [
+    "trim( [ [ LEADING | TRAILING | BOTH ] [removal_char FROM] ] str )"
+   ],
+   "description": [
+    "Trims characters from the leading and/or trailing ends of a string.",
+    "By using one of the keywords `LEADING`, `TRAILING`, or `BOTH`, the user can specify that characters are to be removed from the left end, right end, or both ends of the string respectively. `BOTH` is the default and will be used if no keywords are specified."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "removal_char",
+     "description": "Optional. The character to remove. If `removal_char` is not specified, the function will remove whitespaces, including spaces, tabs, and newlines. If `removal_char` is specified, the user must also write the keyword `FROM` between `removal_char` and `str`.",
+     "type": "STRING"
+    },
+    {
+     "name": "str",
+     "description": "A string value.",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "trim(\"  Abc   \") => \"Abc\"\ntrim( LEADING \" a A   \") => \"a A   \"\ntrim( TRAILING \"a\" FROM \"aa ABC aaa\") => \"aa ABC \""
+   ]
+  },
+  {
+   "name": "upper",
+   "group": "functions",
+   "syntax": [
+    "upper(str)"
+   ],
+   "description": [
+    "Returns the input string with all letters in uppercase."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "The string to convert to uppercase",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "upper(\"gsql\") -> \"GSQL\""
+   ]
+  },
+  {
+   "name": "parse_json_array",
+   "group": "functions",
+   "syntax": [
+    "parse_json_array( str )"
+   ],
+   "description": [
+    "Converts a string into a JSON array. The string must be properly formatted, or the function will generate a run-time error. To be properly formatted, besides having the proper nesting and matching of curly braces `{ }` and brackets `[ ]`, each value field must be one of the following:",
+    "a string",
+    "a number",
+    "a boolean",
+    "a JSONOBJECT - Each key of a key-value pair must be a string in double quotes.",
+    "a JSON array"
+   ],
+   "returns": "`JSONARRAY`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "The string to be converted into a JSON array.",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "parse_json_array(\"[123]\") -> [123]"
+   ]
+  },
+  {
+   "name": "parse_json_object",
+   "group": "functions",
+   "syntax": [
+    "parse_json_object( str )"
+   ],
+   "description": [
+    "Converts a string into a JSON object. The string must be properly formatted, or the function will generate a run-time error. To be properly formatted, besides having the proper nesting and matching of curly braces `{ }` and brackets `[ ]`, each value field must be one of the following:",
+    "a string",
+    "a number",
+    "a boolean",
+    "a JSONOBJECT - Each key of a key-value pair must be a string in double quotes, and the quotes need to be escaped with a backlash-escape `\\`. However, if you are supplying the string in GraphStudio as a parameter, you do not need the backlash-escape since string values are not enclosed in double quotes.",
+    "a JSON array"
+   ],
+   "returns": "`JSONOBJECT`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "The string to be converted into a JSON object.",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "parse_json_object(\"{\\\"abc\\\":123}\")  -> {\"abc\": 123}"
+   ]
+  },
+  {
+   "name": "str_to_int",
+   "group": "functions",
+   "syntax": [
+    "str_to_int (str)"
+   ],
+   "description": [
+    "Converts a string to an integer."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "The string to be converted to an integer",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "to_datetime",
+   "group": "functions",
+   "syntax": [
+    "to_datetime ( str )"
+   ],
+   "description": [
+    "Converts a string value into a `DATETIME` value."
+   ],
+   "returns": "`DATETIME`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "A string value",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "to_datetime(\"2020-01-02 01:02:03\") -> 2020-01-02 01:02:03"
+   ]
+  },
+  {
+   "name": "to_string",
+   "group": "functions",
+   "syntax": [
+    "to_string(num)"
+   ],
+   "description": [
+    "Converts a number to a string using the C++ printf function with the `g` specifier, which means it always produces the shortest output."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "num",
+     "description": "The number to turn into a string",
+     "type": "Number"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "to_string(1000.1) -> \"1000.1\"\nto_string(0.0000000001) -> \"1E-10\"\nto_string(12300000000) -> \"12300000000\"  // Using an `INT` or `UINT` value returns the full number as a string without scientific notation\nto_string(12300000000.0) -> \"1.23e+10\"  // Using a `DOUBLE` value returns scientific notation for large numbers\nto_string(12300000000.0) -> \"1.23e+10\"  // Using a `FLOAT` value also returns scientific notation for large numbers"
+   ]
+  },
+  {
+   "name": "toBoolean",
+   "group": "functions",
+   "syntax": [
+    "toBoolean(input)"
+   ],
+   "description": [
+    "This function converts a string into a boolean value (`true` or `false`).",
+    "If the input is already a boolean, it returns the same value.",
+    "If the input is a string equivalent of true or false (case-insensitive), it returns the corresponding boolean value.",
+    "For other string inputs or parsing failures, it returns `NULL`."
+   ],
+   "returns": "`BOOLEAN`",
+   "parameters": [
+    {
+     "name": "input",
+     "description": "An expression that returns a boolean or string",
+     "type": "String/Boolean"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "toBoolean(\"true\") -> true\ntoBoolean(\"false\") -> false\ntoBoolean(\"invalid\") -> null"
+   ]
+  },
+  {
+   "name": "toFloat",
+   "group": "functions",
+   "syntax": [
+    "toFloat(input)"
+   ],
+   "description": [
+    "Converts an integer or string to a floating-point number.",
+    "If the input is already a floating-point number, the function will return it unchanged.",
+    "If the input is a valid number in string format (e.g., \"14.5\"), it converts the string to a float (e.g., 14.5).",
+    "Scientific notation is supported. For example, \"1.45e-06\" is applicable."
+   ],
+   "returns": "`FLOAT`",
+   "parameters": [
+    {
+     "name": "input",
+     "description": "An expression that returns a numeric or string",
+     "type": "String/Number"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "toFloat(14) -> 14.0\ntoFloat(\"-3.5\") -> -3.5\ntoFloat(\"1.45E-6\") -> 1.45e-06\ntoFloat(\"invalid\") -> NULL"
+   ]
+  },
+  {
+   "name": "toInteger",
+   "group": "functions",
+   "syntax": [
+    "toInteger(input)"
+   ],
+   "description": [
+    "Converts a floating-point number or string to an integer.",
+    "If the input is already an integer, it is returned unchanged.",
+    "If the input is a valid number in string format (e.g., \"42\"), it converts the string to an integer (e.g., 42).",
+    "If the input is a floating-point number, it truncates the decimal part (e.g., 14.7 becomes 14)."
+   ],
+   "returns": "`INTEGER`",
+   "parameters": [
+    {
+     "name": "input",
+     "description": "An expression that returns a numeric or string",
+     "type": "String/Number"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "toInteger(14.7) -> 14\ntoInteger(\"-10\") -> -10\ntoInteger(\"five\") -> NULL"
+   ]
+  },
+  {
+   "name": "tg_similarity_accum",
+   "group": "functions",
+   "syntax": [],
+   "description": [],
+   "returns": "",
+   "parameters": [],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "edgeAttribute",
+   "group": "vertex",
+   "syntax": [
+    "v.edgeAttribute( edgeType, attrName )"
+   ],
+   "description": [
+    "From a vertex, traverse edges of a specified type and return the bag of values for a specified edge attribute."
+   ],
+   "returns": "`BagAccum<attrType>`",
+   "parameters": [
+    {
+     "name": "edgeType",
+     "description": "The edge type to traverse",
+     "type": "STRING"
+    },
+    {
+     "name": "attrName",
+     "description": "The attribute whose value to retrieve",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "filter",
+   "group": "vertex",
+   "syntax": [
+    "v.neighbors().filter( condition )",
+    "v.neighborAttribute().filter( condition )",
+    "v.edgeAttribute().filter( condition )"
+   ],
+   "description": [
+    "This function is appended to `neighbors()`, `neighborAttribute()`, or `edgeAttribute()` to filter the output set according to a filter condition. Only elements that satisfy the condition will be returned."
+   ],
+   "returns": "`BagAccum`",
+   "parameters": [
+    {
+     "name": "condition",
+     "description": "An expression that evaluates to a boolean value",
+     "type": "BOOL"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "CREATE QUERY filterEx (SET<STRING> pIds, INT yr) FOR GRAPH workNet api(\"v2\") {\n\n  SetAccum<vertex<company>> @recentEmplr, @allEmplr;\n  BagAccum<string> @diffCountry, @allCountry;\n\n  Start = {person.*};\n\n  L0 = SELECT v\n       FROM  Start:v\n       WHERE v.id IN pIds\n       ACCUM\n         # filter using edge attribute\n         v.@recentEmplr += v.neighbors(\"worksFor\").filter(worksFor.startYear >= yr),\n         v.@allEmplr += v.neighbors(\"worksFor\").filter(true),\n\n        # vertex alias attribute and neighbor type attribute\n        v.@diffCountry += v.neighborAttribute(\"worksFor\", \"company\", \"id\")\n                          .filter(v.locationId != company.country),\n        v.@allCountry += v.neighborAttribute(\"worksFor\", \"company\", \"id\")\n       ;\n\n  PRINT yr, L0[L0.@recentEmplr, L0.@allEmplr, L0.@diffCountry, L0.@allCountry]; // api v2\n}",
+    "GSQL > RUN QUERY filterEx([\"person1\",\"person2\"],2016)\n{\n  \"error\": false,\n  \"message\": \"\",\n  \"version\": {\n    \"edition\": \"developer\",\n    \"schema\": 0,\n    \"api\": \"v2\"\n  },\n  \"results\": [{\n    \"L0\": [\n      {\n        \"v_id\": \"person1\",\n        \"attributes\": {\n          \"L0.@diffCountry\": [\"company2\"],\n          \"L0.@recentEmplr\": [\"company1\"],\n          \"L0.@allCountry\": [ \"company1\", \"company2\" ],\n          \"L0.@allEmplr\": [ \"company2\", \"company1\" ]\n        },\n        \"v_type\": \"person\"\n      },\n      {\n        \"v_id\": \"person2\",\n        \"attributes\": {\n          \"L0.@diffCountry\": [\"company1\"],\n          \"L0.@recentEmplr\": [],\n          \"L0.@allCountry\": [ \"company1\", \"company2\" ],\n          \"L0.@allEmplr\": [ \"company2\", \"company1\" ]\n        },\n        \"v_type\": \"person\"\n      }\n    ],\n    \"yr\": 2016\n  }]\n}"
+   ]
+  },
+  {
+   "name": "getAttr",
+   "group": "vertex",
+   "syntax": [
+    "v.getAttr(attrName, attrType)"
+   ],
+   "description": [
+    "Returns the value of a vertex attribute on the vertex."
+   ],
+   "returns": "`attrType`",
+   "parameters": [
+    {
+     "name": "attrName",
+     "description": "The name of an attribute. This can be a query parameter, constant string, or global string variable.",
+     "type": "Base types: STRING, INT, UINT, DATETIME, DOUBLE, FLOAT, BOOL Container types follow the format CONTAINER<TYPE>, where CONTAINER can be LIST or SET and TYPE can be INT, DATETIME, DOUBLE, or STRING. Type conversion is supported between numerical values and between LIST and SET types. For example, a vertex with an attribute of type LIST<INT> can be retrieved as SET<DOUBLE>."
+    },
+    {
+     "name": "attrType",
+     "description": "The type of the attribute value",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "neighborAttribute",
+   "group": "vertex",
+   "syntax": [
+    "v.neighborAttribute( edgeType, targetVertexType, attrName )"
+   ],
+   "description": [
+    "From a vertex, traverses edges of a specified type to its neighbors of a specified type, and returns the set of values for a specified attribute."
+   ],
+   "returns": "`BagAccum<attrType>`",
+   "parameters": [
+    {
+     "name": "edgeType",
+     "description": "The edge type to traverse",
+     "type": "STRING"
+    },
+    {
+     "name": "targetVertexType",
+     "description": "The target vertex type to visit",
+     "type": "STRING"
+    },
+    {
+     "name": "attrName",
+     "description": "An attribute of the target vertex type",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "For the following graph:\n# If v is Jenny\nv.neighborAttribute(\"friendship\", \"person\", \"state\") -> [\"ca\", \"ny\", \"ca\"]"
+   ]
+  },
+  {
+   "name": "neighbors",
+   "group": "vertex",
+   "syntax": [
+    "v.neighbors([edgeType])"
+   ],
+   "description": [
+    "Returns the out-neighbors or undirected neighbors of the vertex. If edge types are provided, it will only return the neighbors connected by the specified edge types."
+   ],
+   "returns": "`BagAccum<VERTEX>`",
+   "parameters": [
+    {
+     "name": "edgeType",
+     "description": "Optional. An edge type or a collections of edge types.",
+     "type": "STRING, SET<STRING>, SetAccum<STRING>, BagAccum<STRING>, ListAccum<STRING>"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "For the following graph:\n# If v is Jenny\nv.neighbors() -> [\"Dan\", \"Amily\", \"Tom\"]"
+   ]
+  },
+  {
+   "name": "outdegree",
+   "group": "vertex",
+   "syntax": [
+    "v.outdegree([edgeType])"
+   ],
+   "description": [
+    "Returns the number of outgoing or undirected edges connected to the vertex. If edge types are provided, it will only return the number of edges of the specified types."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "edgeType",
+     "description": "Optional. An edge type or a collection of edge types.",
+     "type": "STRING, SET<STRING>, SetAccum<STRING>, BagAccum<STRING>, ListAccum<STRING>"
+    }
+   ],
+   "notes": [
+    "Note on outdegree(): The outdegree() function reads a stored metadata value for faster performance instead of traversing the graph. Because of snapshot transaction semantics, `outdegree()` might show an outdated value if there are write transactions running or have just finished. This delay happens because the background rebuild task may not have processed the updates yet. To get an exact count, traverse the edges manually using a `SumAccum`, or use the `neighbors()` function and apply `size()` on the result."
+   ],
+   "examples": [
+    "Vertex alias:\nresult = SELECT v FROM Members.v\n    ACCUM @@num_friends += v.outdegree(\"is_friend\");",
+    "Query-body level:\nCREATE QUERY outdegree_statement(VERTEX v1) {\n  PRINT v1.outdegree();\n}"
+   ]
+  },
+  {
+   "name": "setAttr",
+   "group": "vertex",
+   "syntax": [
+    "v.setAttr( attrName, newValue )"
+   ],
+   "description": [
+    "Sets the specified attribute of a vertex to a new value.",
+    "Type conversion is not allowed for `setAttr()`. The input variable types must match the types in the attribute or the accumulator equivalent.",
+    "For example, suppose you run `v.setAttr(\"emails\", @@emails)`. If `v.emails` is type `SET<STRING>`, `@@emails` must be type `SET<STRING>` or `SetAccum<STRING>`.",
+    "`SetAccum<STRING>` does not support declaring a set or list inside `setAttr()`."
+   ],
+   "returns": "No return value.",
+   "parameters": [
+    {
+     "name": "attrName",
+     "description": "The name of an attribute. This can be a query parameter, constant string, or global string variable.",
+     "type": "STRING"
+    },
+    {
+     "name": "newValue",
+     "description": "The new value for the attribute",
+     "type": "The type of the attribute."
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "getvid",
+   "group": "vertex",
+   "syntax": [
+    "getvid( v )"
+   ],
+   "description": [
+    "Returns the internal ID number of a vertex.",
+    "The internal ID is not the primary ID which the user assigned when creating the vertex. However, there is a 1-to-1 mapping between the external ID (`primary_id`) and internal ID.",
+    "The engine can access the internal ID faster than accessing the external ID, so if a query needs unique values for a large number of vertices, but doesn’t care about particular values, `getvid()` can be a useful option. For example, in many community detection algorithms, we start by assigning every vertex a unique community ID. Then, as the algorithm progresses, some vertices will join the community of one of their neighbors, giving up their current community ID and copying the IDs of their neighbors."
+   ],
+   "returns": "`UINT`",
+   "parameters": [
+    {
+     "name": "v",
+     "description": "A vertex alias.",
+     "type": "Vertex alias"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "Result\nCREATE QUERY getvid_ex () FOR GRAPH socialNet {\nMinAccum<int> @cc_id;       //each vertex's tentative component id\n\n  Start = {person.*};\n  # Initialize: Label each vertex with its own internal ID\n  S = SELECT x FROM Start:x\n      POST-ACCUM\n         x.@cc_id = getvid(x);\n\n  # Community detection steps omitted\n  PRINT Start.@cc_id;\n}",
+    "{\n    \"error\": false,\n    \"message\": \"\",\n    \"version\": {\n    \"edition\": \"developer\",\n    \"schema\": 0,\n    \"api\": \"v2\"\n    },\n    \"results\": [{\"Start\": [\n    {\n    \"v_id\": \"person7\",\n    \"attributes\": {\"Start.@cc_id\": 0},\n    \"v_type\": \"person\"\n    },\n    {\n    \"v_id\": \"person5\",\n    \"attributes\": {\"Start.@cc_id\": 4194304},\n    \"v_type\": \"person\"\n    },\n    {\n    \"v_id\": \"person1\",\n    \"attributes\": {\"Start.@cc_id\": 4194305},\n    \"v_type\": \"person\"\n    },\n    {\n    \"v_id\": \"person4\",\n    \"attributes\": {\"Start.@cc_id\": 11534336},\n    \"v_type\": \"person\"\n    },\n    {\n    \"v_id\": \"person2\",\n    \"attributes\": {\"Start.@cc_id\": 13631488},\n    \"v_type\": \"person\"\n    },\n    {\n    \"v_id\": \"person3\",\n    \"attributes\": {\"Start.@cc_id\": 20971520},\n    \"v_type\": \"person\"\n    },\n    {\n    \"v_id\": \"person8\",\n    \"attributes\": {\"Start.@cc_id\": 22020096},\n    \"v_type\": \"person\"\n    },\n    {\n    \"v_id\": \"person6\",\n    \"attributes\": {\"Start.@cc_id\": 24117248},\n    \"v_type\": \"person\"\n    }\n]}]\n}"
+   ]
+  },
+  {
+   "name": "selectVertex",
+   "group": "vertex",
+   "syntax": [
+    "selectVertex( filepath, vertexIdColumn, vertexTypeColumn, seperator, header)"
+   ],
+   "description": [
+    "Reads a data file that lists particular vertices of the graph and returns the corresponding vertex set.This function can only be used in a vertex set variable declaration statement as a seed set and the vertices in the data file must already be in the graph.The data file must be organized as a table with one or more columns.One column must be for vertex ID.Optionally, another column is for vertex type."
+   ],
+   "returns": "`SET<VERTEX>`",
+   "parameters": [
+    {
+     "name": "filePath",
+     "description": "The absolute file path of the input file to be read. A relative path is not supported.",
+     "type": "STRING"
+    },
+    {
+     "name": "vertexIdColumn",
+     "description": "The vertex ID column position. The index for column positions starts at 0. Therefore, to designate the first column as the ID column, set this parameter to `$0`.",
+     "type": "$ num If header is set to true, $ \"column_name\" is also acceptable."
+    },
+    {
+     "name": "vertexTypeColumn",
+     "description": "The vertex type column position or a specific vertex type.",
+     "type": "$ num If header is set to true,$ \"column_name\" is also acceptable. Alternatively, a vertex type without double quotes."
+    },
+    {
+     "name": "separator",
+     "description": "The column separator character.",
+     "type": "STRING"
+    },
+    {
+     "name": "header",
+     "description": "Whether this file has a header.",
+     "type": "BOO"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "ID,type\nDan,person\nJenny,person\nAmily,person",
+    "CREATE QUERY selectVertexEx(STRING filename) FOR GRAPH socialNet {\n  S1 = {SelectVertex(filename, $\"c1\", $1, \",\", true)};\n  S2 = {SelectVertex(filename, $0, person, \",\", true)};\n  PRINT S1, S2; # Both sets of inputs product the same result\n}",
+    "RUN QUERY selectVertex(\"/home/tigergraph/mydata/selectVertex.csv\")\n{\n    \"S1\": [\n      {\n        \"attributes\": {\n          \"age\": 0,\n          \"gender\": \"female\",\n          \"name\": \"Amily\",\n          \"state\": \"ca\"\n        },\n        \"v_id\": \"Amily\",\n        \"v_type\": \"person\"\n      },\n      {\n        \"attributes\": {\n          \"age\": 1,\n          \"gender\": \"male\",\n          \"name\": \"Dan\",\n          \"state\": \"ny\"\n        },\n        \"v_id\": \"Dan\",\n        \"v_type\": \"person\"\n      },\n      {\n        \"attributes\": {\n          \"age\": 1,\n          \"gender\": \"female\",\n          \"name\": \"Jenny\",\n          \"state\": \"tx\"\n        },\n        \"v_id\": \"Jenny\",\n        \"v_type\": \"person\"\n      }\n    ],\n    \"S2\": [\n      {\n        \"attributes\": {\n          \"age\": 0,\n          \"gender\": \"female\",\n          \"name\": \"Amily\",\n          \"state\": \"ca\"\n        },\n        \"v_id\": \"Amily\",\n        \"v_type\": \"person\"\n      },\n      {\n        \"attributes\": {\n          \"age\": 1,\n          \"gender\": \"male\",\n          \"name\": \"Dan\",\n          \"state\": \"ny\"\n        },\n        \"v_id\": \"Dan\",\n        \"v_type\": \"person\"\n      },\n      {\n        \"attributes\": {\n          \"age\": 1,\n          \"gender\": \"female\",\n          \"name\": \"Jenny\",\n          \"state\": \"tx\"\n        },\n        \"v_id\": \"Jenny\",\n        \"v_type\": \"person\"\n      }\n    ]\n  }\n]"
+   ]
+  },
+  {
+   "name": "to_vertex",
+   "group": "vertex",
+   "syntax": [
+    "to_vertex( id, vertex_type )"
+   ],
+   "description": [
+    "Returns a vertex from a string ID and vertex type. If a vertex with the provided ID and type does not exist, the function will throw a run-time error."
+   ],
+   "returns": "`VERTEX`",
+   "parameters": [
+    {
+     "name": "id",
+     "description": "The ID of a vertex",
+     "type": "STRING"
+    },
+    {
+     "name": "vertex_type",
+     "description": "The type of the vertex",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "CREATE QUERY to_vertex_test (STRING uid, STRING vtype) FOR GRAPH social {\n  VERTEX v;\n\n  v = to_vertex (uid, vtype);\t\t\t# to_vertex assigned to a vertex variable\n  PRINT v;\t\t\t\t\t\t\t\t# vertex variable -> only vertex id is printed\n}",
+    "GSQL > RUN QUERY to_vertex_test(\"Dan\", \"person\")\n{\n  \"error\": false,\n  \"message\": \"\",\n  \"version\": {\n    \"schema\": 1,\n    \"edition\": \"enterprise\",\n    \"api\": \"v2\"\n  },\n  \"results\": [{\"v\": \"Dan\"}]\n}"
+   ]
+  },
+  {
+   "name": "to_vertex_set",
+   "group": "vertex",
+   "syntax": [
+    "to_vertex_set( id_set, vertex_type)"
+   ],
+   "description": [
+    "Returns a vertex set from a set or bag of string IDs and a vertex type. If there are invalid IDs in the set, those IDs will be skipped and the response will contain a warning message. If the vertex type does not exist, the function will throw a run-time error."
+   ],
+   "returns": "`SET<VERTEX>`",
+   "parameters": [
+    {
+     "name": "id_set",
+     "description": "A set of vertex IDs",
+     "type": "SET<STRING>, BAG<STRING>"
+    },
+    {
+     "name": "vertex_type",
+     "description": "The type of the vertices",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "CREATE QUERY to_vertex_set_test (SET<STRING> uids, STRING vtype) FOR GRAPH social {\n\n  S2 = to_vertex_set (uids, vtype); # to_vertex_set assigned to a vertex set variable\n  PRINT S2;\t\t\t\t\t\t\t\t# vertex set variable-> full details printed\n}",
+    "GSQL > run query to_vertex_set_test([\"Dan\", \"Amily\", \"Jeff\"], \"person\")\n{\n  \"error\": false,\n  \"message\": \"Runtime Warning: 1 ids are invalid person vertex ids.\",\n  \"version\": {\n    \"schema\": 1,\n    \"edition\": \"enterprise\",\n    \"api\": \"v2\"\n  },\n  \"results\": [{\"S2\": [\n    {\n      \"v_id\": \"Amily\",\n      \"attributes\": {\n        \"gender\": \"female\",\n        \"name\": \"Amily\",\n        \"state\": \"ca\",\n        \"age\": 0\n      },\n      \"v_type\": \"person\"\n    },\n    {\n      \"v_id\": \"Dan\",\n      \"attributes\": {\n        \"gender\": \"male\",\n        \"name\": \"Dan\",\n        \"state\": \"ny\",\n        \"age\": 1\n      },\n      \"v_type\": \"person\"\n    }\n  ]}]\n}"
+   ]
+  },
+  {
+   "name": "elementId",
+   "group": "vertex",
+   "syntax": [
+    "elementId(v)"
+   ],
+   "description": [
+    "Returns an internal string id for a vertex or edge.",
+    "This internal ID is not the primary ID which the user assigned when creating the vertex. It is guaranteed to remain the same across the same query run, but not across different runs."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "v",
+     "description": "A vertex",
+     "type": "VERTEX"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "CREATE QUERY elementId_example () FOR GRAPH socialNet {\n  MinAccum<STRING> @@min_id;       //each vertex's tentative string id\n\n  Start = {person.*};\n  # Gather a sample element id for demonstration purposes\n  S = SELECT x FROM Start:x\n      POST-ACCUM\n         @@min_id += elementId(x);\n\n  PRINT @@min_id;\n}",
+    "GSQL > run query elementId_example()\n{\n  \"version\": {\n    \"edition\": \"enterprise\",\n    \"api\": \"v2\",\n    \"schema\": 1\n  },\n  \"error\": false,\n  \"message\": \"\",\n  \"results\": [\n    {\n      \"@@min_id\": \"160256\"\n    }\n  ]\n}"
+   ]
+  },
+  {
+   "name": "getAttr",
+   "group": "edge",
+   "syntax": [
+    "e.getAttr( attrName, attrType )"
+   ],
+   "description": [
+    "Returns the value of an attribute of the edge."
+   ],
+   "returns": "The data type of the attribute itself.",
+   "parameters": [
+    {
+     "name": "attrName",
+     "description": "The name of an attribute. This can be a query parameter, constant string, or global string variable.",
+     "type": "Base types: STRING, INT, UINT, DATETIME, DOUBLE, FLOAT, BOOL Container types follow the format CONTAINER<TYPE>, where CONTAINER can be LIST or SET and TYPE can be INT, DATETIME, DOUBLE, or STRING. Type conversion is supported between numerical values and between LIST and SET types. For example, an edge with an attribute of type LIST<INT> can be retrieved as SET<DOUBLE>."
+    },
+    {
+     "name": "attrType",
+     "description": "The type of the attribute",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "If we have the following edge:\n{\n      \"e_type\": \"User_Video\",\n      \"directed\": false,\n      \"from_id\": \"0\",\n      \"from_type\": \"VidUser\",\n      \"to_id\": \"2\",\n      \"to_type\": \"Video\",\n      \"attributes\": {\n        \"rating\": 5.2,\n        \"date_time\": 0\n}",
+    "Assume the alias of the edge is `e`:\ne.getAttr(\"rating\", \"DOUBLE\") -> 5.2"
+   ]
+  },
+  {
+   "name": "isDirected",
+   "group": "edge",
+   "syntax": [
+    "e.isDirected()"
+   ],
+   "description": [
+    "Returns a boolean value indicating whether the edge is directed or undirected."
+   ],
+   "returns": "`BOOL`",
+   "parameters": [],
+   "notes": [
+    "None."
+   ],
+   "examples": []
+  },
+  {
+   "name": "setAttr",
+   "group": "edge",
+   "syntax": [
+    "e.setAttr( attrName, attrNewValue )"
+   ],
+   "description": [
+    "Sets an attribute of an edge to a new value.",
+    "Type conversion is not allowed for `setAttr()`. The input variable types must match the types in the attribute."
+   ],
+   "returns": "No return value.",
+   "parameters": [
+    {
+     "name": "attrName",
+     "description": "The name of the attribute. This can be a query parameter, constant string, or global string variable.",
+     "type": "STRING"
+    },
+    {
+     "name": "attrNewValue",
+     "description": "The new value of the attribute",
+     "type": "The type of the attribute."
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "CREATE QUERY setAttrExample(STRING attr){\n    Current = {v_type.*}\n    S = SELECT s\n            FROM Current:s -(e_type:e) -> v_type:t\n            WHERE t.attribute1 == \"example_value\"\n            ACCUM e.setAttr(attr, TRUE); (1)\n}"
+   ]
+  },
+  {
+   "name": "elementId",
+   "group": "edge",
+   "syntax": [
+    "elementId(e)"
+   ],
+   "description": [
+    "Returns an internal string id for a vertex or edge.",
+    "This internal ID is not the primary ID which the user assigned when creating the edge. It is guaranteed to remain the same across the same query run, but not across different runs."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "e",
+     "description": "An edge",
+     "type": "EDGE"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "CREATE QUERY elementId_example () {\n  MinAccum<STRING> @@min_id;       //each edge's tentative string id\n\n  Start = {Person.*};\n  # Gather a sample element id for demonstration purposes\n  S = SELECT src FROM Start:src - (:e) - (:tgt)\n      ACCUM\n         @@min_id += elementId(e);\n\n  PRINT @@min_id;\n}",
+    "GSQL > run query elementId_example()\n{\n  \"version\": {\n    \"edition\": \"enterprise\",\n    \"api\": \"v2\",\n    \"schema\": 1\n  },\n  \"error\": false,\n  \"message\": \"\",\n  \"results\": [\n    {\n      \"@@min_id\": \"0-2->207878\"\n    }\n  ]\n}"
+   ]
+  },
+  {
+   "name": "containsKey",
+   "group": "jsonobject",
+   "syntax": [
+    "jsonobject.containsKey( keyStr )"
+   ],
+   "description": [
+    "Returns a boolean value indicating whether the JSON object contains a specified key."
+   ],
+   "returns": "`BOOL`",
+   "parameters": [
+    {
+     "name": "keyStr",
+     "description": "A string.",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "If we have the following JSON object represented by the variable `han`:\n{\n    \"name\": \"Han Solo\",\n    \"age\": \"39\",\n    \"occupation\": \"mercenary\"\n}",
+    "Then:\nhan.containsKey(\"name\") -> true\nhan.containsKey(\"isJedi\") -> false"
+   ]
+  },
+  {
+   "name": "getBool",
+   "group": "jsonobject",
+   "syntax": [
+    "jsonobject.getBool( keyStr )"
+   ],
+   "description": [
+    "Returns the boolean value associated with a specified key. If the key provided is associated with a non-boolean value, the function will raise a runtime error."
+   ],
+   "returns": "`BOOL`",
+   "parameters": [
+    {
+     "name": "keyStr",
+     "description": "The key whose value to return",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "If we have the following JSON object represented by the variable `han`:\n{\n    \"name\": \"Han Solo\",\n    \"age\": 39,\n    \"occupation\": \"mercenary\",\n    \"isJedi\": false\n}",
+    "Then:\nhan.getBool(\"isJedi\") -> false"
+   ]
+  },
+  {
+   "name": "getDouble",
+   "group": "jsonobject",
+   "syntax": [
+    "jsonobject.getDouble( keyStr )"
+   ],
+   "description": [
+    "Returns the double value associated with a specified key. If the key provided is associated with a non-double value, the function will raise a runtime error."
+   ],
+   "returns": "`DOUBLE`",
+   "parameters": [
+    {
+     "name": "keyStr",
+     "description": "The key whose value to return",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "getInt",
+   "group": "jsonobject",
+   "syntax": [
+    "jsonobject.getInt( keyStr )"
+   ],
+   "description": [
+    "Returns the integer value associated with a specified key. If the key provided is associated with a non-int value, the function will raise a runtime error."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "keyStr",
+     "description": "The key whose value to return",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "getJsonArray",
+   "group": "jsonobject",
+   "syntax": [
+    "jsonobject.getJsonArray( keyStr )"
+   ],
+   "description": [
+    "Returns the JSON array value associated with a specified key. If the key provided is associated with a value whose type is not JSON array, the function will raise a runtime error."
+   ],
+   "returns": "`JSONARRAY`",
+   "parameters": [
+    {
+     "name": "keyStr",
+     "description": "The key whose value to return",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "getJsonObject",
+   "group": "jsonobject",
+   "syntax": [
+    "jsonobject.getJsonObject( keyStr )"
+   ],
+   "description": [
+    "Returns the value associated with a specified key. If the key provided is associated with value whose type is not JSON object, the function will raise a runtime error."
+   ],
+   "returns": "`JSONOBJECT`",
+   "parameters": [
+    {
+     "name": "keyStr",
+     "description": "The key whose value to return",
+     "type": "STRING"
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "getString",
+   "group": "jsonobject",
+   "syntax": [
+    "jsonobject.getString( keyStr )"
+   ],
+   "description": [
+    "Returns the string value associated with a specified key. If the key provided is associated with a non-string value, the function will raise a runtime error."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "keyStr",
+     "description": "The key whose value to return",
+     "type": "STRING"
+    }
+   ],
+   "notes": [
+    "Copyright © 2026 TigerGraph"
+   ],
+   "examples": []
+  },
+  {
+   "name": "getBool",
+   "group": "jsonarray",
+   "syntax": [
+    "jsonarray.getBool( idx )"
+   ],
+   "description": [
+    "Returns the boolean value at a specified index."
+   ],
+   "returns": "",
+   "parameters": [],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "getDouble",
+   "group": "jsonarray",
+   "syntax": [
+    "jsonarray.getDouble( idx )"
+   ],
+   "description": [
+    "Returns the double at a specified index."
+   ],
+   "returns": "",
+   "parameters": [],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "getInt",
+   "group": "jsonarray",
+   "syntax": [
+    "jsonarray.getInt( idx )"
+   ],
+   "description": [
+    "Returns the integer value at a specified index."
+   ],
+   "returns": "",
+   "parameters": [],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "getJsonArray",
+   "group": "jsonarray",
+   "syntax": [
+    "jsonarray.getJSONArray( idx )"
+   ],
+   "description": [
+    "Returns the JSONArray value at a specified index."
+   ],
+   "returns": "",
+   "parameters": [],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "getJsonObject",
+   "group": "jsonarray",
+   "syntax": [
+    "jsonarray.getJsonObject( idx )"
+   ],
+   "description": [
+    "Returns the JSONOBJECT value at a specified index."
+   ],
+   "returns": "",
+   "parameters": [],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "getString",
+   "group": "jsonarray",
+   "syntax": [
+    "jsonarray.getString( idx )"
+   ],
+   "description": [
+    "Returns the boolean value at a specified index."
+   ],
+   "returns": "",
+   "parameters": [],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "size",
+   "group": "jsonarray",
+   "syntax": [
+    "jsonarray.size()"
+   ],
+   "description": [
+    "Returns the size of the array."
+   ],
+   "returns": "",
+   "parameters": [],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "add",
+   "group": "loading",
+   "syntax": [],
+   "description": [
+    "This function accumulates all the received values in a column matching the same ID."
+   ],
+   "returns": "",
+   "parameters": [],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "and",
+   "group": "loading",
+   "syntax": [],
+   "description": [
+    "This function checks if all values received are `true`. If they are, the function returns true. Otherwise, the function returns false."
+   ],
+   "returns": "",
+   "parameters": [],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "ignore_if_exists",
+   "group": "loading",
+   "syntax": [],
+   "description": [
+    "This function ensures that vertex attributes retain their values if they have an existing value."
+   ],
+   "returns": "",
+   "parameters": [],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "max",
+   "group": "loading",
+   "syntax": [
+    "REDUCE( max (arg) )"
+   ],
+   "description": [
+    "The reducer function `max()` aggregates all values corresponding to the same ID and returns the maximum value."
+   ],
+   "returns": "",
+   "parameters": [],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "min",
+   "group": "loading",
+   "syntax": [
+    "REDUCE( min (arg) )"
+   ],
+   "description": [
+    "The reducer function `min()` aggregates all values corresponding to the same ID and returns the minimum value."
+   ],
+   "returns": "",
+   "parameters": [],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "or",
+   "group": "loading",
+   "syntax": [],
+   "description": [
+    "This function checks if any tokens received can be interpreted as a boolean `false`. If any can, the function returns false. Otherwise, the function returns true."
+   ],
+   "returns": "",
+   "parameters": [],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "flatten",
+   "group": "loading",
+   "syntax": [
+    "flatten (column_to_be_split, group_separator, number_of_sub_fields)",
+    "flatten (column_to_be_split, group_separator, sub_field_separator, number_of_sub_fields)"
+   ],
+   "description": [
+    "This function splits a multi-value field into a set of records. Those records are first stored in a temporary table, and then the temporary table can be loaded into vertices and/or edges. Only one flatten function is allowed in one temp table destination clause."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "column_to_be_split",
+     "description": "Required. The column to be split into multiple records.",
+     "type": ""
+    },
+    {
+     "name": "group_separator",
+     "description": "Required. The separator to split the value in the column by.",
+     "type": ""
+    },
+    {
+     "name": "number_of_sub_fields",
+     "description": "Required. When you only provide three parameters to perform a one-level split on the column, the value of this parameter must be set to 1. If you supply four parameters, the function performs two levels of splitting on a column. It first splits the column into groups by the group separator, and then splits the group into multiple fields by the subfield separator.",
+     "type": ""
+    },
+    {
+     "name": "column_to_be_split",
+     "description": "Required. The column to be split into multiple records.",
+     "type": ""
+    },
+    {
+     "name": "group_separator",
+     "description": "Required. The separator to split the value in the column by.",
+     "type": ""
+    },
+    {
+     "name": "sub_field_separator",
+     "description": "Optional. The separator to split the group obtained from separating the column value by the group separator.",
+     "type": ""
+    },
+    {
+     "name": "number_of_sub_fields",
+     "description": "Required. The number of subfields in a group.",
+     "type": ""
+    }
+   ],
+   "notes": [
+    "The function can flatten a column one or two levels deep depending on the parameters. If you supply three parameters, the function splits the entry in the column into multiple records by the specified separator."
+   ],
+   "examples": []
+  },
+  {
+   "name": "flatten_json_array",
+   "group": "loading",
+   "syntax": [
+    "flatten_json_array(array_name)",
+    "flatten_json_array (array_name, sub_obj_1, …, sub_obj_n)",
+    "flatten_json_array (column_name, sub_obj_1, …, sub_obj_n)"
+   ],
+   "description": [
+    "This function parses a JSON array of primitive values or JSON objects, as well as JSON objects in a column of a CSV file.",
+    "When it flattens a JSON array of primitive values, it returns all the values in the array, each value creating its own record. When it flattens a JSON array of JSON objects, it returns all the values of fields specified in the parameters; each parameter is a column, and each object creates a record."
+   ],
+   "returns": "",
+   "parameters": [
+    {
+     "name": "array_name",
+     "description": "Required. The name of the array field in the JSON object. When it flattens an array of JSON objects, it takes multiple parameters:",
+     "type": ""
+    },
+    {
+     "name": "array_name",
+     "description": "Required. The name of the array field in the JSON object.",
+     "type": ""
+    },
+    {
+     "name": "sub_obj_1…​n",
+     "description": "Required. The name of the fields in the JSON object. When it flattens a of JSON object in a CSV column, it takes multiple parameters:",
+     "type": ""
+    },
+    {
+     "name": "array_name",
+     "description": "Required. The name of the column containing the JSON object values.",
+     "type": ""
+    },
+    {
+     "name": "sub_obj_1…​n",
+     "description": "Required. The name of the fields in the JSON object.",
+     "type": ""
+    }
+   ],
+   "notes": [
+    "The function can be used to flatten a JSON array of primitive values (strings, numbers and booleans), a JSON array of JSON objects or a JSON object in a CSV file.",
+    "When it flattens an array of primitive values, it only takes one parameter:"
+   ],
+   "examples": []
+  },
+  {
+   "name": "gsql_concat",
+   "group": "loading",
+   "syntax": [
+    "gsql_concat(string1, string2,…,stringN)"
+   ],
+   "description": [
+    "Concatenates all provided strings in order."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "string1, string2, string_n",
+     "description": "Required. The strings to add together.",
+     "type": ""
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "For the following CSV file:\nName,DOB\nSam,1994-05-01\nChris,1985-12-25\nPat,1996-11-13\nJoe,1975-11-02\nTaylor,1988-04-25",
+    "For the first row, the token function produces the following result:\ngsql_concat($0, $1) -> \"Sam1994-05-01\""
+   ]
+  },
+  {
+   "name": "gsql_current_time_epoch",
+   "group": "loading",
+   "syntax": [
+    "gsql_current_time_epoch(0)"
+   ],
+   "description": [
+    "Returns the current time in Unix epoch seconds."
+   ],
+   "returns": "`UINT` Copyright © 2026 TigerGraph",
+   "parameters": [],
+   "notes": [
+    "The function takes one `INT` parameter. This parameter is actually ignored, but by convention, set its value to 0."
+   ],
+   "examples": []
+  },
+  {
+   "name": "gsql_day",
+   "group": "loading",
+   "syntax": [
+    "gsql_month(timestamp)"
+   ],
+   "description": [
+    "Returns the day number (1-31) from a timestamp.",
+    "The timestamp parameter should be in one of the following formats:",
+    "`\"%Y-%m-%d %H:%M:%S\"`",
+    "`\"%Y/%m/%d %H:%M:%S\"`",
+    "`\"%Y-%m-%dT%H:%M:%S.000z\"`",
+    "Text after the dot `.` is ignored",
+    "`%Y` is a four-digit year. `%m` is the month number between 1 and 12. `%d` is the day number between 1 and 31."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "timestamp",
+     "description": "Required. A timestamp.",
+     "type": ""
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "gsql_year(\"2013-05-09 23:56:52\") -> 9"
+   ]
+  },
+  {
+   "name": "gsql_day_epoch",
+   "group": "loading",
+   "syntax": [
+    "gsql_day_epoch(epoch)"
+   ],
+   "description": [
+    "Returns the day number (1 - 31) from a Unix epoch time value."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "epoch",
+     "description": "Required. A Unix epoch time value.",
+     "type": ""
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "gsql_year_epoch(1657327158) -> 9"
+   ]
+  },
+  {
+   "name": "gsql_find",
+   "group": "loading",
+   "syntax": [
+    "gsql_find(str, substr)"
+   ],
+   "description": [
+    "Returns the start index of the substring within the string. If it is not found, then return -1."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "The string in which to find the start index of the substring.",
+     "type": ""
+    },
+    {
+     "name": "substr",
+     "description": "The substring whose start index to find in the given string.",
+     "type": ""
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "gsql_find(\"abcd\", \"bcd\") -> 1"
+   ]
+  },
+  {
+   "name": "gsql_length",
+   "group": "loading",
+   "syntax": [
+    "gsql_length(str)"
+   ],
+   "description": [
+    "Returns the length of a string."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "The string whose length to return.",
+     "type": ""
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "gsql_length(\"abcd\") -> 4"
+   ]
+  },
+  {
+   "name": "gsql_lower",
+   "group": "loading",
+   "syntax": [
+    "gsql_lower(in_string)"
+   ],
+   "description": [
+    "Returns the input string with the English alphabet letters converted to lowercase."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "in_string",
+     "description": "The input string to capitalize.",
+     "type": ""
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "gsql_lower(\"ABCD\") -> \"abcd\""
+   ]
+  },
+  {
+   "name": "gsql_ltrim",
+   "group": "loading",
+   "syntax": [
+    "gsql_ltrim(in_string)"
+   ],
+   "description": [
+    "Trims leading whitespace from the input string."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "in_string",
+     "description": "Required. The string whose leading whitespace to trim.",
+     "type": ""
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "gsql_trim(\"  hello world  \") -> \"hello world  \""
+   ]
+  },
+  {
+   "name": "gsql_month",
+   "group": "loading",
+   "syntax": [
+    "gsql_month(timestamp)"
+   ],
+   "description": [
+    "Returns the month number (1-12) from a timestamp.",
+    "The timestamp parameter should be in one of the following formats:",
+    "`\"%Y-%m-%d %H:%M:%S\"`",
+    "`\"%Y/%m/%d %H:%M:%S\"`",
+    "`\"%Y-%m-%dT%H:%M:%S.000z\"`",
+    "Text after the dot `.` is ignored",
+    "`%Y` is a four-digit year. `%m` is the month number between 1 and 12. `%d` is the day number between 1 and 31."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "timestamp",
+     "description": "Required. A timestamp.",
+     "type": ""
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "gsql_year(\"2013-05-09 23:56:52\") -> 5"
+   ]
+  },
+  {
+   "name": "gsql_month_epoch",
+   "group": "loading",
+   "syntax": [
+    "gsql_month_epoch(epoch)"
+   ],
+   "description": [
+    "Returns the month number (1 - 12) from a Unix epoch time value."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "epoch",
+     "description": "Required. A Unix epoch time value.",
+     "type": ""
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "gsql_year_epoch(1657327158) -> 7"
+   ]
+  },
+  {
+   "name": "gsql_regex_match",
+   "group": "loading",
+   "syntax": [
+    "gsql_regex_match(str, regex)"
+   ],
+   "description": [
+    "Returns true if the given string token matches the given regex token and false otherwise."
+   ],
+   "returns": "`BOOL`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "The string to match against the regex.",
+     "type": ""
+    },
+    {
+     "name": "regex",
+     "description": "The regex used to match the string.",
+     "type": ""
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "gsql_regex_match(\"subject\",\"(sub)(.*)\") -> TRUE"
+   ]
+  },
+  {
+   "name": "gsql_regex_replace",
+   "group": "loading",
+   "syntax": [
+    "gsql_regex_replace(str, regex, replace_substr)"
+   ],
+   "description": [
+    "Returns the string resulting from replacing all substrings in the input string that match the given regex token with the substitute string."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "Required. The original string.",
+     "type": ""
+    },
+    {
+     "name": "regex",
+     "description": "Required. The regex for the original string to match against.",
+     "type": ""
+    },
+    {
+     "name": "replace_substr",
+     "description": "Required. The substring to replace all instances of substrings that match the provided regex.",
+     "type": ""
+    }
+   ],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "gsql_replace",
+   "group": "loading",
+   "syntax": [
+    "gsql_replace(str, old_token, new_token [, max])"
+   ],
+   "description": [
+    "Replaces all occurrences of a token (substring) in a string with a new token. If a max count is provided, there can only be up to that many replacements starting from the left side of the string."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "Required. The original string.",
+     "type": ""
+    },
+    {
+     "name": "old_token",
+     "description": "Required. The token in the original string to replace.",
+     "type": ""
+    },
+    {
+     "name": "new_token",
+     "description": "Required. The new token to replace the original token.",
+     "type": ""
+    },
+    {
+     "name": "max",
+     "description": "Optional. The maximum number of occurrences that the old token can be replaced.",
+     "type": ""
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "gsql_replace(\"hello world\", l, i, 2) -> \"heiio world\""
+   ]
+  },
+  {
+   "name": "gsql_reverse",
+   "group": "loading",
+   "syntax": [
+    "gsql_reverse(in_string)"
+   ],
+   "description": [
+    "Returns a string with the characters in the reverse order of the input string."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "in_string",
+     "description": "Required. The string to reverse.",
+     "type": ""
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "For the following CSV file:\nName,DOB\nSam,1994-05-01\nChris,1985-12-25\nPat,1996-11-13\nJoe,1975-11-02\nTaylor,1988-04-25",
+    "For the first row, the token function would produce the following result:\ngsql_reverse($\"Name\") -> \"maS\""
+   ]
+  },
+  {
+   "name": "gsql_rtrim",
+   "group": "loading",
+   "syntax": [
+    "gsql_rtrim(in_string)"
+   ],
+   "description": [
+    "Trims trailing whitespace from the input string."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "in_string",
+     "description": "Required. The string whose trailing whitespace to trim.",
+     "type": ""
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "gsql_rtrim(\"  hello world  \") -> \"  hello world\""
+   ]
+  },
+  {
+   "name": "gsql_substring",
+   "group": "loading",
+   "syntax": [
+    "gsql_substring(str, begin_index [, length])"
+   ],
+   "description": [
+    "Returns the substring of a string beginning at a specified index. Optionally, you can specify a length for the substring."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "str",
+     "description": "Required. The string from which to obtain substring.",
+     "type": ""
+    },
+    {
+     "name": "begin_index",
+     "description": "Required. The index of the first character to include in the returned substring.",
+     "type": ""
+    },
+    {
+     "name": "length",
+     "description": "Optional. The length of the substring. If the parameter is not specified, the substring goes from the beginning index to the end of the original string.",
+     "type": ""
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "For the following CSV file:\nName,DOB\nTaylor,1988-04-25",
+    "The function returns the following results:\ngsql_substring($\"Name\", 1, 3) -> \"ayl\""
+   ]
+  },
+  {
+   "name": "gsql_to_bool",
+   "group": "loading",
+   "syntax": [
+    "gsql_to_bool(in_string)"
+   ],
+   "description": [
+    "Returns true if the input string is either \"t\" or \"true\" (case-insensitive) and returns false if otherwise."
+   ],
+   "returns": "`BOOL`",
+   "parameters": [
+    {
+     "name": "in_string",
+     "description": "The input string.",
+     "type": ""
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "gsql_to_bool(\"true\") -> TRUE\ngsql_to_bool(\"abc\") -> FALSE"
+   ]
+  },
+  {
+   "name": "gsql_to_int",
+   "group": "loading",
+   "syntax": [
+    "gsql_to_int(in_string)"
+   ],
+   "description": [
+    "Converts the string representation of an integer into an integer.",
+    "If the input string is the string representation of an int, the function returns that integer.",
+    "If the input string is the string representation of a float, the function returns that number cast as an integer."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "in_string",
+     "description": "The string representation of an integer.",
+     "type": ""
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "gsql_to_int(\"120\") -> 120\ngsql_to_int(\"-123\") -> -123"
+   ]
+  },
+  {
+   "name": "gsql_to_uint",
+   "group": "loading",
+   "syntax": [
+    "gsql_to_uint(in_string)"
+   ],
+   "description": [
+    "Converts the string representation of an unsigned integer to an unsigned integer.",
+    "If the input string is the string representation of an unsigned int, the function returns that integer.",
+    "If the input string is the string representation of a non-negative float, the function returns that number cast as an int."
+   ],
+   "returns": "`UINT`",
+   "parameters": [
+    {
+     "name": "in_string",
+     "description": "The input string representation of an unsigned integer.",
+     "type": ""
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "gsql_to_uint(\"15\") -> 15"
+   ]
+  },
+  {
+   "name": "gsql_trim",
+   "group": "loading",
+   "syntax": [
+    "gsql_trim(in_string)"
+   ],
+   "description": [
+    "Trims whitespace from the beginning and end of the input string."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "in_string",
+     "description": "Required. The string whose leading and trailing whitespace to trim.",
+     "type": ""
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "gsql_trim(\"  hello world  \") -> \"hello world\""
+   ]
+  },
+  {
+   "name": "gsql_ts_to_epoch_seconds",
+   "group": "loading",
+   "syntax": [
+    "gsql_ts_to_epoch_seconds(timestamp)"
+   ],
+   "description": [
+    "Converts a timestamp in canonical string format to Unix epoch time, which is the number of seconds since Jan 1, 1970 00:00.",
+    "In 4.2.1, two new timestamp conversion functions are available for loading jobs, offering different behaviors for date handling, especially for dates prior to 1970: gsql_ts_to_epoch_seconds_legacy() and gsql_ts_to_epoch_seconds_signed()."
+   ],
+   "returns": "`UINT` Returns the number of seconds since `1970-01-01 00:00:00` for valid timestamps within the supported range. Throws an exception if the timestamp is invalid or before `1970-01-01 00:00:00`.",
+   "parameters": [
+    {
+     "name": "timestamp",
+     "description": "Required. The timestamp to convert to Unix epoch time. The timestamp parameter should be in one of the following formats: `\"%Y-%m-%d %H:%M:%S\"` `\"%Y/%m/%d %H:%M:%S\"` `\"%Y-%m-%dT%H:%M:%S.000z\"` Text after the dot `.` is ignored",
+     "type": ""
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "gsql_ts_to_epoch_seconds(\"2022-06-30 22-08-28\") -> 1656652105"
+   ]
+  },
+  {
+   "name": "gsql_ts_to_epoch_seconds_legacy",
+   "group": "loading",
+   "syntax": [
+    "gsql_ts_to_epoch_seconds_legacy(timestamp, defaultTimestamp = 0)"
+   ],
+   "description": [
+    "Converts a timestamp in canonical string format to Unix epoch time (seconds since `Jan 1, 1970`). If the timestamp is invalid or earlier than `1970-01-01 00:00:00`, the function returns a user-specified value (0 by default), ensuring backward compatibility and preventing exceptions.",
+    "We also have another timestamp function, gsql_ts_to_epoch_seconds(), which converts a timestamp to Unix epoch time (seconds since Jan 1st, 1970) and throws an exception instead of returning a user-specified value, if the input is not valid. For broader date range support, consider gsql_ts_to_epoch_seconds_signed()."
+   ],
+   "returns": "`uint64_t` Returns the epoch seconds for valid timestamps between `1970-01-01 00:00:00` and `9999-12-31 23:59:59`. Returns `defaultTimestamp` for abnormal times (pre-1970 or invalid).",
+   "parameters": [
+    {
+     "name": "timestamp",
+     "description": "Required. The timestamp to convert to Unix epoch time. The timestamp parameter should be in one of the following formats: `\"%Y-%m-%d %H:%M:%S\"` `\"%Y/%m/%d %H:%M:%S\"` `\"%Y-%m-%dT%H:%M:%S.000z\"` Text after the dot `.` is ignored",
+     "type": ""
+    },
+    {
+     "name": "defaultTimestamp",
+     "description": "Optional. If the timestamp is invalid (e.g., before `Jan 1st, 1970`, or an invalid date format), it returns a user-specified value. The default is `0`.",
+     "type": ""
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "// Example with a valid date after 1970\ngsql_ts_to_epoch_seconds_legacy(\"2022-06-30 22:08:28\") -> 1656652105\n\n// Example with a date before 1970 (returns default 0)\ngsql_ts_to_epoch_seconds_legacy(\"1969-12-31 23:59:59\") -> 0\n\n// Example with a date before 1970 and a custom default timestamp\ngsql_ts_to_epoch_seconds_legacy(\"1969-12-31 23:59:59\", 999) -> 999\n\n// Example with an invalid date (returns default 0) gsql_ts_to_epoch_seconds_legacy(\"2022-02-30 00:00:00\") -> 0"
+   ]
+  },
+  {
+   "name": "gsql_ts_to_epoch_seconds_signed",
+   "group": "loading",
+   "syntax": [
+    "gsql_ts_to_epoch_seconds_signed(timestamp, defaultTimestamp = 0)"
+   ],
+   "description": [
+    "Converts a timestamp in canonical string format to Unix epoch time (seconds before or after `Jan 1, 1970`). It supports dates from `0001-01-01` to `9999-12-31`, returning negative epoch values for dates prior to 1970. Invalid or out-of-range dates (e.g., `Feb 30th`) return `defaultTimestamp`.",
+    "We also have another timestamp function, gsql_ts_to_epoch_seconds(), which converts a timestamp to Unix epoch time (seconds since Jan 1st, 1970) and returns an unsigned integer (`UINT`). For backward compatibility behavior (3.10.3 or earlier), consider gsql_ts_to_epoch_seconds_legacy()."
+   ],
+   "returns": "`int64_t` Returns the epoch seconds for valid timestamps between `0001-01-01 00:00:00` and `9999-12-31 23:59:59`. Returns `defaultTimestamp` for invalid times (impossible dates or out-of-range).",
+   "parameters": [
+    {
+     "name": "timestamp",
+     "description": "Required. The timestamp to convert to Unix epoch time. The timestamp parameter should be in one of the following formats: `\"%Y-%m-%d %H:%M:%S\"` `\"%Y/%m/%d %H:%M:%S\"` `\"%Y-%m-%dT%H:%M:%S.000z\"` Text after the dot `.` is ignored",
+     "type": ""
+    },
+    {
+     "name": "defaultTimestamp",
+     "description": "Optional. If the timestamp is invalid (e.g., out of range or structurally incorrect), it returns the provided default value. The default is `0`.",
+     "type": ""
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "// Example with a valid date after 1970\ngsql_ts_to_epoch_seconds_signed(\"2022-06-30 22:08:28\") -> 1656652105\n\n// Example with a date before 1970 (returns a negative epoch value)\ngsql_ts_to_epoch_seconds_signed(\"1969-12-31 23:59:59\") -> -1\n\n// Example with a date from year 0001\ngsql_ts_to_epoch_seconds_signed(\"0001-01-01 00:00:00\") -> -62135596800\n\n// Example with an invalid date (returns default 0) gsql_ts_to_epoch_seconds_signed(\"2022-02-30 00:00:00\") -> 0"
+   ]
+  },
+  {
+   "name": "gsql_upper",
+   "group": "loading",
+   "syntax": [
+    "gsql_upper(in_string)"
+   ],
+   "description": [
+    "Returns the input string with the English alphabet letters converted to uppercase."
+   ],
+   "returns": "`STRING`",
+   "parameters": [
+    {
+     "name": "in_string",
+     "description": "The input string to capitalize.",
+     "type": ""
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "gsql_upper(\"abcd\") -> \"ABCD\""
+   ]
+  },
+  {
+   "name": "gsql_uuid_v4",
+   "group": "loading",
+   "syntax": [
+    "gsql_uuid_v4()"
+   ],
+   "description": [
+    "Returns a version-4 universally unique identifier (UUID)."
+   ],
+   "returns": "`STRING`",
+   "parameters": [],
+   "notes": [
+    "None."
+   ],
+   "examples": [
+    "The function doesn’t take any arguments and returns a version-4 UUID:\ngsql_uuid_v4() -> \"3e9ca3e6-5ad4-4a32-9cfc-9f53367bd420\""
+   ]
+  },
+  {
+   "name": "gsql_year",
+   "group": "loading",
+   "syntax": [
+    "gsql_year(timestamp)"
+   ],
+   "description": [
+    "Returns 4-digit year from timestamp.",
+    "The timestamp parameter should be in one of the following formats:",
+    "`\"%Y-%m-%d %H:%M:%S\"`",
+    "`\"%Y/%m/%d %H:%M:%S\"`",
+    "`\"%Y-%m-%dT%H:%M:%S.000z\"`",
+    "Text after the dot `.` is ignored",
+    "`%Y` is a four-digit year. `%m` is the month number between 1 and 12. `%d` is the day number between 1 and 31."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "timestamp",
+     "description": "Required. A timestamp.",
+     "type": ""
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "gsql_year(\"2013-05-09 23:56:52\") -> 2013"
+   ]
+  },
+  {
+   "name": "gsql_year_epoch",
+   "group": "loading",
+   "syntax": [
+    "gsql_year_epoch(epoch)"
+   ],
+   "description": [
+    "Returns 4-digit year from a Unix epoch time value."
+   ],
+   "returns": "`INT`",
+   "parameters": [
+    {
+     "name": "epoch",
+     "description": "Required. A Unix epoch time value.",
+     "type": ""
+    }
+   ],
+   "notes": [],
+   "examples": [
+    "gsql_year_epoch(1657327158) -> 2022"
+   ]
+  },
+  {
+   "name": "split",
+   "group": "loading",
+   "syntax": [
+    "split(column, separator)",
+    "split(column, separator, [sub_separator])"
+   ],
+   "description": [
+    "The SPLIT() function reads a compound token and splits it into a collection of elements, to form a set or list collection, or a map."
+   ],
+   "returns": "",
+   "parameters": [
+    {
+     "name": "column",
+     "description": "Required. The index or the name of the column to split.",
+     "type": ""
+    },
+    {
+     "name": "separator",
+     "description": "Required. The separator by which to split the values in the column. When it loads data into a map attribute:",
+     "type": ""
+    },
+    {
+     "name": "column",
+     "description": "Required. The index or the name of the column to split.",
+     "type": ""
+    },
+    {
+     "name": "separator",
+     "description": "Required. The separator that splits the key-value pairs in the column. For example. if the key-value pair in the column is formatted like this: `key:value`, then the separator is `:`.",
+     "type": ""
+    },
+    {
+     "name": "sub_separator",
+     "description": "Required only when the column has multiple key-value pairs separated by a sub separator. For example, if the column has values such as `key1:value1,key2:value2`, then `sub_separator` is `,`.",
+     "type": ""
+    }
+   ],
+   "notes": [
+    "The function can split a column to load to a map attribute or a set/list attribute.",
+    "When it loads data to a set/list attribute:"
+   ],
+   "examples": []
+  },
+  {
+   "name": "concat",
+   "group": "loading",
+   "syntax": [
+    "concat( string1, string2)"
+   ],
+   "description": [
+    "Concatenates two strings. This is a token function for the `WHERE` clause of a `LOAD` statement only. It cannot be used in a destination clause."
+   ],
+   "returns": "",
+   "parameters": [],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "gsql_is_false",
+   "group": "loading",
+   "syntax": [
+    "gsql_is_false( token )"
+   ],
+   "description": [
+    "Returns true if the input token is either \"f\" or \"false\" (case-insensitive). Returns false otherwise."
+   ],
+   "returns": "",
+   "parameters": [],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "gsql_is_not_empty",
+   "group": "loading",
+   "syntax": [
+    "gsql_is_not_empty( token )"
+   ],
+   "description": [
+    "Returns true if a string is empty after removing all white space. Returns false otherwise. This function does not alter the input the token."
+   ],
+   "returns": "",
+   "parameters": [],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "gsql_is_true",
+   "group": "loading",
+   "syntax": [
+    "gsql_is_true( token )"
+   ],
+   "description": [
+    "Returns true if the input token is either \"t\" or \"true\" (case-insensitive). Returns false otherwise."
+   ],
+   "returns": "",
+   "parameters": [],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "gsql_token_equal",
+   "group": "loading",
+   "syntax": [
+    "gsql_token_equal( string1, string2 )"
+   ],
+   "description": [
+    "Returns true if two strings are exactly the same, case-sensitive. Returns false if otherwise."
+   ],
+   "returns": "",
+   "parameters": [],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "gsql_token_ignore_case_equal",
+   "group": "loading",
+   "syntax": [
+    "gsql_token_ignore_case_equal( string1, string2 )"
+   ],
+   "description": [
+    "Returns true if two strings are exactly the same, case-insensitive. Returns false if otherwise."
+   ],
+   "returns": "",
+   "parameters": [],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "to_float",
+   "group": "loading",
+   "syntax": [
+    "to_float( token )"
+   ],
+   "description": [
+    "Converts the string token to a float. This is a token function for the `WHERE` clause of a `LOAD` statement only. It cannot be used in a destination clause.",
+    "This function is necessary when you need to filter floating point values during loading, as all tokens are treated as strings."
+   ],
+   "returns": "",
+   "parameters": [],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "to_int",
+   "group": "loading",
+   "syntax": [
+    "to_int( token )"
+   ],
+   "description": [
+    "Converts the string token to an integer. This is a token function for the `WHERE` clause of a `LOAD` statement only. It cannot be used in a destination clause.",
+    "This function is necessary when you need to filter integer values during loading, as all tokens are treated as strings."
+   ],
+   "returns": "",
+   "parameters": [],
+   "notes": [],
+   "examples": []
+  },
+  {
+   "name": "token_len",
+   "group": "loading",
+   "syntax": [
+    "token_len( token )"
+   ],
+   "description": [
+    "Returns the length of a string. This is a token function for the `WHERE` clause of a `LOAD` statement only. It cannot be used in a destination clause."
+   ],
+   "returns": "",
+   "parameters": [],
+   "notes": [],
+   "examples": []
+  }
+ ],
+ "accumulators": [
+  {
+   "names": [
+    "SumAccum"
+   ],
+   "description": [
+    "The `SumAccum` type computes and stores the cumulative sum of numeric values or the cumulative concatenation of text values. The output of a `SumAccum` is a single numeric or string value. `SumAccum` variables operate on values of type `INT`, `UINT`, `FLOAT`, `DOUBLE`, or `STRING` only.",
+    "The `+=` operator updates the accumulator’s state. For `INT`, `FLOAT`, and `DOUBLE` types, `+= arg` performs a numeric addition, while for the `STRING` value type `+= arg` concatenates `arg` to the current value of the `SumAccum`."
+   ],
+   "methods": []
+  },
+  {
+   "names": [
+    "MinAccum",
+    "MaxAccum"
+   ],
+   "description": [
+    "The `MinAccum` and `MaxAccum` types calculate and store the cumulative minimum or the cumulative maximum of a series of values. The output of a `MinAccum` or a `MaxAccum` is a single value of the type that was passed in. `MinAccum` and `MaxAccum` variables operate on values of type `INT, UINT, FLOAT, DOUBLE, STRING, TUPLE`, and `VERTEX` (with optional specific vertex type) only.",
+    "For `MinAccum`, `+= arg` checks if the current value held is less than `arg` and stores the smaller of the two. `MaxAccum` behaves the same, with the exception that it checks for and stores the greater instead of the lesser of the two."
+   ],
+   "methods": []
+  },
+  {
+   "names": [
+    "AvgAccum"
+   ],
+   "description": [
+    "The AvgAccum type calculates and stores the cumulative mean of a series of numeric values. Internally, its state information includes the sum value of all inputs and a count of how many input values it has accumulated. The output is the mean value; the sum and the count values are not accessible to the user.",
+    "The data type of an AvgAccum variable is not declared; all AvgAccum accumulators accept inputs of type `INT`, `UINT`, `FLOAT`, and `DOUBLE`. The output is always `DOUBLE` type.",
+    "The `+= arg` operation updates the AvgAccum variable’s state to be the mean of all the previous arguments along with the current argument. The `= arg` operation clears the previously accumulated state and sets the new state to be `arg` with a count of one."
+   ],
+   "methods": []
+  },
+  {
+   "names": [
+    "DeviationAccum",
+    "DeviationPAccum"
+   ],
+   "description": [
+    "The DeviationAccum and DeviationPAccum type calculate and store the cumulative standard deviation of a series of numeric values.",
+    "DeviationAccum should be used when taking a sample of the population for an unbiased estimate. (Uses `N - 1` as the denominator for the standard deviation function.)",
+    "DeviationPAccum should be used when the standard variation of the entire population is being calculated",
+    "Like AvgAccum, data type of a DeviationAccum variable is not declared; all DeviationAccum accumulators accept inputs of type `INT`, `UINT`, `FLOAT`, and `DOUBLE`. The output is always `DOUBLE` type."
+   ],
+   "methods": []
+  },
+  {
+   "names": [
+    "AndAccum",
+    "OrAccum"
+   ],
+   "description": [
+    "The AndAccum and OrAccum types calculate and store the cumulative result of a series of boolean operations. The output of an AndAccum or an OrAccum is a single boolean value (`TRUE` or `FALSE`). AndAccum and OrAccum variables operate on boolean values only. The data type does not need to be declared.",
+    "For AndAccum, `+= arg` updates the state to be the logical `AND` between the current boolean state and `arg`. OrAccum behaves the same, with the exception that it stores the result of a logical `OR` operation."
+   ],
+   "methods": []
+  },
+  {
+   "names": [
+    "BitwiseAndAccum",
+    "BitwiseOrAccum"
+   ],
+   "description": [
+    "The BitwiseAndAccum and BitwiseOrAccum types represent fixed-length or dynamic-length bit sequences. They calculate the cumulative result of bitwise boolean operations and store the resulting sequences.",
+    "Integers are stored as sequences of 1s and 0s (bits) in base-2, with each bit acting as a boolean value (1 for true, 0 for false). Computing the Bitwise `AND` of two numbers A and B means computing the bit sequence C where the \\(j_{th}\\) bit of C, denoted \\(C_j\\), is equal to \\(A_j\\) `AND` \\(B_j\\)."
+   ],
+   "methods": [
+    {
+     "signature": ".reset()",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Sets all bits to 0."
+    },
+    {
+     "signature": ".cardinality()",
+     "returns": "INT",
+     "mutator": false,
+     "description": "Returns the number of 1s."
+    },
+    {
+     "signature": ".get( index )",
+     "returns": "INT",
+     "mutator": false,
+     "description": "Returns the 1 or 0 at the provided index. `index`: `INT`. The position of the bit value to return."
+    },
+    {
+     "signature": ".set( )",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Sets all bits to 1."
+    },
+    {
+     "signature": ".set( index, value )",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Sets the bit at the provided index to the desire value. `index`: `INT`. The position of the bit `value`: `BOOL`. The value of the bit."
+    },
+    {
+     "signature": ".flip( index )",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Flips the bit at the specified index. If the bit is 0, changes it to 1 and vice versa."
+    },
+    {
+     "signature": ".flip( fromIndex [, toIndex ] )",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Flips the bits in the specified range."
+    },
+    {
+     "signature": ".xor ( accum )",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Compares two bitwise accumulators of the same length. Returns a Bitwise accumulator whose every bit is the exclusive `OR` result between the two bitwise accumulators."
+    },
+    {
+     "signature": ".and ( accum )",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Compares two bitwise accumulators of the same length. Returns a bitwise accumulator whose every bit is the `AND` result between the two bitwise accumulators."
+    },
+    {
+     "signature": ".or ( accum )",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Compares two bitwise accumulators of the same length. Returns a Bitwise accumulator whose every bit is the `OR` result between the two bitwise accumulators."
+    },
+    {
+     "signature": ".clear()",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Frees memory for long and dynamic-length accumulators."
+    }
+   ]
+  },
+  {
+   "names": [
+    "ListAccum"
+   ],
+   "description": [
+    "The ListAccum type maintains a sequential collection of elements. The output of a ListAccum is a list of values in the order the elements were added. The element type can be any base type or tuple. Additionally, a ListAccum can contain a nested collection of type ListAccum. Nesting of ListAccums is limited to a depth of three.",
+    "The `+= arg` operation appends `arg` to the end of the list. In this case, `arg` may be either a single element or another ListAccum.",
+    "ListAccum supports two additional operations:",
+    "`@list1 + @list2` creates a new ListAccum, which contains the elements of `@list1` followed by the elements of `@list2`. The two ListAccums must have identical data types."
+   ],
+   "methods": [
+    {
+     "signature": ".size()",
+     "returns": "INT",
+     "mutator": false,
+     "description": "Returns the number of elements in the list."
+    },
+    {
+     "signature": ".contains( T val )",
+     "returns": "BOOL",
+     "mutator": false,
+     "description": "Returns true if the list does contain `value`, and false if it doesn’t."
+    },
+    {
+     "signature": ".get( INT idx )",
+     "returns": "T",
+     "mutator": false,
+     "description": "Returns the value at the given index position in the list. The index begins at 0. If the index is out of bound (including any negative value), the default value of the element type is returned."
+    },
+    {
+     "signature": ".clear()",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Clears the list so it becomes empty with size 0."
+    },
+    {
+     "signature": ".update (INT index, T value )",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Assigns value to the list element at position index."
+    },
+    {
+     "signature": ".remove(INT index)",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Removes value at the specified index. If the index is invalid, the function will do nothing."
+    },
+    {
+     "signature": ".removeOne(T value)",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Removes the first matching value. If there is no matching value, the function will do nothing."
+    },
+    {
+     "signature": ".removeAll(T value)",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Removes all matching values. If there is no matching value, the function will do nothing."
+    }
+   ]
+  },
+  {
+   "names": [
+    "SetAccum"
+   ],
+   "description": [
+    "The SetAccum type maintains a collection of unique elements.The output of a SetAccum is a list of elements in arbitrary order. A SetAccum instance can contain values of one type. The element type can be any base type or tuple.",
+    "For SetAccum, the `+= arg` operation adds a non-duplicate element or set of elements to the set. If an element is already represented in the set, then the SetAccum state does not change.",
+    "SetAccum also can be used with the three canonical set operators: `UNION`, `INTERSECT`, and `MINUS` (see the Set/Bag Expression and Operators section for more details).",
+    "SetAccum also supports the following class functions."
+   ],
+   "methods": [
+    {
+     "signature": "size()",
+     "returns": "INT",
+     "mutator": false,
+     "description": "Returns the number of elements in the set."
+    },
+    {
+     "signature": "contains( T value )",
+     "returns": "BOOL",
+     "mutator": false,
+     "description": "Returns true if the set contains `value`. Returns false if the set doesn’t contain `value`."
+    },
+    {
+     "signature": "remove( T value )",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Removes `value` from the set."
+    },
+    {
+     "signature": "clear()",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Clears the set so it becomes empty with size 0."
+    }
+   ]
+  },
+  {
+   "names": [
+    "BagAccum"
+   ],
+   "description": [
+    "The BagAccum type maintains a collection of elements with duplicated elements allowed. The output of a BagAccum is a list of elements in arbitrary order. A BagAccum instance can contain values of one type. The element type can be any base type or tuple.",
+    "For BagAccum, the `+= arg` operation adds an element or bag of elements to the bag.",
+    "BagAccum also supports the `+` operator:",
+    "`@bag1 + @bag2` creates a new BagAccum, which contains the elements of `@bag1` and the elements of `@bag2`. The two BagAccums must have identical data types."
+   ],
+   "methods": [
+    {
+     "signature": "size()",
+     "returns": "INT",
+     "mutator": false,
+     "description": "Returns the number of elements in the bag."
+    },
+    {
+     "signature": "contains( T value )",
+     "returns": "BOOL",
+     "mutator": false,
+     "description": "Returns true/false if the bag does/doesn’t contain `value` ."
+    },
+    {
+     "signature": "clear()",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Clears the bag so it becomes empty with size 0."
+    },
+    {
+     "signature": "remove( T value )",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Removes one instance of value from the bag."
+    },
+    {
+     "signature": "removeAll( T value )",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Removes all instances of the given value from the bag."
+    }
+   ]
+  },
+  {
+   "names": [
+    "MapAccum"
+   ],
+   "description": [
+    "The MapAccum type maintains a collection of (key → value) pairs. The output of a MapAccum is a set of key and value pairs in which the keys are unique.",
+    "The key type of a MapAccum can be all base types or tuples. If the key type is `VERTEX`, then only the vertex’s ID is stored and displayed.",
+    "The value type of a MapAccum can be all base types, tuples, or any type of accumulator, except for HeapAccum.",
+    "For MapAccum, the `+= (key→val)` operation adds a key-value element to the collection if the key is not yet used in the MapAccum. If the MapAccum already contains the key, then the corresponding value is accumulated to the current value, where the accumulation operation depends on the data type of the value:"
+   ],
+   "methods": [
+    {
+     "signature": ".size()",
+     "returns": "INT",
+     "mutator": false,
+     "description": "Returns the number of elements in the map."
+    },
+    {
+     "signature": ".containsKey( KEY key )",
+     "returns": "BOOL",
+     "mutator": false,
+     "description": "Returns true if the map does contain `key` and false if it doesn’t."
+    },
+    {
+     "signature": ".get( KEY key )",
+     "returns": "value type",
+     "mutator": false,
+     "description": "Returns the value which the map associates with `key`. If the map doesn’t contain key, then the return value is undefined."
+    },
+    {
+     "signature": ".clear()",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Clears the map so it becomes empty with size 0."
+    },
+    {
+     "signature": ".remove( KEY key )",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Removes the key-value pair with the specified key. If there is no matching key, then the function will do nothing."
+    }
+   ]
+  },
+  {
+   "names": [
+    "ArrayAccum"
+   ],
+   "description": [
+    "The ArrayAccum type maintains an array of accumulators. An array is a fixed-length sequence of elements, with direct access to elements by position. The ArrayAccum has these particular characteristics:",
+    "The elements are accumulators, not primitive or base data types. All accumulators, except HeapAccum, MapAccum, and GroupByAccum, can be used.",
+    "An ArrayAccum instance can be multidimensional. There is no limit to the number of dimensions.",
+    "The size can be set at run-time (dynamically)."
+   ],
+   "methods": [
+    {
+     "signature": "size()",
+     "returns": "INT",
+     "mutator": false,
+     "description": "Returns the total number of elements in the (multidimensional) array. For example, the size of an ArrayAccum declared as @A[3][4] is 12."
+    },
+    {
+     "signature": "reallocate( INT, …​ )",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Discards the previous ArrayAccum instance and creates a new ArrayAccum, with the size(s) given. An N-dimensional ArrayAccum requires N integer parameters. The reallocate function cannot be used to change the number of dimensions."
+    }
+   ]
+  },
+  {
+   "names": [
+    "HeapAccum"
+   ],
+   "description": [
+    "The HeapAccum type maintains a sorted collection of tuples and enforces a maximum number of tuples in the collection. The output of a HeapAccum is a sorted collection of tuple elements. The `+=` operation adds a tuple to the collection in sorted order. If the HeapAccum is already at maximum capacity when the `+=` operator is applied, then the tuple which is last in the sorted order is dropped from the HeapAccum. Sorting of tuples is performed on one or more defined tuple fields ordered either ascending or descending. Sorting precedence is performed based on defined tuple fields from left to right.",
+    "You must have defined a custom tuple type to declare a `HeapAccum`, and one of the fields in the tuple must be a data type that can be sorted.",
+    "The declaration syntax is outlined in the figure below:",
+    "In the declaration of the `HeapAccum`, the keyword `HeapAccum` is followed by the tuple type in angle brackets `< >`. This is followed by a parenthesized list of two or more parameters."
+   ],
+   "methods": [
+    {
+     "signature": "size()",
+     "returns": "INT",
+     "mutator": false,
+     "description": "Returns the number of elements in the heap."
+    },
+    {
+     "signature": "top()",
+     "returns": "tupleType",
+     "mutator": false,
+     "description": "Returns the top tuple. If this heap is empty, returns a tuple with each element equal to the default value."
+    },
+    {
+     "signature": "pop()",
+     "returns": "tupleType",
+     "mutator": true,
+     "description": "Returns the top tuple and removes it from the heap. If this heap is empty, returns a tuple with each element equal to the default value."
+    },
+    {
+     "signature": "resize( INT newSize)",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Changes the maximum capacity of the heap."
+    },
+    {
+     "signature": "clear()",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Clears the heap so it becomes empty with size 0."
+    }
+   ]
+  },
+  {
+   "names": [
+    "GroupByAccum"
+   ],
+   "description": [
+    "The GroupByAccum is a compound accumulator, an accumulator of accumulators. At the top level, it is a MapAccum where both the key and the value can have multiple fields, each of them an accumulator type.",
+    "In the EBNF above, the type terms form the key set, and the accumType terms form the map’s value. Since they are accumulators, they perform a grouping. Like a MapAccum, if we try to store a (key→value) whose key has already been used, then the new value will accumulate to the data which is already stored. In this case, each field of the multiple-field value has its own accumulation function. One way to think about GroupByAccum is that each unique key is a group ID.",
+    "In GroupByAccum, the key types can be base type or tuple. The accumulators are used for aggregating group values. Each accumulator type can be any type including HeapAccum. Each base type and each accumulator type must be followed an alias. Below is an example declaration.",
+    "To add new data to this GroupByAccum, the data should be formatted as (key1, key2 → value1, value2) ."
+   ],
+   "methods": [
+    {
+     "signature": "size()",
+     "returns": "INT",
+     "mutator": false,
+     "description": "Returns the number of elements in the heap."
+    },
+    {
+     "signature": "get( KEY1 key_value1 , KEY2 key_value2 …​ )",
+     "returns": "element type(s) of the accumulator(s)",
+     "mutator": false,
+     "description": "Returns the values from each accumulator in the group associating with the given key(s). If the key(s) doesn’t exist, return the default value(s) of the accumulator type(s)."
+    },
+    {
+     "signature": "containsKey( KEY1 key_value1 , KEY2 key_value2…​ )",
+     "returns": "BOOL",
+     "mutator": false,
+     "description": "Returns true/false if the accumulator contains the key(s)"
+    },
+    {
+     "signature": "clear()",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Clears the heap so it becomes empty with size 0."
+    },
+    {
+     "signature": "remove ( KEY1 key_value1 , KEY2 key_value2 …​ )",
+     "returns": "VOID",
+     "mutator": true,
+     "description": "Removes the group associating with the key(s)"
+    }
+   ]
+  }
+ ]
+}

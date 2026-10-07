@@ -1,0 +1,38 @@
+// Vertices within `k` hops of a source, with their distance, using the
+// breadth-first frontier pattern.
+CREATE QUERY tg_k_hop(
+    VERTEX source,
+    SET<STRING> e_type_set,
+    INT k = 2,
+    BOOL print_paths = FALSE
+) SYNTAX V1 {
+    MinAccum<INT> @distance = GSQL_INT_MAX;
+    OrAccum @visited;
+    ListAccum<VERTEX> @path;
+    SumAccum<INT> @@frontier_size;
+    INT hop = 0;
+
+    Frontier = {source};
+    Frontier = SELECT s FROM Frontier:s
+               ACCUM s.@visited += TRUE, s.@distance = 0, s.@path = s;
+    Reached = Frontier;
+
+    WHILE Frontier.size() > 0 AND hop < k DO
+        hop = hop + 1;
+        @@frontier_size = 0;
+        Frontier = SELECT t FROM Frontier:s -(e_type_set:e)- :t
+                   WHERE NOT t.@visited
+                   ACCUM t.@visited += TRUE,
+                         t.@distance += s.@distance + 1,
+                         t.@path = s.@path + [t]
+                   POST-ACCUM @@frontier_size += 1;
+        Reached = Reached UNION Frontier;
+        LOG(TRUE, "hop", hop, "frontier", @@frontier_size);
+    END;
+
+    IF print_paths THEN
+        PRINT Reached[Reached.@distance AS distance, Reached.@path AS path];
+    ELSE
+        PRINT Reached[Reached.@distance AS distance];
+    END;
+}

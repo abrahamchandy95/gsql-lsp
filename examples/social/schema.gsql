@@ -1,0 +1,34 @@
+// Schema for a small social network.
+//
+// Run with: gsql schema.gsql
+
+DROP ALL
+
+// A member of the network.
+CREATE VERTEX Person (
+  PRIMARY_ID id STRING,
+  name STRING,
+  age INT DEFAULT 0,
+  gender STRING,
+  joined DATETIME,
+  interests SET<STRING>
+) WITH primary_id_as_attribute="true"
+
+// A post written by a member.
+CREATE VERTEX Post (PRIMARY_ID id UINT, content STRING, created DATETIME, language STRING DEFAULT "en")
+
+CREATE VERTEX Tag (name STRING PRIMARY KEY, popularity DOUBLE)
+
+// Friendship is mutual.
+CREATE UNDIRECTED EDGE Friendship (FROM Person, TO Person, since DATETIME, strength FLOAT DEFAULT 1.0)
+
+// Following is one-way; the reverse edge lets queries walk back to followers.
+CREATE DIRECTED EDGE Follows (FROM Person, TO Person) WITH REVERSE_EDGE="followed_by"
+
+CREATE DIRECTED EDGE Wrote (FROM Person, TO Post) WITH REVERSE_EDGE="written_by"
+
+CREATE DIRECTED EDGE Likes (FROM Person, TO Post, at DATETIME)
+
+CREATE UNDIRECTED EDGE Tagged (FROM Post, TO Tag)
+
+CREATE GRAPH Social (Person, Post, Tag, Friendship, Follows, Wrote, Likes, Tagged)

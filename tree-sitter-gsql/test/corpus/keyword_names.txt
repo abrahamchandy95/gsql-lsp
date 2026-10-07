@@ -1,0 +1,621 @@
+================================================================================
+Non-reserved statement-start words as names: assignment, +=, subscript
+================================================================================
+
+CREATE QUERY q() FOR GRAPH G {
+  INT list = 1;
+  list = list + 1;
+  LIST += 2;
+  Map[1] = 2;
+  update = SELECT s FROM P:s;
+  INSERT = {P.*};
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    (identifier)
+    (parameter_list)
+    (for_graph_clause
+      (identifier))
+    (query_body
+      (variable_declaration
+        (primitive_type)
+        (variable_declarator
+          (identifier)
+          (integer)))
+      (assignment_statement
+        (identifier)
+        (binary_expression
+          (identifier)
+          (integer)))
+      (assignment_statement
+        (identifier)
+        (integer))
+      (assignment_statement
+        (subscript_expression
+          (identifier)
+          (integer))
+        (integer))
+      (assignment_statement
+        (identifier)
+        (select_statement
+          (identifier)
+          (from_clause
+            (path_pattern
+              (vertex_pattern
+                (identifier)
+                (identifier))))))
+      (assignment_statement
+        (identifier)
+        (vertex_set_literal
+          (type_wildcard
+            (identifier)))))))
+
+================================================================================
+Non-reserved statement-start words as names: method call, ACCUM
+================================================================================
+
+CREATE QUERY q() FOR GRAPH G {
+  SetAccum<INT> file;
+  file.clear();
+  FILE.add(1);
+  S = SELECT s FROM P:s ACCUM list = 1, update += 2, map.add(1);
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    (identifier)
+    (parameter_list)
+    (for_graph_clause
+      (identifier))
+    (query_body
+      (variable_declaration
+        (accumulator_type
+          (accumulator_kind)
+          (primitive_type))
+        (variable_declarator
+          (identifier)))
+      (expression_statement
+        (call_expression
+          (member_expression
+            (identifier)
+            (identifier))
+          (argument_list)))
+      (expression_statement
+        (call_expression
+          (member_expression
+            (identifier)
+            (identifier))
+          (argument_list
+            (integer))))
+      (assignment_statement
+        (identifier)
+        (select_statement
+          (identifier)
+          (from_clause
+            (path_pattern
+              (vertex_pattern
+                (identifier)
+                (identifier))))
+          (accum_clause
+            (assignment_statement
+              (identifier)
+              (integer))
+            (assignment_statement
+              (identifier)
+              (integer))
+            (expression_statement
+              (call_expression
+                (member_expression
+                  (identifier)
+                  (identifier))
+                (argument_list
+                  (integer))))))))))
+
+================================================================================
+Statement-start words keep their statements
+================================================================================
+
+CREATE QUERY q() FOR GRAPH G {
+  MAP<STRING, INT> map;
+  LIST<INT> list;
+  FILE file ("x");
+  FILE f ("x", "764");
+  UPDATE s FROM P:s SET s.a = 1;
+  INSERT INTO P (PRIMARY_ID, a) VALUES ("x", 1);
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    (identifier)
+    (parameter_list)
+    (for_graph_clause
+      (identifier))
+    (query_body
+      (variable_declaration
+        (collection_type
+          (primitive_type)
+          (primitive_type))
+        (variable_declarator
+          (identifier)))
+      (variable_declaration
+        (collection_type
+          (primitive_type))
+        (variable_declarator
+          (identifier)))
+      (file_declaration
+        (identifier)
+        (string
+          (string_content)))
+      (file_declaration
+        (identifier)
+        (string
+          (string_content))
+        (string
+          (string_content)))
+      (update_statement
+        (identifier)
+        (from_clause
+          (path_pattern
+            (vertex_pattern
+              (identifier)
+              (identifier))))
+        (block
+          (assignment_statement
+            (member_expression
+              (identifier)
+              (identifier))
+            (integer))))
+      (insert_statement
+        (identifier)
+        (insert_columns
+          (identifier))
+        (value_list
+          (string
+            (string_content))
+          (integer))))))
+
+================================================================================
+INSTALL QUERY with a name that starts a statement
+================================================================================
+
+INSTALL QUERY list
+INSTALL QUERY update, map
+LIST WORKLOAD QUEUE
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (install_query_statement
+    (identifier))
+  (install_query_statement
+    (identifier)
+    (identifier))
+  (shell_command))
+
+================================================================================
+TYPEDEF TUPLE names and their uses as types: LIST, MAP, FILE, INSERT, UPDATE
+================================================================================
+
+TYPEDEF TUPLE<INT a, STRING b> list
+TYPEDEF TUPLE<INT a> Map
+CREATE QUERY q() FOR GRAPH G {
+  TYPEDEF TUPLE<INT a> file;
+  TYPEDEF TUPLE<INT a> INSERT;
+  TYPEDEF TUPLE<INT a> update;
+  ListAccum<list> @@l;
+  SetAccum<MAP> @@m;
+  HeapAccum<file>(5, a DESC) @@h;
+  list x = list(1, "a");
+  UPDATE y;
+  insert z = insert(1);
+  file f;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (typedef_statement
+    (tuple_field
+      (primitive_type)
+      (identifier))
+    (tuple_field
+      (primitive_type)
+      (identifier))
+    (identifier))
+  (typedef_statement
+    (tuple_field
+      (primitive_type)
+      (identifier))
+    (identifier))
+  (query_definition
+    (identifier)
+    (parameter_list)
+    (for_graph_clause
+      (identifier))
+    (query_body
+      (typedef_statement
+        (tuple_field
+          (primitive_type)
+          (identifier))
+        (identifier))
+      (typedef_statement
+        (tuple_field
+          (primitive_type)
+          (identifier))
+        (identifier))
+      (typedef_statement
+        (tuple_field
+          (primitive_type)
+          (identifier))
+        (identifier))
+      (accumulator_declaration
+        (accumulator_type
+          (accumulator_kind)
+          (type_identifier))
+        (accumulator_declarator
+          (global_accumulator)))
+      (accumulator_declaration
+        (accumulator_type
+          (accumulator_kind)
+          (type_identifier))
+        (accumulator_declarator
+          (global_accumulator)))
+      (accumulator_declaration
+        (accumulator_type
+          (accumulator_kind)
+          (type_identifier)
+          (heap_options
+            (integer)
+            (sort_key
+              (identifier))))
+        (accumulator_declarator
+          (global_accumulator)))
+      (variable_declaration
+        (type_identifier)
+        (variable_declarator
+          (identifier)
+          (call_expression
+            (identifier)
+            (argument_list
+              (integer)
+              (string
+                (string_content))))))
+      (variable_declaration
+        (type_identifier)
+        (variable_declarator
+          (identifier)))
+      (variable_declaration
+        (type_identifier)
+        (variable_declarator
+          (identifier)
+          (call_expression
+            (identifier)
+            (argument_list
+              (integer)))))
+      (variable_declaration
+        (type_identifier)
+        (variable_declarator
+          (identifier))))))
+
+================================================================================
+TUPLE field names LIST, MAP, FILE, INSERT, UPDATE
+================================================================================
+
+TYPEDEF TUPLE<list INT, map STRING, INT file, STRING insert, UPDATE BOOL> T
+CREATE QUERY q() FOR GRAPH G {
+  TUPLE<list INT, MAP STRING> t;
+  TUPLE<INT, list INT> t2;
+  TUPLE<a list> t3;
+  TUPLE<a LIST<INT>> t4;
+  TUPLE<list LIST<INT>> t5;
+  TUPLE<insert MAP<STRING, INT>> t6;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (typedef_statement
+    (tuple_field
+      (identifier)
+      (primitive_type))
+    (tuple_field
+      (identifier)
+      (primitive_type))
+    (tuple_field
+      (primitive_type)
+      (identifier))
+    (tuple_field
+      (primitive_type)
+      (identifier))
+    (tuple_field
+      (identifier)
+      (primitive_type))
+    (identifier))
+  (query_definition
+    (identifier)
+    (parameter_list)
+    (for_graph_clause
+      (identifier))
+    (query_body
+      (variable_declaration
+        (tuple_type
+          (tuple_field
+            (identifier)
+            (primitive_type))
+          (tuple_field
+            (identifier)
+            (primitive_type)))
+        (variable_declarator
+          (identifier)))
+      (variable_declaration
+        (tuple_type
+          (primitive_type)
+          (tuple_field
+            (identifier)
+            (primitive_type)))
+        (variable_declarator
+          (identifier)))
+      (variable_declaration
+        (tuple_type
+          (tuple_field
+            (type_identifier)
+            (identifier)))
+        (variable_declarator
+          (identifier)))
+      (variable_declaration
+        (tuple_type
+          (tuple_field
+            (identifier)
+            (collection_type
+              (primitive_type))))
+        (variable_declarator
+          (identifier)))
+      (variable_declaration
+        (tuple_type
+          (tuple_field
+            (identifier)
+            (collection_type
+              (primitive_type))))
+        (variable_declarator
+          (identifier)))
+      (variable_declaration
+        (tuple_type
+          (tuple_field
+            (identifier)
+            (collection_type
+              (primitive_type)
+              (primitive_type))))
+        (variable_declarator
+          (identifier))))))
+
+================================================================================
+The FILE parameter type and FILE declaration keep their reading; list, map and update declarations
+================================================================================
+
+CREATE QUERY q(FILE f, FILE g) FOR GRAPH G {
+  FILE h ("x");
+  FILE i ("x", "y");
+  LIST<INT> l;
+  MAP<INT, INT> m;
+  UPDATE s FROM S:s SET s.a = 1;
+  INSERT INTO P (PRIMARY_ID, a) VALUES ("x", 1);
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    (identifier)
+    (parameter_list
+      (parameter
+        (file_type)
+        (identifier))
+      (parameter
+        (file_type)
+        (identifier)))
+    (for_graph_clause
+      (identifier))
+    (query_body
+      (file_declaration
+        (identifier)
+        (string
+          (string_content)))
+      (file_declaration
+        (identifier)
+        (string
+          (string_content))
+        (string
+          (string_content)))
+      (variable_declaration
+        (collection_type
+          (primitive_type))
+        (variable_declarator
+          (identifier)))
+      (variable_declaration
+        (collection_type
+          (primitive_type)
+          (primitive_type))
+        (variable_declarator
+          (identifier)))
+      (update_statement
+        (identifier)
+        (from_clause
+          (path_pattern
+            (vertex_pattern
+              (identifier)
+              (identifier))))
+        (block
+          (assignment_statement
+            (member_expression
+              (identifier)
+              (identifier))
+            (integer))))
+      (insert_statement
+        (identifier)
+        (insert_columns
+          (identifier))
+        (value_list
+          (string
+            (string_content))
+          (integer))))))
+
+================================================================================
+Job names LIST, MAP, FILE, INSERT, UPDATE in loading and schema change jobs
+================================================================================
+
+CREATE LOADING JOB list FOR GRAPH g {
+  DEFINE FILENAME f;
+  LOAD f TO VERTEX P VALUES ($0, $1);
+}
+CREATE SCHEMA_CHANGE JOB update FOR GRAPH g { ALTER VERTEX P ADD ATTRIBUTE (z INT); }
+CREATE GLOBAL SCHEMA_CHANGE JOB file { ADD VERTEX V (PRIMARY_ID id STRING); }
+RUN LOADING JOB list
+RUN LOADING JOB MAP USING f="x"
+RUN SCHEMA_CHANGE JOB insert
+RUN GLOBAL SCHEMA_CHANGE JOB file
+DROP JOB list
+DROP JOB a, update, Insert
+DROP QUERY map
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (loading_job_definition
+    (identifier)
+    (for_graph_clause
+      (identifier))
+    (loading_job_body
+      (define_filename_statement
+        (identifier))
+      (load_statement
+        (identifier)
+        (load_destination
+          (identifier)
+          (value_list
+            (column_reference)
+            (column_reference))))))
+  (schema_change_job_definition
+    (identifier)
+    (for_graph_clause
+      (identifier))
+    (schema_change_body
+      (alter_type_statement
+        (identifier)
+        (attribute_definition
+          (identifier)
+          (primitive_type)))))
+  (schema_change_job_definition
+    (identifier)
+    (schema_change_body
+      (vertex_definition
+        (identifier)
+        (vertex_attribute_list
+          (primary_id_definition
+            (identifier)
+            (primitive_type))))))
+  (run_job_statement
+    (identifier))
+  (run_job_statement
+    (identifier)
+    (using_clause
+      (option_assignment
+        (identifier)
+        (string
+          (string_content)))))
+  (run_job_statement
+    (identifier))
+  (run_job_statement
+    (identifier))
+  (drop_statement
+    (identifier))
+  (drop_statement
+    (identifier)
+    (identifier)
+    (identifier))
+  (drop_statement
+    (identifier)))
+
+================================================================================
+Names in shell commands, then a command that starts with the same word
+================================================================================
+
+SHOW LOADING STATUS list
+LIST WORKLOAD QUEUE
+SHOW LOADING STATUS update
+UPDATE DESCRIPTION OF QUERY q "x"
+SHOW QUERY file
+LIST WORKLOAD QUEUE
+ABORT LOADING JOB insert
+LIST WORKLOAD QUEUE
+SHOW LOADING STATUS map
+SHOW LOADING STATUS all
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (show_statement
+    (identifier)
+    (identifier))
+  (shell_command)
+  (show_statement
+    (identifier)
+    (identifier))
+  (description_statement
+    (name_pattern
+      (identifier))
+    (string
+      (string_content)))
+  (show_statement
+    (identifier))
+  (shell_command)
+  (shell_command
+    (identifier))
+  (shell_command)
+  (show_statement
+    (identifier)
+    (identifier))
+  (show_statement
+    (identifier)
+    (identifier)))
+
+================================================================================
+Command keywords as the name of INSTALL QUERY and SHOW commands
+================================================================================
+
+INSTALL QUERY clear
+SHOW QUERY get
+INSTALL QUERY use, put
+SHOW LOADING STATUS show
+SHOW JOB grant
+SHOW QUERY
+ABORT
+INSTALL QUERY
+USE GRAPH g
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (install_query_statement
+    (identifier))
+  (show_statement
+    (identifier))
+  (install_query_statement
+    (identifier)
+    (identifier))
+  (show_statement
+    (identifier)
+    (identifier))
+  (show_statement
+    (identifier))
+  (show_statement)
+  (shell_command)
+  (install_query_statement)
+  (use_statement
+    (identifier)))

@@ -1,0 +1,136 @@
+USE GRAPH Finance
+
+// Accounts reachable from `source` within three transfers (Kleene-star bounds are constants).
+CREATE OR REPLACE QUERY money_trail(
+    VERTEX<Account> source,
+    DOUBLE min_amount = 1000.0
+)
+  FOR GRAPH Finance SYNTAX v2 {
+    SetAccum<VERTEX<Account>> @@reached;
+    SumAccum<DOUBLE> @received;
+
+    Source = {source};
+    Reached = SELECT t FROM Source:s -(Transfer>*1..3)- Account:t
+              WHERE t != source
+              ACCUM @@reached += t;
+    Direct = SELECT t FROM Source:s -(Transfer>:e)- Account:t
+             WHERE e.amount >= min_amount
+             ACCUM t.@received += e.amount;
+    PRINT @@reached.size() AS reachable_accounts;
+    PRINT Direct[Direct.balance, Direct.@received AS received];
+}
+
+// Customers sharing a device with a known-risky customer.
+CREATE QUERY shared_devices(VERTEX<Customer> suspect, DOUBLE threshold = 0.8)
+  FOR GRAPH Finance SYNTAX v2 {
+    MapAccum<VERTEX<Customer>, SetAccum<STRING>> @@devices_by_customer;
+    OrAccum @risky;
+
+    Suspect = {suspect};
+    Linked = SELECT c FROM Suspect:s -(Uses)- Device:d -(Uses)- Customer:c
+             WHERE c != suspect
+             ACCUM @@devices_by_customer += (c -> d.fingerprint)
+             POST-ACCUM c.@risky += c.risk_score >= threshold OR NOT c.kyc_verified;
+    Risky = SELECT c FROM Linked:c WHERE c.@risky;
+    PRINT Risky[Risky.name, Risky.risk_score], @@devices_by_customer;
+}
+
+// The largest transfers per channel in a time window, with a CSV export.
+CREATE QUERY large_transfers(
+    DATETIME start_time,
+    DATETIME end_time,
+    INT top_n = 20,
+    STRING out_file = ""
+)
+  FOR GRAPH Finance {
+    TYPEDEF TUPLE <
+        VERTEX<Account> sender,
+        VERTEX<Account> receiver,
+        DOUBLE amount,
+        DATETIME at
+    > Movement;
+    HeapAccum<Movement>(top_n, amount DESC) @@largest;
+    GroupByAccum<STRING channel, SumAccum<DOUBLE> total, SumAccum<INT> transfers> @@per_channel;
+    FILE report (out_file);
+    EXCEPTION bad_window (40001);
+
+    IF end_time <= start_time THEN
+        RAISE bad_window("end_time must be after start_time");
+    END;
+
+    Accounts = {Account.*};
+    Movements = SELECT r FROM Accounts:s -(Transfer:e)-> Account:r
+                WHERE e.at BETWEEN start_time AND end_time
+                ACCUM @@largest += Movement(s, r, e.amount, e.at),
+                      @@per_channel += (e.channel -> e.amount, 1);
+
+    IF out_file != "" THEN
+        report.println("sender", "receiver", "amount", "at");
+        FOREACH m IN @@largest DO
+            report.println(m.sender, m.receiver, m.amount, datetime_format(m.at, "%Y-%m-%d %H:%M:%S"));
+        END;
+    END;
+    PRINT @@largest AS largest, @@per_channel AS per_channel;
+}
+
+// Classifies accounts by balance and blocks those that received too much too fast.
+CREATE QUERY review_accounts(DOUBLE daily_limit = 50000.0) FOR GRAPH Finance {
+    SumAccum<DOUBLE> @last_day;
+    ListAccum<STRING> @@blocked_ids;
+    DATETIME since = datetime_sub(now(), INTERVAL 1 DAY);
+
+    Accounts = {Account.*};
+    Accounts = SELECT a FROM Accounts:a -(received:e)- Account:sender
+               WHERE e.at >= since
+               ACCUM a.@last_day += e.amount
+               POST-ACCUM
+                 CASE
+                     WHEN a.@last_day > daily_limit AND NOT a.is_blocked THEN
+                       a.is_blocked = TRUE,
+                       @@blocked_ids += a.id
+                 END;
+
+    // Unblock accounts that are empty and saw no transfers in the last day.
+    UPDATE a FROM Accounts:a
+      SET a.is_blocked = FALSE
+      WHERE a.balance <= 0 AND a.@last_day < 0.01;
+
+    Tiers = SELECT a FROM Accounts:a
+            POST-ACCUM
+              STRING tier = CASE WHEN a.balance >= 1000000 THEN "private"
+                                 WHEN a.balance >= 10000 THEN "premium"
+                                 ELSE "standard" END,
+              LOG(a.is_blocked, "blocked account", a.id, tier);
+    PRINT @@blocked_ids AS newly_blocked;
+}
+
+// Opens an account for a customer and records the ownership edge.
+CREATE QUERY open_account(
+    VERTEX<Customer> owner,
+    STRING account_id,
+    DOUBLE deposit = 0.0
+) FOR GRAPH Finance {
+    EXCEPTION negative_deposit (40002);
+    TRY
+        IF deposit < 0 THEN
+            RAISE negative_deposit("deposit must not be negative");
+        END;
+        INSERT INTO Account VALUES (account_id, now(), deposit, "USD", FALSE);
+        INSERT INTO Owns (FROM, TO) VALUES (owner, account_id Account);
+        PRINT "opened" AS status;
+    EXCEPTION
+        WHEN negative_deposit THEN
+            PRINT "rejected" AS status;
+    END;
+}
+
+// Removes accounts that were closed with a zero balance.
+CREATE QUERY purge_empty_accounts() FOR GRAPH Finance {
+    Accounts = {Account.*};
+    // Compare floating-point values with a tolerance rather than `==`.
+    DELETE a FROM Accounts:a WHERE abs(a.balance) < 0.005 AND a.is_blocked;
+    PRINT "done";
+}
+
+INSTALL QUERY ALL
+RUN QUERY money_trail("acct-001", 500.0)

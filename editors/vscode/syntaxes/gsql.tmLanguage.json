@@ -1,0 +1,623 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "GSQL",
+  "scopeName": "source.gsql",
+  "fileTypes": [
+    "gsql",
+    "gsq"
+  ],
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#definitions"
+    },
+    {
+      "include": "#patterns"
+    },
+    {
+      "include": "#types"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#accumulators"
+    },
+    {
+      "include": "#literals"
+    },
+    {
+      "include": "#functions"
+    },
+    {
+      "include": "#operators"
+    },
+    {
+      "include": "#punctuation"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.block.gsql",
+          "begin": "/\\*",
+          "end": "\\*/",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.comment.begin.gsql"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.comment.end.gsql"
+            }
+          }
+        },
+        {
+          "name": "comment.line.double-slash.gsql",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.line.number-sign.gsql",
+          "match": "#.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.gsql",
+          "begin": "\"",
+          "end": "\"",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.begin.gsql"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.end.gsql"
+            }
+          },
+          "patterns": [
+            {
+              "name": "constant.character.escape.gsql",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "definitions": {
+      "patterns": [
+        {
+          "comment": "Stub of a built-in (the reference file): BUILTIN FUNCTION|OBJECT|TYPE|KEYWORD|CONSTANT name",
+          "match": "(?i:\\b(BUILTIN)\\s+(FUNCTION|OBJECT|TYPE|KEYWORD|CONSTANT))\\s+([A-Za-z_][A-Za-z0-9_-]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.gsql"
+            },
+            "2": {
+              "name": "keyword.other.gsql"
+            },
+            "3": {
+              "name": "entity.name.function.gsql"
+            }
+          }
+        },
+        {
+          "comment": "Method stub inside a BUILTIN OBJECT",
+          "match": "(?i:^\\s*(METHOD|MUTATOR))\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.gsql"
+            },
+            "2": {
+              "name": "entity.name.function.gsql"
+            }
+          }
+        },
+        {
+          "comment": "CREATE [OR REPLACE] [DISTRIBUTED|TEMPLATE] QUERY name",
+          "match": "(?i:\\b(CREATE)\\s+(?:(OR)\\s+(REPLACE)\\s+)?(?:(DISTRIBUTED|TEMPLATE)\\s+)?(?:(OPENCYPHER)\\s+)?(QUERY|FUNCTION))\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.gsql"
+            },
+            "2": {
+              "name": "keyword.other.gsql"
+            },
+            "3": {
+              "name": "keyword.other.gsql"
+            },
+            "4": {
+              "name": "storage.modifier.gsql"
+            },
+            "5": {
+              "name": "keyword.other.gsql"
+            },
+            "6": {
+              "name": "keyword.other.gsql"
+            },
+            "7": {
+              "name": "entity.name.function.gsql"
+            }
+          }
+        },
+        {
+          "comment": "CREATE|ADD [DIRECTED|UNDIRECTED] VERTEX|EDGE name",
+          "match": "(?i:\\b(CREATE|ADD)\\s+(?:(DIRECTED|UNDIRECTED)\\s+)?(VERTEX|EDGE))\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.gsql"
+            },
+            "2": {
+              "name": "storage.modifier.gsql"
+            },
+            "3": {
+              "name": "keyword.other.gsql"
+            },
+            "4": {
+              "name": "entity.name.type.gsql"
+            }
+          }
+        },
+        {
+          "comment": "CREATE GRAPH name / FOR GRAPH name / USE GRAPH name",
+          "match": "(?i:\\b(CREATE|FOR|USE|DROP|ALTER)\\s+(GRAPH))\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.gsql"
+            },
+            "2": {
+              "name": "keyword.other.gsql"
+            },
+            "3": {
+              "name": "entity.name.namespace.graph.gsql"
+            }
+          }
+        },
+        {
+          "comment": "CREATE [GLOBAL] SCHEMA_CHANGE JOB / LOADING JOB name",
+          "match": "(?i:\\b(CREATE)\\s+(?:(OR)\\s+(REPLACE)\\s+)?(?:(GLOBAL)\\s+)?(LOADING|SCHEMA_CHANGE)\\s+(JOB))\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.gsql"
+            },
+            "2": {
+              "name": "keyword.other.gsql"
+            },
+            "3": {
+              "name": "keyword.other.gsql"
+            },
+            "4": {
+              "name": "storage.modifier.gsql"
+            },
+            "5": {
+              "name": "keyword.other.gsql"
+            },
+            "6": {
+              "name": "keyword.other.gsql"
+            },
+            "7": {
+              "name": "entity.name.function.gsql"
+            }
+          }
+        },
+        {
+          "comment": "TYPEDEF TUPLE <...> Name",
+          "begin": "(?i:\\b(TYPEDEF)\\s+(TUPLE))\\s*(<)",
+          "end": "(>)\\s*([A-Za-z_][A-Za-z0-9_]*)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.other.gsql"
+            },
+            "2": {
+              "name": "keyword.other.gsql"
+            },
+            "3": {
+              "name": "punctuation.definition.typeparameters.begin.gsql"
+            }
+          },
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.definition.typeparameters.end.gsql"
+            },
+            "2": {
+              "name": "entity.name.type.tuple.gsql"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#angle_brackets"
+            },
+            {
+              "include": "#comments"
+            },
+            {
+              "include": "#types"
+            },
+            {
+              "include": "#literals"
+            },
+            {
+              "include": "#punctuation"
+            }
+          ]
+        },
+        {
+          "comment": "INSTALL / RUN / INTERPRET QUERY name",
+          "match": "(?i:\\b(INSTALL|RUN|INTERPRET|SHOW|DROP)\\s+(QUERY))\\s+(?:(-\\w+(?:\\s+-\\w+)*)\\s+)?([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.gsql"
+            },
+            "2": {
+              "name": "keyword.other.gsql"
+            },
+            "3": {
+              "name": "variable.parameter.option.gsql"
+            },
+            "4": {
+              "name": "entity.name.function.gsql"
+            }
+          }
+        }
+      ]
+    },
+    "patterns": {
+      "patterns": [
+        {
+          "comment": "VERTEX<Type> and EDGE<Type>",
+          "match": "(?i:\\b(VERTEX|EDGE))\\s*(<)\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*(>)",
+          "captures": {
+            "1": {
+              "name": "storage.type.gsql"
+            },
+            "2": {
+              "name": "punctuation.definition.typeparameters.begin.gsql"
+            },
+            "3": {
+              "name": "entity.name.type.gsql"
+            },
+            "4": {
+              "name": "punctuation.definition.typeparameters.end.gsql"
+            }
+          }
+        },
+        {
+          "comment": "Type.* in vertex-set seeds",
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(\\.)(\\*)",
+          "captures": {
+            "1": {
+              "name": "entity.name.type.gsql"
+            },
+            "2": {
+              "name": "punctuation.accessor.gsql"
+            },
+            "3": {
+              "name": "keyword.operator.wildcard.gsql"
+            }
+          }
+        },
+        {
+          "comment": "openCypher-style relationship [alias:Type] (GSQL edge steps use parentheses)",
+          "match": "(?<=\\[)\\s*([A-Za-z_][A-Za-z0-9_]*)?\\s*(:)\\s*([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "variable.other.alias.gsql"
+            },
+            "2": {
+              "name": "punctuation.separator.alias.gsql"
+            },
+            "3": {
+              "name": "entity.name.type.edge.gsql"
+            }
+          }
+        },
+        {
+          "comment": "openCypher-style node (alias:Type) after MATCH, before a relationship or after one",
+          "match": "(?:(?i:\\b(MATCH)\\s+)|(?<=\\]-)|(?<=\\]->))(\\()\\s*([A-Za-z_][A-Za-z0-9_]*)?\\s*(:)\\s*([A-Za-z_][A-Za-z0-9_]*)|(\\()\\s*([A-Za-z_][A-Za-z0-9_]*)?\\s*(:)\\s*([A-Za-z_][A-Za-z0-9_]*)(?=\\s*(?:\\{[^}]*\\}\\s*)?\\)\\s*<?-\\[)",
+          "captures": {
+            "1": {
+              "name": "keyword.other.gsql"
+            },
+            "2": {
+              "name": "punctuation.parenthesis.begin.gsql"
+            },
+            "3": {
+              "name": "variable.other.alias.gsql"
+            },
+            "4": {
+              "name": "punctuation.separator.alias.gsql"
+            },
+            "5": {
+              "name": "entity.name.type.gsql"
+            },
+            "6": {
+              "name": "punctuation.parenthesis.begin.gsql"
+            },
+            "7": {
+              "name": "variable.other.alias.gsql"
+            },
+            "8": {
+              "name": "punctuation.separator.alias.gsql"
+            },
+            "9": {
+              "name": "entity.name.type.gsql"
+            }
+          }
+        },
+        {
+          "comment": "method calls (before keywords: `s.count()`)",
+          "match": "(\\.)\\s*([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+          "captures": {
+            "1": {
+              "name": "punctuation.accessor.gsql"
+            },
+            "2": {
+              "name": "entity.name.function.member.gsql"
+            }
+          }
+        },
+        {
+          "comment": "attribute access (before keywords: `t.order`, `s.year`)",
+          "match": "(\\.)\\s*([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": {
+              "name": "punctuation.accessor.gsql"
+            },
+            "2": {
+              "name": "variable.other.property.gsql"
+            }
+          }
+        },
+        {
+          "comment": "Edge type at the start of an edge step: -(Knows:e)-, -(Knows>:e)- or -(<Knows)-",
+          "match": "(?<=-\\()\\s*(<)?\\s*([A-Za-z_][A-Za-z0-9_]*)(>)?(?:\\s*(:)\\s*([A-Za-z_][A-Za-z0-9_]*))?",
+          "captures": {
+            "1": {
+              "name": "keyword.operator.direction.gsql"
+            },
+            "2": {
+              "name": "entity.name.type.edge.gsql"
+            },
+            "3": {
+              "name": "keyword.operator.direction.gsql"
+            },
+            "4": {
+              "name": "punctuation.separator.alias.gsql"
+            },
+            "5": {
+              "name": "variable.other.alias.gsql"
+            }
+          }
+        },
+        {
+          "comment": "Pattern step `Type:alias` in FROM clauses",
+          "match": "(?<![\\w@.])([A-Za-z_][A-Za-z0-9_]*)(:)([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": {
+              "name": "entity.name.type.gsql"
+            },
+            "2": {
+              "name": "punctuation.separator.alias.gsql"
+            },
+            "3": {
+              "name": "variable.other.alias.gsql"
+            }
+          }
+        },
+        {
+          "comment": "Edge direction markers in pattern matching: -(E>)- and -(<E)-",
+          "match": "(?<=\\()(<)|(>)(?=\\s*[:)|*])",
+          "captures": {
+            "1": {
+              "name": "keyword.operator.direction.gsql"
+            },
+            "2": {
+              "name": "keyword.operator.direction.gsql"
+            }
+          }
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.accumulator.gsql",
+          "match": "\\b(?i:(?:Sum|Max|Min|Avg|Or|And|BitwiseOr|BitwiseAnd|Deviation|DeviationP|List|Set|Bag|Map|Heap|GroupBy|Array)Accum)\\b"
+        },
+        {
+          "name": "storage.type.gsql",
+          "match": "\\b(?i:INT|UINT|FLOAT|DOUBLE|BOOL|STRING|DATETIME|VERTEX|EDGE|JSONOBJECT|JSONARRAY|LIST|SET|BAG|MAP|FILE)\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.other.gsql",
+          "match": "(?i:\\bPOST[-_]ACCUM\\b)"
+        },
+        {
+          "name": "keyword.control.gsql",
+          "match": "\\b(?i:IF|THEN|ELSE|END|CASE|WHEN|WHILE|FOREACH|DO|BREAK|CONTINUE|RETURN|RETURNS|TRY|RAISE|EXCEPTION)\\b"
+        },
+        {
+          "name": "keyword.operator.word.gsql",
+          "match": "\\b(?i:AND|OR|NOT|IN|IS|LIKE|ESCAPE|BETWEEN|UNION|INTERSECT|MINUS)\\b"
+        },
+        {
+          "name": "keyword.other.gsql",
+          "match": "\\b(?i:ABORT|RESUME|ACCUM|ADD|ADMIN|ALL|ALTER|API|AS|ASC|ATTRIBUTE|BEGIN|BY|CASCADE|CLEAR|COMPRESS|CREATE|DATA_SOURCE|DEFAULT|DEFINE|DELETE|DESC|DESCRIPTION|DIRECTED|DISCRIMINATOR|DISTINCT|DISTRIBUTED|DROP|EMPTY|EXIT|EXPORT|FILENAME|FOR|FROM|FUNCTION|GLOBAL|GRANT|GRAPH|GROUP|HAVING|HEADER|HELP|IMPORT|INDEX|INPUT_LINE_FILTER|INSERT|INSTALL|INTERPRET|INTERVAL|INTO|JOB|KEY|LEADING|LIMIT|LOAD|LOADING|LS|NULLABLE|NUMERIC|OFFSET|ON|OPENCYPHER|OPTION|ORDER|OVERWRITE|PACKAGE|PAIR|PASSWORD|PER|PINNED|PRIMARY|PRIMARY_ID|PRINT|PRIVILEGE|QUERY|QUIT|RANGE|REPLACE|REVOKE|ROLE|RUN|SAMPLE|SCHEMA|SCHEMA_CHANGE|SECRET|SELECT|SHOW|STATIC|STORE|SYNTAX|TAG|TAGS|TARGET|TEMPLATE|TEMP_TABLE|TO|TO_CSV|TOKEN|TRAILING|BOTH|TUPLE|TYPEDEF|UNDIRECTED|UPDATE|USE|USER|USING|VALUES|VECTOR|VERSION|WORKLOAD|QUEUE|PROXY|VIRTUAL|WHERE|WITH|YEAR|MONTH|DAY|HOUR|MINUTE|SECOND)\\b"
+        },
+        {
+          "name": "variable.parameter.option.gsql",
+          "match": "(?<=\\s)(?<![=+\\-*/%<>(,!|&^]\\s)(?<![=+\\-*/%<>(,!|&^]\\s\\s)(?<!\\b(?i:RETURN)\\s)(?<!\\b(?i:PRINT)\\s)(?<!\\b(?i:THEN)\\s)(?<!\\b(?i:ELSE)\\s)(?<!\\b(?i:WHEN)\\s)(?<!\\b(?i:AND)\\s)(?<!\\b(?i:OR)\\s)(?<!\\b(?i:NOT)\\s)(?<!\\b(?i:IN)\\s)(?<!\\b(?i:LIMIT)\\s)(?<!\\b(?i:BY)\\s)(?<!\\b(?i:STEP)\\s)-[A-Za-z][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "accumulators": {
+      "patterns": [
+        {
+          "name": "variable.other.accumulator.global.gsql",
+          "match": "@@[A-Za-z_][A-Za-z0-9_]*"
+        },
+        {
+          "name": "variable.other.accumulator.local.gsql",
+          "match": "@[A-Za-z_][A-Za-z0-9_]*'?"
+        }
+      ]
+    },
+    "literals": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.gsql",
+          "match": "\\b(?i:TRUE|FALSE)\\b"
+        },
+        {
+          "name": "constant.language.null.gsql",
+          "match": "\\b(?i:NULL)\\b"
+        },
+        {
+          "name": "constant.language.gsql",
+          "match": "\\b(?:GSQL_INT_MAX|GSQL_INT_MIN|GSQL_UINT_MAX)\\b"
+        },
+        {
+          "name": "variable.language.column.gsql",
+          "match": "\\$(?:\\d+|\\\"[^\\\"]*\\\"(?::\\\"[^\\\"]*\\\")*|[A-Za-z_][\\w.]*)"
+        },
+        {
+          "name": "constant.numeric.float.gsql",
+          "match": "\\b\\d+\\.\\d+(?:[eE][+-]?\\d+)?\\b|(?<![\\w.])\\.\\d+(?:[eE][+-]?\\d+)?\\b|\\b\\d+[eE][+-]?\\d+\\b"
+        },
+        {
+          "name": "constant.numeric.integer.gsql",
+          "match": "\\b\\d+\\b"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.gsql",
+          "match": "\\b(?i:abs|acos|asin|atan|atan2|ceil|cos|cosh|cot|degrees|exp|floor|fmod|ldexp|log|log2|log10|pi|pow|radians|rand|round|sign|sin|sinh|sqrt|square|tan|tanh|trunc|float_to_int|str_to_int|to_string|toBoolean|toFloat|toInteger|lower|upper|trim|ltrim|rtrim|length|substr|replace|repeat|reverse|insert|find_in_set|left|right|lpad|rpad|instr|ascii|chr|soundex|difference|space|translate|now|to_datetime|year|month|day|hour|minute|second|datetime_add|datetime_sub|datetime_diff|datetime_to_epoch|epoch_to_datetime|datetime_format|count|sum|min|max|avg|stdev|stdevp|isempty|coalesce|reset_collection_accum|head|last|tail|size|getvid|to_vertex|to_vertex_set|selectVertex|evaluate|elementId|vectorSearch|tg_similarity_accum|current_roles|is_granted_to_current_roles|parse_json_object|parse_json_array|gsql_[a-z_0-9]+|to_int|to_float|concat|token_len|flatten|flatten_json_array|split|reduce|overwrite|ignore_if_exists|loadaccum)(?=\\s*\\()"
+        },
+        {
+          "comment": "method calls",
+          "match": "(?<=\\.)([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+          "captures": {
+            "1": {
+              "name": "entity.name.function.member.gsql"
+            }
+          }
+        },
+        {
+          "comment": "function and query calls",
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+          "captures": {
+            "1": {
+              "name": "entity.name.function.gsql"
+            }
+          }
+        },
+        {
+          "comment": "attribute access",
+          "match": "(?<=\\.)([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": {
+              "name": "variable.other.property.gsql"
+            }
+          }
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.comparison.gsql",
+          "match": "==|!=|<>|<=|>="
+        },
+        {
+          "name": "keyword.operator.assignment.gsql",
+          "match": "\\+=|="
+        },
+        {
+          "name": "keyword.operator.arrow.gsql",
+          "match": "->|<-"
+        },
+        {
+          "name": "keyword.operator.gsql",
+          "match": "[-+*/%<>|&^~']"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.terminator.statement.gsql",
+          "match": ";"
+        },
+        {
+          "name": "punctuation.separator.comma.gsql",
+          "match": ","
+        },
+        {
+          "name": "punctuation.accessor.gsql",
+          "match": "\\.\\.?"
+        },
+        {
+          "name": "punctuation.section.braces.gsql",
+          "match": "[{}]"
+        },
+        {
+          "name": "punctuation.section.parens.gsql",
+          "match": "[()]"
+        },
+        {
+          "name": "punctuation.section.brackets.gsql",
+          "match": "[\\[\\]]"
+        }
+      ]
+    },
+    "angle_brackets": {
+      "comment": "Nested type arguments, so that only the closing > of TUPLE<...> ends it",
+      "begin": "<",
+      "end": ">",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.typeparameters.begin.gsql"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.typeparameters.end.gsql"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#comments"
+        },
+        {
+          "include": "#angle_brackets"
+        },
+        {
+          "include": "#types"
+        },
+        {
+          "include": "#literals"
+        },
+        {
+          "include": "#punctuation"
+        }
+      ]
+    }
+  }
+}

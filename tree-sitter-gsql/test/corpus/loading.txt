@@ -1,0 +1,269 @@
+================================================================================
+Loading job with DEFINE statements
+================================================================================
+
+CREATE LOADING JOB load_social FOR GRAPH Social {
+  DEFINE FILENAME file1 = "/data/persons.csv";
+  DEFINE FILENAME file2;
+  DEFINE HEADER h1 = "id", "name";
+  DEFINE INPUT_LINE_FILTER filt = $1 == "x";
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (loading_job_definition
+    name: (identifier)
+    (for_graph_clause
+      graph: (identifier))
+    body: (loading_job_body
+      (define_filename_statement
+        name: (identifier)
+        path: (string
+          (string_content)))
+      (define_filename_statement
+        name: (identifier))
+      (define_header_statement
+        name: (identifier)
+        (string
+          (string_content))
+        (string
+          (string_content)))
+      (define_input_line_filter_statement
+        name: (identifier)
+        condition: (binary_expression
+          left: (column_reference)
+          right: (string
+            (string_content)))))))
+
+================================================================================
+LOAD statements
+================================================================================
+
+CREATE LOADING JOB j FOR GRAPH Social {
+  LOAD file1 TO VERTEX Person VALUES ($0, $1, _) USING SEPARATOR=",", HEADER="true", EOL="\n";
+  LOAD file2 TO EDGE Friendship VALUES ($0, $1, $2) WHERE to_int($2) > 0 AND $3 IS NUMERIC;
+  LOAD file1 TO VERTEX Person VALUES ($"id", gsql_concat($1, "_", $2), REDUCE(add($3)));
+  LOAD file1 TO TEMP_TABLE t1 (c1, c2) VALUES ($0, flatten($1, "|", 1));
+  LOAD TEMP_TABLE t1 TO VERTEX Person VALUES ($"c1", $"c2");
+  LOAD file2 TO EDGE Any2Any VALUES ($0 Person, $1 $2), TO VERTEX Person VALUES ($0, _);
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (loading_job_definition
+    name: (identifier)
+    (for_graph_clause
+      graph: (identifier))
+    body: (loading_job_body
+      (load_statement
+        source: (identifier)
+        (load_destination
+          target: (identifier)
+          values: (value_list
+            (column_reference)
+            (column_reference)
+            (wildcard)))
+        (using_clause
+          (option_assignment
+            key: (identifier)
+            value: (string
+              (string_content)))
+          (option_assignment
+            key: (identifier)
+            value: (string
+              (string_content)))
+          (option_assignment
+            key: (identifier)
+            value: (string
+              (escape_sequence)))))
+      (load_statement
+        source: (identifier)
+        (load_destination
+          target: (identifier)
+          values: (value_list
+            (column_reference)
+            (column_reference)
+            (column_reference))
+          (where_clause
+            condition: (binary_expression
+              left: (binary_expression
+                left: (call_expression
+                  function: (identifier)
+                  arguments: (argument_list
+                    (column_reference)))
+                right: (integer))
+              right: (is_expression
+                left: (column_reference))))))
+      (load_statement
+        source: (identifier)
+        (load_destination
+          target: (identifier)
+          values: (value_list
+            (column_reference)
+            (call_expression
+              function: (identifier)
+              arguments: (argument_list
+                (column_reference)
+                (string
+                  (string_content))
+                (column_reference)))
+            (call_expression
+              function: (identifier)
+              arguments: (argument_list
+                (call_expression
+                  function: (identifier)
+                  arguments: (argument_list
+                    (column_reference))))))))
+      (load_statement
+        source: (identifier)
+        (load_destination
+          target: (identifier)
+          columns: (column_list
+            (identifier)
+            (identifier))
+          values: (value_list
+            (column_reference)
+            (call_expression
+              function: (identifier)
+              arguments: (argument_list
+                (column_reference)
+                (string
+                  (string_content))
+                (integer))))))
+      (load_statement
+        source: (identifier)
+        (load_destination
+          target: (identifier)
+          values: (value_list
+            (column_reference)
+            (column_reference))))
+      (load_statement
+        source: (identifier)
+        (load_destination
+          target: (identifier)
+          values: (value_list
+            (typed_value
+              value: (column_reference)
+              type: (identifier))
+            (typed_value
+              value: (column_reference)
+              type: (column_reference))))
+        (load_destination
+          target: (identifier)
+          values: (value_list
+            (column_reference)
+            (wildcard)))))))
+
+================================================================================
+DELETE in loading jobs and RUN LOADING JOB
+================================================================================
+
+CREATE LOADING JOB del FOR GRAPH Social {
+  DELETE VERTEX Person (PRIMARY_ID $0) FROM file1;
+  DELETE EDGE Friendship (FROM $0, TO $1) FROM file2 WHERE $2 == "old";
+}
+RUN LOADING JOB -noprint load_social USING file1="/tmp/a.csv", EOF="true"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (loading_job_definition
+    name: (identifier)
+    (for_graph_clause
+      graph: (identifier))
+    body: (loading_job_body
+      (loading_delete_statement
+        target: (identifier)
+        (column_reference)
+        source: (identifier))
+      (loading_delete_statement
+        target: (identifier)
+        (column_reference)
+        (column_reference)
+        source: (identifier)
+        (where_clause
+          condition: (binary_expression
+            left: (column_reference)
+            right: (string
+              (string_content)))))))
+  (run_job_statement
+    (command_option
+      (option_flag))
+    job: (identifier)
+    (using_clause
+      (option_assignment
+        key: (identifier)
+        value: (string
+          (string_content)))
+      (option_assignment
+        key: (identifier)
+        value: (string
+          (string_content))))))
+
+================================================================================
+JSON paths, partial edge deletes and TAGS
+================================================================================
+
+CREATE LOADING JOB json_paths FOR GRAPH g {
+  LOAD "data.jsonl" TO VERTEX Encoding VALUES ($"encoding", $"indent":"length") USING JSON_FILE="true";
+  DELETE EDGE Owns (FROM $0) FROM f;
+  DELETE EDGE * (FROM $0 Person) FROM f;
+  DELETE EDGE Rated (FROM $0, TO $1, DISCRIMINATOR ($2)) FROM f;
+  LOAD f TO VERTEX Person VALUES ($0, $1) TAGS (public, vip) BY OR USING SEPARATOR=",";
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (loading_job_definition
+    name: (identifier)
+    (for_graph_clause
+      graph: (identifier))
+    body: (loading_job_body
+      (load_statement
+        source: (string
+          (string_content))
+        (load_destination
+          target: (identifier)
+          values: (value_list
+            (column_reference)
+            (column_reference)))
+        (using_clause
+          (option_assignment
+            key: (identifier)
+            value: (string
+              (string_content)))))
+      (loading_delete_statement
+        target: (identifier)
+        (column_reference)
+        source: (identifier))
+      (loading_delete_statement
+        target: (wildcard)
+        (typed_value
+          value: (column_reference)
+          type: (identifier))
+        source: (identifier))
+      (loading_delete_statement
+        target: (identifier)
+        (column_reference)
+        (column_reference)
+        (discriminator_values
+          (column_reference))
+        source: (identifier))
+      (load_statement
+        source: (identifier)
+        (load_destination
+          target: (identifier)
+          values: (value_list
+            (column_reference)
+            (column_reference)))
+        (tags_clause
+          tag: (identifier)
+          tag: (identifier))
+        (using_clause
+          (option_assignment
+            key: (identifier)
+            value: (string
+              (string_content))))))))

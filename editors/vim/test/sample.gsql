@@ -1,0 +1,20 @@
+CREATE QUERY pr(VERTEX<Person> p, FLOAT damping = 0.85) FOR GRAPH Social {
+  MaxAccum<FLOAT> @@max_diff = 9999;
+  SumAccum<FLOAT> @score = 1;
+  Start = {Person.*};
+  WHILE @@max_diff > 0.001 LIMIT 20 DO
+    Start = SELECT s FROM Start:s -(Follows>:e)- Person:t
+            ACCUM t.@score += s.@score / s.outdegree("Follows")
+            POST-ACCUM s.@score = (1.0 - damping) + damping * s.@score',
+                       @@max_diff += abs(s.@score - s.@score');
+  END;
+  IF @@max_diff < 0 THEN PRINT "x"; END;
+  PRINT Start[Start.@score AS score] TO_CSV "/tmp/x.csv";
+}
+CREATE VERTEX U (PRIMARY_ID id UINT, age UINT NULLABLE)
+LOAD f TO VERTEX E VALUES ($"indent":"length");
+DeviationAccum @@spread;
+PRINT t.description, s.order;
+x = -y;
+INSTALL QUERY -OPTIMIZE pr
+CREATE USER WITH PASSWORD

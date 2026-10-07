@@ -1,0 +1,35 @@
+{
+  "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/config.schema.json",
+  "grammars": [
+    {
+      "name": "gsql",
+      "camelcase": "GSQL",
+      "title": "GSQL",
+      "scope": "source.gsql",
+      "path": ".",
+      "file-types": ["gsql", "gsq"],
+      "highlights": "queries/highlights.scm",
+      "locals": "queries/locals.scm",
+      "injections": "queries/injections.scm",
+      "tags": "queries/tags.scm",
+      "injection-regex": "^(gsql|GSQL)$"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "TigerGraph GSQL grammar for tree-sitter",
+    "authors": [{ "name": "gsql-lsp contributors" }],
+    "links": { "repository": "https://github.com/gsql-lsp/gsql-lsp" }
+  },
+  "bindings": {
+    "c": true,
+    "go": false,
+    "java": false,
+    "node": true,
+    "python": true,
+    "rust": true,
+    "swift": false,
+    "zig": false
+  }
+}

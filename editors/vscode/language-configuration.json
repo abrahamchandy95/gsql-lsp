@@ -1,0 +1,35 @@
+{
+  "comments": {
+    "lineComment": "//",
+    "blockComment": ["/*", "*/"]
+  },
+  "brackets": [
+    ["{", "}"],
+    ["[", "]"],
+    ["(", ")"]
+  ],
+  "autoClosingPairs": [
+    { "open": "{", "close": "}" },
+    { "open": "[", "close": "]" },
+    { "open": "(", "close": ")" },
+    { "open": "\"", "close": "\"", "notIn": ["string", "comment"] },
+    { "open": "/*", "close": " */", "notIn": ["string"] }
+  ],
+  "surroundingPairs": [
+    ["{", "}"],
+    ["[", "]"],
+    ["(", ")"],
+    ["\"", "\""]
+  ],
+  "wordPattern": "(@{0,2}[A-Za-z_][A-Za-z0-9_]*)|(-?\\d*\\.\\d\\w*)|([^`~!#%^&*()\\-=+\\[{\\]}\\\\|;:'\",.<>/?\\s]+)",
+  "indentationRules": {
+    "increaseIndentPattern": "^.*(\\{[^}\"]*|\\([^)\"]*|\\[[^\\]\"]*|\\b(THEN|then|Then|DO|do|Do|ELSE|else|Else|EXCEPTION|exception|Exception|TRY|try|Try)\\s*)$",
+    "decreaseIndentPattern": "^\\s*(\\}|\\)|\\]|(END|end|End|ELSE|else|Else|WHEN|when|When)\\b|(EXCEPTION|exception|Exception)\\s*$)"
+  },
+  "folding": {
+    "markers": {
+      "start": "^\\s*//\\s*#?region\\b",
+      "end": "^\\s*//\\s*#?endregion\\b"
+    }
+  }
+}

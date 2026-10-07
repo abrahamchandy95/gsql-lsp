@@ -1,0 +1,247 @@
+================================================================================
+Query header options and parameters
+================================================================================
+
+CREATE OR REPLACE DISTRIBUTED QUERY hello(VERTEX<Person> p, VERTEX v, INT k = 3, SET<STRING> names, BAG<INT> b, FLOAT damping = -0.85, BOOL flag = TRUE) FOR GRAPH Social RETURNS (INT) API("v2") SYNTAX v2 {
+  RETURN k;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list
+      (parameter
+        type: (vertex_type
+          type: (identifier))
+        name: (identifier))
+      (parameter
+        type: (vertex_type)
+        name: (identifier))
+      (parameter
+        type: (primitive_type)
+        name: (identifier)
+        default: (integer))
+      (parameter
+        type: (collection_type
+          element: (primitive_type))
+        name: (identifier))
+      (parameter
+        type: (collection_type
+          element: (primitive_type))
+        name: (identifier))
+      (parameter
+        type: (primitive_type)
+        name: (identifier)
+        default: (unary_expression
+          operand: (float)))
+      (parameter
+        type: (primitive_type)
+        name: (identifier)
+        default: (boolean)))
+    (for_graph_clause
+      graph: (identifier))
+    (returns_clause
+      type: (primitive_type))
+    (api_clause
+      version: (string
+        (string_content)))
+    (syntax_clause
+      version: (identifier))
+    body: (query_body
+      (return_statement
+        value: (identifier)))))
+
+================================================================================
+Template query with qualified name and lowercase keywords
+================================================================================
+
+create template query lib.algo.pagerank(set<string> v_type) for graph g syntax("v1") {
+  print v_type;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (qualified_identifier
+      (identifier)
+      (identifier)
+      (identifier))
+    parameters: (parameter_list
+      (parameter
+        type: (collection_type
+          element: (primitive_type))
+        name: (identifier)))
+    (for_graph_clause
+      graph: (identifier))
+    (syntax_clause
+      version: (string
+        (string_content)))
+    body: (query_body
+      (print_statement
+        (identifier)))))
+
+================================================================================
+Interpreted queries
+================================================================================
+
+INTERPRET QUERY () FOR GRAPH Social { PRINT "hi"; }
+INTERPRET QUERY hello("x", 1)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (interpret_query_statement
+    parameters: (parameter_list)
+    (for_graph_clause
+      graph: (identifier))
+    body: (query_body
+      (print_statement
+        (string
+          (string_content)))))
+  (interpret_query_statement
+    name: (identifier)
+    arguments: (argument_list
+      (string
+        (string_content))
+      (integer))))
+
+================================================================================
+OpenCypher query body
+================================================================================
+
+CREATE OPENCYPHER QUERY oc(STRING n) FOR GRAPH Social {
+  MATCH (p:Person {name: $n})-[:Friendship]-(f) RETURN f
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (opencypher_query_definition
+    name: (identifier)
+    parameters: (parameter_list
+      (parameter
+        type: (primitive_type)
+        name: (identifier)))
+    (for_graph_clause
+      graph: (identifier))
+    body: (opencypher_body
+      (cypher_text
+        (cypher_text)))))
+
+================================================================================
+OpenCypher body with braces in strings, comments and names
+================================================================================
+
+CREATE OPENCYPHER QUERY oc(STRING s) FOR GRAPH G {
+  // a } here, don't stop
+  MATCH (p:Person {name: "test}"}) /* } { */
+  WHERE p.x = '}\'{' AND p.`a}b` = 1 // it's
+  RETURN p.name
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (opencypher_query_definition
+    name: (identifier)
+    parameters: (parameter_list
+      (parameter
+        type: (primitive_type)
+        name: (identifier)))
+    (for_graph_clause
+      graph: (identifier))
+    body: (opencypher_body
+      (cypher_text
+        (cypher_text)))))
+
+================================================================================
+Declarations
+================================================================================
+
+CREATE QUERY decls() {
+  TYPEDEF TUPLE <INT score, VERTEX v> Rec;
+  INT x = 5, y;
+  DATETIME d = to_datetime("2020-01-01");
+  Rec r = Rec(1, p);
+  FILE f1 ("/tmp/out.csv");
+  EXCEPTION myEx (40001);
+  JSONOBJECT o = parse_json_object(s);
+  All (Person) = {Person.*};
+  Seeds (ANY) = {ANY};
+  Start = {p, @@set};
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    body: (query_body
+      (typedef_statement
+        (tuple_field
+          type: (primitive_type)
+          name: (identifier))
+        (tuple_field
+          type: (vertex_type)
+          name: (identifier))
+        name: (identifier))
+      (variable_declaration
+        type: (primitive_type)
+        (variable_declarator
+          name: (identifier)
+          value: (integer))
+        (variable_declarator
+          name: (identifier)))
+      (variable_declaration
+        type: (primitive_type)
+        (variable_declarator
+          name: (identifier)
+          value: (call_expression
+            function: (identifier)
+            arguments: (argument_list
+              (string
+                (string_content))))))
+      (variable_declaration
+        type: (type_identifier)
+        (variable_declarator
+          name: (identifier)
+          value: (call_expression
+            function: (identifier)
+            arguments: (argument_list
+              (integer)
+              (identifier)))))
+      (file_declaration
+        name: (identifier)
+        path: (string
+          (string_content)))
+      (exception_declaration
+        name: (identifier)
+        code: (integer))
+      (variable_declaration
+        type: (primitive_type)
+        (variable_declarator
+          name: (identifier)
+          value: (call_expression
+            function: (identifier)
+            arguments: (argument_list
+              (identifier)))))
+      (vertex_set_declaration
+        name: (identifier)
+        type: (identifier)
+        value: (vertex_set_literal
+          (type_wildcard
+            type: (identifier))))
+      (vertex_set_declaration
+        name: (identifier)
+        type: (any)
+        value: (vertex_set_literal
+          (any)))
+      (assignment_statement
+        left: (identifier)
+        right: (vertex_set_literal
+          (identifier)
+          (global_accumulator))))))

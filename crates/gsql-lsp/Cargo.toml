@@ -1,0 +1,37 @@
+[package]
+name = "gsql-lsp"
+description = "Language server for TigerGraph GSQL"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+# The generated parser (tree-sitter-gsql/src/parser.c) ships with the grammar
+# crate; this crate only needs its sources and the built-in docs data.
+include = ["src/**", "data/**", "LICENSE"]
+keywords = ["gsql", "tigergraph", "lsp", "language-server", "tree-sitter"]
+categories = ["development-tools", "text-editors"]
+
+[[bin]]
+name = "gsql-lsp"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tree-sitter = "0.27"
+# `version` is what crates.io sees; scripts/set_version.py keeps it in step.
+tree-sitter-gsql = { path = "../../tree-sitter-gsql", version = "0.1.0" }
+
+# cargo-binstall: the release assets of .github/workflows/release.yml.
+# `{ repo }` is the `repository` field of this manifest.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/gsql-lsp-{ target }.{ archive-format }"
+bin-dir = "gsql-lsp-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"

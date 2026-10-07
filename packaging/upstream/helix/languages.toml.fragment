@@ -1,0 +1,29 @@
+# Draft for helix-editor/helix: entries for the repository's languages.toml.
+# Not validated against a Helix checkout (none is available offline); it mirrors
+# editors/helix/languages.toml, which is the user-facing copy.
+#
+# Placeholders: the repository URL and `rev` (a commit that contains
+# tree-sitter-gsql/src/parser.c). Helix wants a full commit SHA in `rev`.
+
+[language-server.gsql-lsp]
+command = "gsql-lsp"
+
+[[language]]
+name = "gsql"
+scope = "source.gsql"
+injection-regex = "^(gsql|GSQL)$"
+file-types = ["gsql", "gsq"]
+comment-tokens = ["//", "#"]
+block-comment-tokens = { start = "/*", end = "*/" }
+indent = { tab-width = 2, unit = "  " }
+roots = [".gsqlroot", ".git"]
+language-servers = ["gsql-lsp"]
+grammar = "gsql"
+
+[[grammar]]
+name = "gsql"
+source = { git = "https://github.com/gsql-lsp/gsql-lsp", rev = "0000000000000000000000000000000000000000", subpath = "tree-sitter-gsql" }
+
+# Queries to add under runtime/queries/gsql/ (generated from tree-sitter-gsql/queries,
+# with Helix capture names, by scripts/sync_queries.py):
+#   highlights.scm  indents.scm  injections.scm  locals.scm  textobjects.scm

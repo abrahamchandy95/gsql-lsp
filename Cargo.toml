@@ -1,0 +1,21 @@
+[workspace]
+resolver = "3"
+members = ["tree-sitter-gsql", "crates/gsql-lsp"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# The highest `rust-version` of the dependencies; edition 2024 and let chains need 1.88.
+rust-version = "1.90"
+license = "MIT"
+authors = ["gsql-lsp contributors"]
+# PLACEHOLDER: the one place the repository URL lives for the Rust packages.
+# cargo-binstall builds its download URLs from it; the editor files are listed
+# in docs/deployment.md.
+repository = "https://github.com/gsql-lsp/gsql-lsp"
+homepage = "https://github.com/gsql-lsp/gsql-lsp"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = "symbols"

@@ -1,0 +1,24 @@
+# Rust
+/target/
+
+# Parser built by :GsqlBuildParser for the Neovim plugin
+/editors/neovim/parser/
+
+# VS Code extension
+/editors/vscode/node_modules/
+/editors/vscode/out/
+/editors/vscode/server/
+*.vsix
+
+# Zed extension build output
+/editors/zed/target/
+/editors/zed/extension.wasm
+/editors/zed/grammars/
+
+# Python
+__pycache__/
+
+# Editors and OS
+.DS_Store
+*.swp
+/docs-examples-failing.json

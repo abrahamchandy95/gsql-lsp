@@ -1,0 +1,798 @@
+================================================================================
+IF / ELSE IF / ELSE
+================================================================================
+
+CREATE QUERY q() {
+  IF x > 1 THEN
+    PRINT "a";
+  ELSE IF x > 0 THEN
+    PRINT "b";
+  ELSE
+    PRINT "c";
+  END;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    body: (query_body
+      (if_statement
+        condition: (binary_expression
+          left: (identifier)
+          right: (integer))
+        consequence: (block
+          (print_statement
+            (string
+              (string_content))))
+        alternative: (else_if_clause
+          condition: (binary_expression
+            left: (identifier)
+            right: (integer))
+          consequence: (block
+            (print_statement
+              (string
+                (string_content)))))
+        alternative: (else_clause
+          body: (block
+            (print_statement
+              (string
+                (string_content)))))))))
+
+================================================================================
+Loops
+================================================================================
+
+CREATE QUERY q() {
+  WHILE Start.size() > 0 LIMIT 10 DO
+    Start = SELECT t FROM Start:s -(E)- :t;
+    IF x > 3 THEN BREAK; END;
+  END;
+  FOREACH i IN RANGE[0, 10].STEP(2) DO
+    CONTINUE;
+  END;
+  FOREACH (k, v) IN @@counts DO PRINT k, v; END;
+  FOREACH item : @@list DO PRINT item; END;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    body: (query_body
+      (while_statement
+        condition: (binary_expression
+          left: (call_expression
+            function: (member_expression
+              object: (identifier)
+              property: (identifier))
+            arguments: (argument_list))
+          right: (integer))
+        limit: (integer)
+        body: (block
+          (assignment_statement
+            left: (identifier)
+            right: (select_statement
+              result: (identifier)
+              (from_clause
+                (path_pattern
+                  (vertex_pattern
+                    type: (identifier)
+                    alias: (identifier))
+                  (edge_step
+                    (edge_pattern
+                      type: (edge_atom
+                        name: (identifier)))
+                    (vertex_pattern
+                      alias: (identifier)))))))
+          (if_statement
+            condition: (binary_expression
+              left: (identifier)
+              right: (integer))
+            consequence: (block
+              (break_statement)))))
+      (foreach_statement
+        variable: (identifier)
+        collection: (call_expression
+          function: (member_expression
+            object: (range_expression
+              start: (integer)
+              end: (integer))
+            property: (identifier))
+          arguments: (argument_list
+            (integer)))
+        body: (block
+          (continue_statement)))
+      (foreach_statement
+        variable: (foreach_variables
+          (identifier)
+          (identifier))
+        collection: (global_accumulator)
+        body: (block
+          (print_statement
+            (identifier)
+            (identifier))))
+      (foreach_statement
+        variable: (identifier)
+        collection: (global_accumulator)
+        body: (block
+          (print_statement
+            (identifier)))))))
+
+================================================================================
+CASE statement and expression
+================================================================================
+
+CREATE QUERY q() {
+  CASE WHEN x > 1 THEN PRINT "big"; ELSE PRINT "small"; END;
+  CASE x WHEN 1 THEN PRINT "one"; END;
+  y = CASE x WHEN 1 THEN 10 WHEN 2 THEN 20 ELSE 0 END;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    body: (query_body
+      (case_statement
+        (when_clause
+          condition: (binary_expression
+            left: (identifier)
+            right: (integer))
+          body: (block
+            (print_statement
+              (string
+                (string_content)))))
+        (else_clause
+          body: (block
+            (print_statement
+              (string
+                (string_content))))))
+      (case_statement
+        value: (identifier)
+        (when_clause
+          condition: (integer)
+          body: (block
+            (print_statement
+              (string
+                (string_content))))))
+      (assignment_statement
+        left: (identifier)
+        right: (case_expression
+          value: (identifier)
+          (when_clause
+            condition: (integer)
+            result: (integer))
+          (when_clause
+            condition: (integer)
+            result: (integer))
+          (else_clause
+            result: (integer)))))))
+
+================================================================================
+Control flow inside ACCUM
+================================================================================
+
+CREATE QUERY q() {
+  R = SELECT t FROM S:s -(E:e)- :t
+      ACCUM INT w = e.weight,
+            IF w > 1 THEN @@big += 1, t.@flag = TRUE ELSE IF w > 0 THEN @@mid += 1 ELSE @@small += 1 END,
+            CASE WHEN s.age > 3 THEN @@old += 1 END,
+            FOREACH x IN t.@list DO @@sum += x END,
+            WHILE i < 3 LIMIT 5 DO i = i + 1 END,
+            DELETE (e),
+            INSERT INTO Knows VALUES (s, t, 1),
+            f.println(s, t),
+            log(TRUE, s);
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    body: (query_body
+      (assignment_statement
+        left: (identifier)
+        right: (select_statement
+          result: (identifier)
+          (from_clause
+            (path_pattern
+              (vertex_pattern
+                type: (identifier)
+                alias: (identifier))
+              (edge_step
+                (edge_pattern
+                  type: (edge_atom
+                    name: (identifier))
+                  alias: (identifier))
+                (vertex_pattern
+                  alias: (identifier)))))
+          (accum_clause
+            (variable_declaration
+              type: (primitive_type)
+              (variable_declarator
+                name: (identifier)
+                value: (member_expression
+                  object: (identifier)
+                  property: (identifier))))
+            (if_statement
+              condition: (binary_expression
+                left: (identifier)
+                right: (integer))
+              consequence: (block
+                (assignment_statement
+                  left: (global_accumulator)
+                  right: (integer))
+                (assignment_statement
+                  left: (member_expression
+                    object: (identifier)
+                    property: (local_accumulator))
+                  right: (boolean)))
+              alternative: (else_if_clause
+                condition: (binary_expression
+                  left: (identifier)
+                  right: (integer))
+                consequence: (block
+                  (assignment_statement
+                    left: (global_accumulator)
+                    right: (integer))))
+              alternative: (else_clause
+                body: (block
+                  (assignment_statement
+                    left: (global_accumulator)
+                    right: (integer)))))
+            (case_statement
+              (when_clause
+                condition: (binary_expression
+                  left: (member_expression
+                    object: (identifier)
+                    property: (identifier))
+                  right: (integer))
+                body: (block
+                  (assignment_statement
+                    left: (global_accumulator)
+                    right: (integer)))))
+            (foreach_statement
+              variable: (identifier)
+              collection: (member_expression
+                object: (identifier)
+                property: (local_accumulator))
+              body: (block
+                (assignment_statement
+                  left: (global_accumulator)
+                  right: (identifier))))
+            (while_statement
+              condition: (binary_expression
+                left: (identifier)
+                right: (integer))
+              limit: (integer)
+              body: (block
+                (assignment_statement
+                  left: (identifier)
+                  right: (binary_expression
+                    left: (identifier)
+                    right: (integer)))))
+            (delete_statement
+              alias: (identifier))
+            (insert_statement
+              target: (identifier)
+              values: (value_list
+                (identifier)
+                (identifier)
+                (integer)))
+            (expression_statement
+              (call_expression
+                function: (member_expression
+                  object: (identifier)
+                  property: (identifier))
+                arguments: (argument_list
+                  (identifier)
+                  (identifier))))
+            (expression_statement
+              (call_expression
+                function: (identifier)
+                arguments: (argument_list
+                  (boolean)
+                  (identifier))))))))))
+
+================================================================================
+Output statements
+================================================================================
+
+CREATE QUERY q() {
+  PRINT Result[Result.name AS n, Result.@count], @@total AS total;
+  PRINT @@heap TO_CSV f1;
+  PRINT "x" WHERE x > 1;
+  f1.println(x, y);
+  LOG(TRUE, "x is", x);
+  RETURN @@total;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    body: (query_body
+      (print_statement
+        (subscript_expression
+          object: (identifier)
+          (aliased_expression
+            value: (member_expression
+              object: (identifier)
+              property: (identifier))
+            alias: (identifier))
+          (member_expression
+            object: (identifier)
+            property: (local_accumulator)))
+        (aliased_expression
+          value: (global_accumulator)
+          alias: (identifier)))
+      (print_statement
+        (global_accumulator)
+        file: (identifier))
+      (print_statement
+        (string
+          (string_content))
+        filter: (binary_expression
+          left: (identifier)
+          right: (integer)))
+      (expression_statement
+        (call_expression
+          function: (member_expression
+            object: (identifier)
+            property: (identifier))
+          arguments: (argument_list
+            (identifier)
+            (identifier))))
+      (expression_statement
+        (call_expression
+          function: (identifier)
+          arguments: (argument_list
+            (boolean)
+            (string
+              (string_content))
+            (identifier))))
+      (return_statement
+        value: (global_accumulator)))))
+
+================================================================================
+Data modification statements
+================================================================================
+
+CREATE QUERY q() {
+  INSERT INTO Person VALUES ("id1", "name", _);
+  INSERT INTO Friendship (FROM, TO, connect_day) VALUES (p Person, q Person, now());
+  INSERT INTO EDGE edge_type_param VALUES (s, t, 0.5);
+  DELETE s FROM Start:s WHERE s.age > 100;
+  UPDATE s FROM Start:s SET s.age = s.age + 1, s.@x = 1 WHERE s.name LIKE "%x%";
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    body: (query_body
+      (insert_statement
+        target: (identifier)
+        values: (value_list
+          (string
+            (string_content))
+          (string
+            (string_content))
+          (wildcard)))
+      (insert_statement
+        target: (identifier)
+        columns: (insert_columns
+          (identifier))
+        values: (value_list
+          (typed_value
+            value: (identifier)
+            type: (identifier))
+          (typed_value
+            value: (identifier)
+            type: (identifier))
+          (call_expression
+            function: (identifier)
+            arguments: (argument_list))))
+      (insert_statement
+        target: (identifier)
+        values: (value_list
+          (identifier)
+          (identifier)
+          (float)))
+      (delete_statement
+        alias: (identifier)
+        (from_clause
+          (path_pattern
+            (vertex_pattern
+              type: (identifier)
+              alias: (identifier))))
+        (where_clause
+          condition: (binary_expression
+            left: (member_expression
+              object: (identifier)
+              property: (identifier))
+            right: (integer))))
+      (update_statement
+        alias: (identifier)
+        (from_clause
+          (path_pattern
+            (vertex_pattern
+              type: (identifier)
+              alias: (identifier))))
+        body: (block
+          (assignment_statement
+            left: (member_expression
+              object: (identifier)
+              property: (identifier))
+            right: (binary_expression
+              left: (member_expression
+                object: (identifier)
+                property: (identifier))
+              right: (integer)))
+          (assignment_statement
+            left: (member_expression
+              object: (identifier)
+              property: (local_accumulator))
+            right: (integer)))
+        (where_clause
+          condition: (like_expression
+            left: (member_expression
+              object: (identifier)
+              property: (identifier))
+            pattern: (string
+              (string_content))))))))
+
+================================================================================
+Exceptions
+================================================================================
+
+CREATE QUERY q() {
+  EXCEPTION myEx (40001);
+  TRY
+    RAISE myEx("oops " + to_string(x));
+  EXCEPTION
+    WHEN myEx THEN PRINT "caught";
+    WHEN other THEN PRINT "other";
+    ELSE PRINT "unknown";
+  END;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    body: (query_body
+      (exception_declaration
+        name: (identifier)
+        code: (integer))
+      (try_statement
+        body: (block
+          (raise_statement
+            exception: (identifier)
+            arguments: (argument_list
+              (binary_expression
+                left: (string
+                  (string_content))
+                right: (call_expression
+                  function: (identifier)
+                  arguments: (argument_list
+                    (identifier)))))))
+        (exception_handler
+          exception: (identifier)
+          body: (block
+            (print_statement
+              (string
+                (string_content)))))
+        (exception_handler
+          exception: (identifier)
+          body: (block
+            (print_statement
+              (string
+                (string_content)))))
+        (else_clause
+          body: (block
+            (print_statement
+              (string
+                (string_content)))))))))
+
+================================================================================
+ELSE IF across a comment, and identifiers starting with "if"
+================================================================================
+
+CREATE QUERY q(INT x) {
+  INT ifCount = 0;
+  IF x > 1 THEN
+    ifCount = 1;
+  ELSE // the comment does not split ELSE IF
+    IF x > 0 THEN
+      ifCount = 2;
+    ELSE
+      ifCount = 3;
+  END;
+  IF x > 1 THEN ifCount = 1; ELSE ifCount = 2; END;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list
+      (parameter
+        type: (primitive_type)
+        name: (identifier)))
+    body: (query_body
+      (variable_declaration
+        type: (primitive_type)
+        (variable_declarator
+          name: (identifier)
+          value: (integer)))
+      (if_statement
+        condition: (binary_expression
+          left: (identifier)
+          right: (integer))
+        consequence: (block
+          (assignment_statement
+            left: (identifier)
+            right: (integer)))
+        alternative: (else_if_clause
+          (comment)
+          condition: (binary_expression
+            left: (identifier)
+            right: (integer))
+          consequence: (block
+            (assignment_statement
+              left: (identifier)
+              right: (integer))))
+        alternative: (else_clause
+          body: (block
+            (assignment_statement
+              left: (identifier)
+              right: (integer)))))
+      (if_statement
+        condition: (binary_expression
+          left: (identifier)
+          right: (integer))
+        consequence: (block
+          (assignment_statement
+            left: (identifier)
+            right: (integer)))
+        alternative: (else_clause
+          body: (block
+            (assignment_statement
+              left: (identifier)
+              right: (integer))))))))
+
+================================================================================
+An ELSE IF chain, then an ELSE branch that is a nested IF
+================================================================================
+
+CREATE QUERY q(BOOL a, BOOL b, BOOL c, BOOL d) {
+  IF a THEN x = 1; ELSE IF b THEN x = 2; END;
+  PRINT x;
+  IF c THEN y = 1;
+  ELSE
+    IF d THEN y = 2; END;
+  END;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list
+      (parameter
+        type: (primitive_type)
+        name: (identifier))
+      (parameter
+        type: (primitive_type)
+        name: (identifier))
+      (parameter
+        type: (primitive_type)
+        name: (identifier))
+      (parameter
+        type: (primitive_type)
+        name: (identifier)))
+    body: (query_body
+      (if_statement
+        condition: (identifier)
+        consequence: (block
+          (assignment_statement
+            left: (identifier)
+            right: (integer)))
+        alternative: (else_if_clause
+          condition: (identifier)
+          consequence: (block
+            (assignment_statement
+              left: (identifier)
+              right: (integer)))))
+      (print_statement
+        (identifier))
+      (if_statement
+        condition: (identifier)
+        consequence: (block
+          (assignment_statement
+            left: (identifier)
+            right: (integer)))
+        alternative: (else_clause
+          body: (block
+            (if_statement
+              condition: (identifier)
+              consequence: (block
+                (assignment_statement
+                  left: (identifier)
+                  right: (integer))))))))))
+
+================================================================================
+Virtual edges, FILE permissions, anonymous tuples and PRINT WITH VECTOR
+================================================================================
+
+CREATE QUERY misc(FILE out, STRING path) {
+  CREATE DIRECTED VIRTUAL EDGE Near (FROM Person|Post, TO Person, dist DOUBLE);
+  FILE f (path, "764");
+  TUPLE<INT, STRING> t = (1, "a");
+  INSERT INTO Has_Edge (FROM, TO, DISCRIMINATOR(ts)) VALUES (s, t, 3);
+  PRINT R WITH VECTOR TO_CSV out;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list
+      (parameter
+        type: (file_type)
+        name: (identifier))
+      (parameter
+        type: (primitive_type)
+        name: (identifier)))
+    body: (query_body
+      (virtual_edge_declaration
+        name: (identifier)
+        attributes: (edge_attribute_list
+          (edge_pair
+            from: (identifier)
+            from: (identifier)
+            to: (identifier))
+          (attribute_definition
+            name: (identifier)
+            type: (primitive_type))))
+      (file_declaration
+        name: (identifier)
+        path: (identifier)
+        permission: (string
+          (string_content)))
+      (variable_declaration
+        type: (tuple_type
+          (primitive_type)
+          (primitive_type))
+        (variable_declarator
+          name: (identifier)
+          value: (tuple
+            (integer)
+            (string
+              (string_content)))))
+      (insert_statement
+        target: (identifier)
+        columns: (insert_columns
+          (discriminator
+            (identifier)))
+        values: (value_list
+          (identifier)
+          (identifier)
+          (integer)))
+      (print_statement
+        (identifier)
+        file: (identifier)))))
+
+================================================================================
+ELSE IF closing with one END, or nesting with two
+================================================================================
+
+CREATE QUERY q(BOOL a, BOOL b) {
+  SumAccum<INT> @m;
+  R = SELECT s FROM P:s
+      POST-ACCUM
+        FOREACH i IN RANGE[1, 2] DO
+          DOUBLE nd = 0,
+          IF a THEN nd = 1
+          ELSE IF b THEN nd = 2
+          ELSE nd = 3 END END,
+          s.@m += nd
+        END;
+  IF a THEN PRINT 1; ELSE IF b THEN PRINT 2; ELSE PRINT 3; END; END;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list
+      (parameter
+        type: (primitive_type)
+        name: (identifier))
+      (parameter
+        type: (primitive_type)
+        name: (identifier)))
+    body: (query_body
+      (accumulator_declaration
+        type: (accumulator_type
+          kind: (accumulator_kind)
+          argument: (primitive_type))
+        (accumulator_declarator
+          name: (local_accumulator)))
+      (assignment_statement
+        left: (identifier)
+        right: (select_statement
+          result: (identifier)
+          (from_clause
+            (path_pattern
+              (vertex_pattern
+                type: (identifier)
+                alias: (identifier))))
+          (post_accum_clause
+            (foreach_statement
+              variable: (identifier)
+              collection: (range_expression
+                start: (integer)
+                end: (integer))
+              body: (block
+                (variable_declaration
+                  type: (primitive_type)
+                  (variable_declarator
+                    name: (identifier)
+                    value: (integer)))
+                (if_statement
+                  condition: (identifier)
+                  consequence: (block
+                    (assignment_statement
+                      left: (identifier)
+                      right: (integer)))
+                  alternative: (else_if_clause
+                    condition: (identifier)
+                    consequence: (block
+                      (assignment_statement
+                        left: (identifier)
+                        right: (integer))))
+                  alternative: (else_clause
+                    body: (block
+                      (assignment_statement
+                        left: (identifier)
+                        right: (integer)))))
+                (assignment_statement
+                  left: (member_expression
+                    object: (identifier)
+                    property: (local_accumulator))
+                  right: (identifier)))))))
+      (if_statement
+        condition: (identifier)
+        consequence: (block
+          (print_statement
+            (integer)))
+        alternative: (else_if_clause
+          condition: (identifier)
+          consequence: (block
+            (print_statement
+              (integer))))
+        alternative: (else_clause
+          body: (block
+            (print_statement
+              (integer))))))))

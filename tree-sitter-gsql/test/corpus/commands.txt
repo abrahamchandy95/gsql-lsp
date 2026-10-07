@@ -1,0 +1,534 @@
+================================================================================
+Install, run, show and drop
+================================================================================
+
+INSTALL QUERY hello
+INSTALL QUERY -OPTIMIZE hello, world
+INSTALL QUERY ALL
+RUN QUERY hello(("Tom", "Person"), 3, ["a", "b"])
+RUN QUERY -d hello()
+SHOW QUERY hello
+SHOW VERTEX *
+LS
+DROP QUERY hello, world
+DROP QUERY ALL
+DROP JOB load_social
+DROP GRAPH Social
+DROP ALL
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (install_query_statement
+    query: (identifier))
+  (install_query_statement
+    (command_option
+      (option_flag))
+    query: (identifier)
+    query: (identifier))
+  (install_query_statement)
+  (run_query_statement
+    query: (identifier)
+    arguments: (argument_list
+      (tuple
+        (string
+          (string_content))
+        (string
+          (string_content)))
+      (integer)
+      (list_literal
+        (string
+          (string_content))
+        (string
+          (string_content)))))
+  (run_query_statement
+    (command_option
+      (option_flag))
+    query: (identifier)
+    arguments: (argument_list))
+  (show_statement
+    (identifier))
+  (show_statement
+    (wildcard))
+  (shell_command)
+  (drop_statement
+    name: (identifier)
+    name: (identifier))
+  (drop_statement)
+  (drop_statement
+    name: (identifier))
+  (drop_statement
+    name: (identifier))
+  (drop_statement))
+
+================================================================================
+Users, roles and privileges
+================================================================================
+
+CREATE USER
+CREATE ROLE analyst, engineer
+GRANT ROLE analyst ON GRAPH Social TO alice, bob
+REVOKE ROLE analyst ON GRAPH Social FROM alice
+GRANT READ_SCHEMA, CREATE ON GRAPH Social TO analyst
+DROP USER alice
+ALTER PASSWORD bob
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (security_statement)
+  (security_statement
+    (identifier)
+    (identifier))
+  (grant_statement
+    privilege: (identifier)
+    (identifier)
+    grantee: (identifier)
+    grantee: (identifier))
+  (revoke_statement
+    privilege: (identifier)
+    (identifier)
+    grantee: (identifier))
+  (grant_statement
+    privilege: (identifier)
+    (identifier)
+    grantee: (identifier))
+  (drop_statement
+    name: (identifier))
+  (security_statement
+    (identifier)))
+
+================================================================================
+Shell commands
+================================================================================
+
+BEGIN
+CREATE VERTEX X (PRIMARY_ID id INT)
+END
+EXPORT GRAPH ALL TO "/tmp/export"
+IMPORT GRAPH ALL FROM "/tmp/export"
+CLEAR GRAPH STORE -HARD
+ABORT LOADING JOB social.load_people.file.m1.1700000000000
+RESUME LOADING JOB job_1
+SET exit_on_error = "FALSE"
+CREATE DATA_SOURCE KAFKA k1 = "/path/config.json" FOR GRAPH Social
+CREATE PACKAGE lib
+@/tmp/other.gsql
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (shell_command)
+  (vertex_definition
+    name: (identifier)
+    attributes: (vertex_attribute_list
+      (primary_id_definition
+        name: (identifier)
+        type: (primitive_type))))
+  (shell_command)
+  (shell_command
+    (string
+      (string_content)))
+  (shell_command
+    (string
+      (string_content)))
+  (shell_command
+    (option_flag))
+  (shell_command
+    (qualified_identifier
+      (identifier)
+      (identifier)
+      (identifier)
+      (identifier))
+    (float))
+  (shell_command
+    (identifier))
+  (shell_command
+    name: (identifier)
+    value: (string
+      (string_content)))
+  (data_source_definition
+    type: (identifier)
+    name: (identifier)
+    config: (string
+      (string_content))
+    (for_graph_clause
+      graph: (identifier)))
+  (package_definition
+    name: (identifier))
+  (shell_command
+    (file_include)))
+
+================================================================================
+Comments
+================================================================================
+
+// line comment
+# hash comment
+/* block
+   comment */
+USE GRAPH Social // trailing
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (comment)
+  (comment)
+  (comment)
+  (use_statement
+    graph: (identifier))
+  (comment))
+
+================================================================================
+Command options with values and trailing options
+================================================================================
+
+RUN SCHEMA_CHANGE JOB change_job -N
+RUN QUERY -PROFILE BASIC top_k(5)
+RUN QUERY -av test()
+RUN QUERY -queue wq report(2) -gzip -o "/tmp/out.gz"
+INTERPRET QUERY lookup("Jane") -mode instruction
+RUN QUERY greet( {"name": "Emma", "age": 21} )
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (run_job_statement
+    job: (identifier)
+    (command_option
+      (option_flag)))
+  (run_query_statement
+    (command_option
+      (option_flag)
+      value: (identifier))
+    query: (identifier)
+    arguments: (argument_list
+      (integer)))
+  (run_query_statement
+    (command_option
+      (option_flag))
+    query: (identifier)
+    arguments: (argument_list))
+  (run_query_statement
+    (command_option
+      (option_flag)
+      value: (identifier))
+    query: (identifier)
+    arguments: (argument_list
+      (integer))
+    (command_option
+      (option_flag))
+    (command_option
+      (option_flag)
+      value: (string
+        (string_content))))
+  (interpret_query_statement
+    name: (identifier)
+    arguments: (argument_list
+      (string
+        (string_content)))
+    (command_option
+      (option_flag)
+      value: (identifier)))
+  (run_query_statement
+    query: (identifier)
+    arguments: (argument_list
+      (vertex_set_literal
+        (pair
+          key: (string
+            (string_content))
+          value: (string
+            (string_content)))
+        (pair
+          key: (string
+            (string_content))
+          value: (integer))))))
+
+================================================================================
+INSTALL QUERY with options only
+================================================================================
+
+INSTALL QUERY -OPTIMIZE
+INSTALL QUERY -force -single q1, q2
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (install_query_statement
+    (command_option
+      (option_flag)))
+  (install_query_statement
+    (command_option
+      (option_flag))
+    (command_option
+      (option_flag))
+    query: (identifier)
+    query: (identifier)))
+
+================================================================================
+RUN QUERY with a default argument
+================================================================================
+
+RUN QUERY greet_person(21, _, "2020-02-02 20:02:20")
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (run_query_statement
+    query: (identifier)
+    arguments: (argument_list
+      (integer)
+      (wildcard)
+      (string
+        (string_content)))))
+
+================================================================================
+Data sources, workload queues, default privileges and attribute privileges
+================================================================================
+
+CREATE DATA_SOURCE s1 = """{
+  "type": "s3",
+  "key": "value"
+}""" FOR GRAPH ldbc_snb
+LIST WORKLOAD QUEUE
+SHOW WORKLOAD QUEUE OLTP
+PUT WORKLOAD QUEUE FROM "/path/to/queue.json"
+GRANT WORKLOAD QUEUE OLTP TO USER u1, u2
+REVOKE WORKLOAD QUEUE OLTP FROM USER u1
+GRANT DEFAULT READ ON ALL QUERIES IN GRAPH g TO ROLE reader, writer
+SHOW DEFAULT ROLES IN GRAPH g
+SHOW PROXY USER alice
+GRANT READ ON EDGE Knows ATTRIBUTE to IN GRAPH g TO example_role
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_source_definition
+    name: (identifier)
+    config: (string)
+    (for_graph_clause
+      graph: (identifier)))
+  (shell_command)
+  (show_statement
+    (identifier)
+    (identifier))
+  (shell_command
+    (string
+      (string_content)))
+  (grant_statement
+    queue: (identifier)
+    grantee: (identifier)
+    grantee: (identifier))
+  (revoke_statement
+    queue: (identifier)
+    grantee: (identifier))
+  (grant_statement
+    privilege: (identifier)
+    (identifier)
+    (identifier)
+    grantee: (identifier)
+    grantee: (identifier))
+  (show_statement
+    (identifier)
+    (identifier)
+    (identifier)
+    (identifier))
+  (show_statement
+    (identifier)
+    (identifier))
+  (grant_statement
+    privilege: (identifier)
+    (identifier)
+    attribute: (identifier)
+    (identifier)
+    grantee: (identifier)))
+
+================================================================================
+Data source grants and revokes
+================================================================================
+
+GRANT DATA_SOURCE k1 TO GRAPH graph1, graph2
+REVOKE DATA_SOURCE k1 FROM GRAPH graph1
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_source_grant_statement
+    (identifier)
+    (identifier)
+    (identifier))
+  (data_source_grant_statement
+    (identifier)
+    (identifier)))
+
+================================================================================
+Loading job line ranges and glob names
+================================================================================
+
+RUN LOADING JOB -n 10,$ j1
+RUN LOADING JOB -n 10,50 j1
+SHOW VERTEX ?????
+SHOW VERTEX co?*y
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (run_job_statement
+    (command_option
+      (option_flag)
+      (integer)
+      (line_end))
+    (identifier))
+  (run_job_statement
+    (command_option
+      (option_flag)
+      (integer)
+      (integer))
+    (identifier))
+  (show_statement)
+  (show_statement
+    (identifier)
+    (wildcard)
+    (identifier)))
+
+================================================================================
+FIXED_BINARY attribute
+================================================================================
+
+CREATE VERTEX V (PRIMARY_ID id STRING, e FIXED_BINARY(8))
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (vertex_definition
+    (identifier)
+    (vertex_attribute_list
+      (primary_id_definition
+        (identifier)
+        (primitive_type))
+      (attribute_definition
+        (identifier)
+        (primitive_type
+          (integer))))))
+
+================================================================================
+SHOW GRANTS
+================================================================================
+
+SHOW GRANTS TO ROLE moderator
+SHOW GRANTS OF ROLE moderator, r2
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (show_statement
+    (identifier))
+  (show_statement
+    (identifier)
+    (identifier)))
+
+================================================================================
+Query descriptions
+================================================================================
+
+UPDATE DESCRIPTION OF QUERY q1 "text"
+SHOW DESCRIPTION OF QUERY *
+DROP DESCRIPTION OF QUERY_PARAM q1.p1
+DROP DESCRIPTION OF QUERY q1, q2 ON GRAPH g
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (description_statement
+    (name_pattern
+      (identifier))
+    (string
+      (string_content)))
+  (description_statement
+    (wildcard))
+  (description_statement
+    (name_pattern
+      (identifier)
+      (identifier)))
+  (description_statement
+    (name_pattern
+      (identifier))
+    (name_pattern
+      (identifier))
+    (identifier)))
+
+================================================================================
+Token and function files
+================================================================================
+
+GET TokenBank TO "/x.cpp"
+PUT ExprFunctions FROM "/x.hpp"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (shell_command
+    (identifier)
+    (string
+      (string_content)))
+  (shell_command
+    (identifier)
+    (string
+      (string_content))))
+
+================================================================================
+Row policies
+================================================================================
+
+ALTER VERTEX Person IN GLOBAL SET ROW POLICY lib.f ON (gender)
+ALTER VERTEX Person IN GRAPH g CLEAR ROW POLICY
+SHOW ROW POLICY
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (row_policy_statement
+    (identifier)
+    (name_pattern
+      (identifier)
+      (identifier))
+    (identifier))
+  (row_policy_statement
+    (identifier)
+    (identifier))
+  (show_statement
+    (identifier)))
+
+================================================================================
+User-defined function commands
+================================================================================
+
+INSTALL FUNCTION lib1.func1
+INSTALL FUNCTION ALL
+DROP FUNCTION lib1.*
+DROP FUNCTION lib1.f1, lib2.f2
+SHOW FUNCTION lib1.*
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (install_function_statement
+    (name_pattern
+      (identifier)
+      (identifier)))
+  (install_function_statement)
+  (drop_statement
+    (name_pattern
+      (identifier)
+      (wildcard)))
+  (drop_statement
+    (name_pattern
+      (identifier)
+      (identifier))
+    (name_pattern
+      (identifier)
+      (identifier)))
+  (show_statement
+    (name_pattern
+      (identifier)
+      (wildcard))))

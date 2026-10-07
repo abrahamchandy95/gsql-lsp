@@ -1,0 +1,19 @@
+CREATE QUERY t(STRING site) SYNTAX v2 {
+  SetAccum<INT> @@qstarts;
+  MinAccum<INT> @@minIdx; MaxAccum<INT> @@maxIdx, @@cd;
+  MapAccum<INT,DOUBLE> @totDed, @qboh, @netD, @netC;
+  sSpa = SELECT g FROM Site:g;
+  cNet = SELECT spa FROM sSpa:spa
+         POST-ACCUM
+           DOUBLE runv = 0,
+           FOREACH i IN RANGE[@@minIdx, @@maxIdx] DO
+             DOUBLE nd = 0,
+             IF @@qstarts.contains(i) THEN nd = spa.@totDed.get(i) + spa.@qboh.get(i)
+             ELSE IF i < @@cd THEN nd = spa.@totDed.get(i)
+             ELSE nd = spa.@totDed.get(i) + 1 END END,
+             spa.@netD += (i -> nd),
+             IF @@qstarts.contains(i) THEN runv = nd ELSE runv = runv + nd END,
+             spa.@netC += (i -> runv)
+           END;
+  PRINT cNet;
+}

@@ -1,0 +1,99 @@
+CREATE QUERY tg_label_prop (SET<STRING> v_type_set, SET<STRING> e_type_set, INT maximum_iteration,
+  INT print_limit, BOOL print_results = TRUE, STRING file_path = "", STRING result_attribute = "") SYNTAX V1 {
+  OrAccum @@or_changed = true;
+  MapAccum<INT, INT> @map;     # <communityId, numNeighbors>
+  MapAccum<INT, INT> @@comm_sizes_map;   # <communityId, members>
+  SumAccum<INT> @sum_label, @sum_num;
+  FILE f (file_path);
+  Start = {v_type_set};
+
+  # Assign unique labels to each vertex
+  Start = SELECT s FROM Start:s ACCUM s.@sum_label = getvid(s);
+
+  # Propagate labels to neighbors until labels converge or the max iterations is reached
+  WHILE @@or_changed == true LIMIT maximum_iteration DO
+      @@or_changed = false;
+      Start = SELECT s
+              FROM Start:s -(e_type_set:e)- v_type_set:t
+              ACCUM t.@map += (s.@sum_label -> 1)  # count the occurrences of neighbor's labels
+              POST-ACCUM
+                  INT max_v = 0,
+                  INT label = 0,
+                  # Iterate over the map to get the neighbor label that occurs most often
+                  FOREACH (k,v) IN t.@map DO
+                      CASE WHEN v > max_v THEN
+                          max_v = v,
+                          label = k
+                      END
+                  END,
+                  # When the neighbor search finds a label AND it is a new label
+                  # AND the label's count has increased, update the label.
+                  CASE WHEN label != 0 AND t.@sum_label != label AND max_v > t.@sum_num THEN
+                      @@or_changed += true,
+                      t.@sum_label = label,
+                      t.@sum_num = max_v
+                  END,
+                  t.@map.clear();
+  END;
+  Start = {v_type_set};
+  Start =  SELECT s FROM Start:s
+           POST-ACCUM
+               IF print_results THEN @@comm_sizes_map += (s.@sum_label -> 1) END;
+  IF print_results THEN
+      PRINT @@comm_sizes_map.size() AS num_communities;
+  END;
+}
+
+CREATE QUERY tg_lcc (STRING v_type, STRING e_type, INT top_k=100) SYNTAX V1 {
+  SumAccum<FLOAT> @sum_tri, @sum_lcc;
+  SetAccum<INT> @neighbors;
+  OrAccum @or_self_con;
+  Start = {v_type};
+  Start = SELECT s FROM Start:s -(e_type:e)- v_type:t
+          WHERE e.isDirected() == FALSE
+          ACCUM IF getvid(s) == getvid(t) THEN s.@or_self_con += TRUE ELSE s.@neighbors += getvid(t) END;
+  Start = SELECT s FROM Start:s -(e_type:e)- :t
+          WHERE getvid(s) > getvid(t)
+          ACCUM INT c1 = COUNT(s.@neighbors INTERSECT t.@neighbors),
+                s.@sum_tri += c1,
+                t.@sum_tri += c1
+          POST-ACCUM
+              IF s.@neighbors.size() > 1 THEN
+                  s.@sum_lcc = s.@sum_tri * 2.0 / (s.@neighbors.size() * (s.@neighbors.size() - 1))
+              END
+          ORDER BY s.@sum_lcc DESC LIMIT top_k;
+  PRINT Start[Start.@sum_lcc AS lcc];
+}
+
+CREATE QUERY knn(VERTEX source, INT k = 5) FOR GRAPH Social RETURNS (SetAccum<VERTEX>) {
+  TYPEDEF TUPLE <VERTEX v, DOUBLE score> Neighbor;
+  HeapAccum<Neighbor>(k, score DESC, v ASC) @@top;
+  SetAccum<VERTEX> @@result;
+  ListAccum<DOUBLE> @vec;
+  GroupByAccum<STRING city, SumAccum<INT> cnt, MaxAccum<DOUBLE> best> @@by_city;
+  DATETIME cutoff = datetime_sub(now(), INTERVAL 30 DAY);
+  JSONARRAY arr = parse_json_array("[{\"a\": 1}, {\"a\": 2}]");
+  INT total = 0;
+
+  FOREACH i IN RANGE[0, arr.size() - 1] DO
+      JSONOBJECT o = arr.getJsonObject(i);
+      total = total + o.getInt("a");
+  END;
+
+  Src = {source};
+  Cands = SELECT t FROM Src:s -(Knows:e)- Person:t
+          WHERE e.since > cutoff AND year(e.since) >= 2020 AND datetime_diff(now(), e.since) < 86400 * 30
+          ACCUM @@top += Neighbor(t, e.weight),
+                @@by_city += (t.city -> 1, e.weight);
+  WHILE @@top.size() > 0 DO
+      @@result += @@top.pop().v;
+  END;
+  IF @@top.size() > 0 THEN
+      PRINT @@top.top().score;
+  END;
+  FOREACH g IN @@by_city DO
+      PRINT g.city, g.cnt, g.best;
+  END;
+  SetAccum<VERTEX> @@more = knn(source, k - 1);
+  RETURN @@result;
+}

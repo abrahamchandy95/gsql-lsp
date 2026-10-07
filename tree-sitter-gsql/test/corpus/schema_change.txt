@@ -1,0 +1,147 @@
+================================================================================
+Local schema change job
+================================================================================
+
+CREATE SCHEMA_CHANGE JOB j1 FOR GRAPH Social {
+  ADD VERTEX Cat (PRIMARY_ID name STRING, age INT);
+  ADD UNDIRECTED EDGE Owns (FROM Person, TO Cat);
+  ALTER VERTEX Person ADD ATTRIBUTE (email STRING DEFAULT "none", score FLOAT);
+  ALTER VERTEX Person DROP ATTRIBUTE (email);
+  ALTER VERTEX Person ADD INDEX name_idx ON (name);
+  ALTER VERTEX Person DROP INDEX name_idx;
+  ALTER EDGE Owns ADD PAIR (FROM Person, TO Dog);
+  ALTER VERTEX Person WITH TAGGABLE="true";
+  DROP VERTEX Dog;
+  DROP EDGE Has, Had;
+}
+RUN SCHEMA_CHANGE JOB j1
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (schema_change_job_definition
+    name: (identifier)
+    (for_graph_clause
+      graph: (identifier))
+    body: (schema_change_body
+      (vertex_definition
+        name: (identifier)
+        attributes: (vertex_attribute_list
+          (primary_id_definition
+            name: (identifier)
+            type: (primitive_type))
+          (attribute_definition
+            name: (identifier)
+            type: (primitive_type))))
+      (edge_definition
+        name: (identifier)
+        attributes: (edge_attribute_list
+          (edge_pair
+            from: (identifier)
+            to: (identifier))))
+      (alter_type_statement
+        name: (identifier)
+        (attribute_definition
+          name: (identifier)
+          type: (primitive_type)
+          (default_value
+            value: (string
+              (string_content))))
+        (attribute_definition
+          name: (identifier)
+          type: (primitive_type)))
+      (alter_type_statement
+        name: (identifier)
+        attribute: (identifier))
+      (alter_type_statement
+        name: (identifier)
+        index: (identifier)
+        attribute: (identifier))
+      (alter_type_statement
+        name: (identifier)
+        index: (identifier))
+      (alter_type_statement
+        name: (identifier)
+        (edge_pair
+          from: (identifier)
+          to: (identifier)))
+      (alter_type_statement
+        name: (identifier)
+        (with_clause
+          (option_assignment
+            key: (identifier)
+            value: (string
+              (string_content)))))
+      (drop_statement
+        name: (identifier))
+      (drop_statement
+        name: (identifier)
+        name: (identifier))))
+  (run_job_statement
+    job: (identifier)))
+
+================================================================================
+Global schema change job
+================================================================================
+
+CREATE GLOBAL SCHEMA_CHANGE JOB g1 {
+  ADD VERTEX Dog (PRIMARY_ID id STRING);
+  ALTER GRAPH Social ADD VERTEX Dog, EDGE Owns;
+}
+RUN GLOBAL SCHEMA_CHANGE JOB -force g1
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (schema_change_job_definition
+    name: (identifier)
+    body: (schema_change_body
+      (vertex_definition
+        name: (identifier)
+        attributes: (vertex_attribute_list
+          (primary_id_definition
+            name: (identifier)
+            type: (primitive_type))))
+      (alter_graph_statement
+        name: (identifier)
+        member: (identifier)
+        member: (identifier))))
+  (run_job_statement
+    (command_option
+      (option_flag))
+    job: (identifier)))
+
+================================================================================
+Global schema change membership and edge endpoint changes
+================================================================================
+
+CREATE GLOBAL SCHEMA_CHANGE JOB membership {
+  ADD VERTEX Book, Author TO GRAPH Library;
+  DROP EDGE Wrote FROM GRAPH Library;
+  ALTER EDGE Likes ADD FROM (Animal) TO (Plant) ATTRIBUTE (note STRING NULLABLE);
+  ALTER EDGE Likes ADD TO (Animal);
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (schema_change_job_definition
+    name: (identifier)
+    body: (schema_change_body
+      (add_to_graph_statement
+        name: (identifier)
+        name: (identifier)
+        graph: (identifier))
+      (drop_statement
+        name: (identifier)
+        graph: (identifier))
+      (alter_type_statement
+        name: (identifier)
+        from: (identifier)
+        to: (identifier)
+        (attribute_definition
+          name: (identifier)
+          type: (primitive_type)))
+      (alter_type_statement
+        name: (identifier)
+        to: (identifier)))))

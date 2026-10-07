@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  TREE_SITTER_VERSION: 0.27.0
+
+jobs:
+  grammar:
+    name: Grammar
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install -g tree-sitter-cli@${{ env.TREE_SITTER_VERSION }}
+      - name: Generated parser is up to date
+        working-directory: tree-sitter-gsql
+        run: |
+          tree-sitter generate
+          git diff --exit-code -- src/parser.c src/grammar.json src/node-types.json
+      - name: Corpus and highlight tests
+        working-directory: tree-sitter-gsql
+        run: tree-sitter test
+
+  server:
+    name: Server (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy -p gsql-lsp --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  editors:
+    name: Editor integrations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Generated editor queries are up to date
+        run: python3 scripts/sync_queries.py --check
+      - name: TextMate grammar
+        run: python3 editors/vscode/test/tokenize.py --test
+      - name: Vim syntax
+        run: |
+          sudo apt-get update && sudo apt-get install -y vim
+          vim -N -u NONE -es -S editors/vim/test/syntax.vim </dev/null
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+      - name: Neovim end-to-end
+        run: |
+          cargo build
+          GSQL_LSP_BIN=target/debug/gsql-lsp nvim --headless --clean -u NONE -l editors/neovim/test/e2e.lua
+
+  vscode:
+    name: VS Code extension
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - run: npm run compile
+      - run: npx vsce package
+
+  packaging:
+    name: Packaging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Both crates package and build from their .crate files
+        run: cargo package --workspace --locked
+      - name: Installer and Homebrew formula
+        run: |
+          shellcheck scripts/install.sh scripts/test_install.sh scripts/test_homebrew.sh
+          cargo build
+          GSQL_LSP_BIN=target/debug/gsql-lsp sh scripts/test_install.sh
+          sh scripts/test_homebrew.sh

@@ -1,0 +1,30 @@
+/*
+ * Schema for transaction monitoring: customers own accounts, accounts send
+ * transfers, and devices or addresses link customers together.
+ */
+
+TYPEDEF TUPLE <city STRING, street STRING, zip STRING> Address
+
+CREATE VERTEX Customer (PRIMARY_ID id STRING, name STRING, risk_score DOUBLE DEFAULT 0.0, home Address,
+  kyc_verified BOOL DEFAULT FALSE)
+
+CREATE VERTEX Account (id STRING PRIMARY KEY, opened DATETIME, balance DOUBLE, currency STRING DEFAULT "USD",
+  is_blocked BOOL DEFAULT FALSE)
+
+CREATE VERTEX Device (PRIMARY_ID fingerprint STRING, kind STRING) WITH primary_id_as_attribute="true"
+
+// Merchants are identified by country and registration number together.
+CREATE VERTEX Merchant (country STRING, reg_no STRING, name STRING, category STRING, PRIMARY KEY (country, reg_no))
+
+CREATE DIRECTED EDGE Owns (FROM Customer, TO Account) WITH REVERSE_EDGE="owned_by"
+
+// Several transfers between the same two accounts are told apart by time.
+CREATE DIRECTED EDGE Transfer (FROM Account, TO Account, DISCRIMINATOR(at DATETIME), amount DOUBLE, channel STRING)
+  WITH REVERSE_EDGE="received"
+
+// Payments go to merchants or to other accounts.
+CREATE DIRECTED EDGE Pays (FROM Account, TO Merchant | FROM Account, TO Account, amount DOUBLE, at DATETIME)
+
+CREATE UNDIRECTED EDGE Uses (FROM Customer, TO Device, first_seen DATETIME, last_seen DATETIME)
+
+CREATE GRAPH Finance (Customer, Account, Device, Merchant, Owns, Transfer, Pays, Uses)

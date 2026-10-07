@@ -1,0 +1,185 @@
+{
+  "name": "gsql",
+  "displayName": "GSQL (TigerGraph)",
+  "description": "TigerGraph GSQL support: syntax highlighting, diagnostics, completion, hover, navigation and formatting through gsql-lsp.",
+  "version": "0.1.0",
+  "publisher": "gsql-lsp",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gsql-lsp/gsql-lsp"
+  },
+  "engines": {
+    "vscode": "^1.82.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Formatters"
+  ],
+  "keywords": [
+    "gsql",
+    "tigergraph",
+    "graph",
+    "lsp"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "gsql",
+        "aliases": [
+          "GSQL",
+          "gsql"
+        ],
+        "extensions": [
+          ".gsql",
+          ".gsq"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "gsql",
+        "scopeName": "source.gsql",
+        "path": "./syntaxes/gsql.tmLanguage.json"
+      }
+    ],
+    "configurationDefaults": {
+      "[gsql]": {
+        "editor.tabSize": 4,
+        "editor.insertSpaces": true
+      }
+    },
+    "configuration": {
+      "title": "GSQL",
+      "properties": {
+        "gsql.server.path": {
+          "type": "string",
+          "default": "gsql-lsp",
+          "description": "Path to the gsql-lsp executable; a leading ~ and ${workspaceFolder} are expanded. The default uses the server bundled with the extension, or gsql-lsp from PATH."
+        },
+        "gsql.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Traces the communication between VS Code and the language server."
+        },
+        "gsql.diagnostics.unknownTypes": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warn about vertex and edge types that are not declared in the workspace (only when the workspace declares a schema)."
+        },
+        "gsql.diagnostics.unknownAttributes": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warn about attributes that the vertex or edge type does not declare."
+        },
+        "gsql.diagnostics.undefinedNames": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warn about identifiers in queries that are not defined."
+        },
+        "gsql.diagnostics.unused": {
+          "type": "boolean",
+          "default": true,
+          "description": "Fade out accumulators and variables that are never used."
+        },
+        "gsql.diagnostics.languageRules": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check rules from the GSQL language reference: reserved words used as names, where accumulators may be assigned or modified, virtual edge and accumulator type restrictions, interpreted and distributed query limitations, and exact comparison of FLOAT/DOUBLE values."
+        },
+        "gsql.diagnostics.noSchemaNotice": {
+          "type": "boolean",
+          "default": true,
+          "description": "Say so (a warning, once per file, on the first query name that uses a type) when no schema is found, because types and attributes are then not checked."
+        },
+        "gsql.diagnostics.duplicateDefinitions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Report a CREATE that repeats a vertex, edge, graph or query name an earlier CREATE defines (in the same file or another one)."
+        },
+        "gsql.diagnostics.style": {
+          "type": "boolean",
+          "default": true,
+          "description": "Hint at deviations from the GSQL Style Guide, with a quick fix: keywords and reserved words that are not in all caps, and `#` comments (use `//`)."
+        },
+        "gsql.diagnostics.floatEquality": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warn about exact equality between FLOAT/DOUBLE values (comparisons with whole numbers, such as `x == 0`, and `x == float_to_int(x)` are not reported)."
+        },
+        "gsql.format.keywordCase": {
+          "type": "string",
+          "enum": [
+            "preserve",
+            "upper",
+            "lower"
+          ],
+          "default": "preserve",
+          "description": "Keyword case applied by the formatter."
+        },
+        "gsql.inlayHints.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inferred alias types and query argument names."
+        },
+        "gsql.semanticTokens.lexical": {
+          "type": "boolean",
+          "default": false,
+          "description": "Also send semantic tokens for keywords, literals and comments (normally highlighted by the TextMate grammar)."
+        }
+      }
+    },
+    "semanticTokenScopes": [
+      {
+        "language": "gsql",
+        "scopes": {
+          "class": [
+            "entity.name.type.vertex.gsql"
+          ],
+          "struct": [
+            "entity.name.type.edge.gsql"
+          ],
+          "variable.static": [
+            "variable.other.accumulator.global.gsql"
+          ],
+          "property.static": [
+            "variable.other.accumulator.local.gsql"
+          ],
+          "namespace": [
+            "entity.name.namespace.graph.gsql"
+          ]
+        }
+      }
+    ],
+    "commands": [
+      {
+        "command": "gsql.restartServer",
+        "title": "Restart Language Server",
+        "category": "GSQL"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.82.0",
+    "@vscode/vsce": "^3.0.0",
+    "typescript": "^5.4.0"
+  }
+}

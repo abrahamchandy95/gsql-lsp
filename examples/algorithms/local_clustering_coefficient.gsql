@@ -1,0 +1,20 @@
+CREATE QUERY tg_lcc (STRING v_type, STRING e_type, INT top_k=100) SYNTAX V1 {
+    SumAccum<FLOAT> @sum_tri, @sum_lcc;
+    SetAccum<INT> @neighbors;
+    OrAccum @or_self_con;
+    Start = {v_type};
+    Start = SELECT s FROM Start:s -(e_type:e)- v_type:t
+            WHERE e.isDirected() == FALSE
+            ACCUM IF getvid(s) == getvid(t) THEN s.@or_self_con += TRUE ELSE s.@neighbors += getvid(t) END;
+    Start = SELECT s FROM Start:s -(e_type:e)- :t
+            WHERE getvid(s) > getvid(t)
+            ACCUM INT c1 = COUNT(s.@neighbors INTERSECT t.@neighbors),
+                  s.@sum_tri += c1,
+                  t.@sum_tri += c1
+            POST-ACCUM
+                IF s.@neighbors.size() > 1 THEN
+                    s.@sum_lcc = s.@sum_tri * 2.0 / (s.@neighbors.size() * (s.@neighbors.size() - 1))
+                END
+            ORDER BY s.@sum_lcc DESC LIMIT top_k;
+    PRINT Start[Start.@sum_lcc AS lcc];
+}

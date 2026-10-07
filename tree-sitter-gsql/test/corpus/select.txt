@@ -1,0 +1,683 @@
+================================================================================
+Classic SELECT with all clauses
+================================================================================
+
+CREATE QUERY q() {
+  Result = SELECT t FROM Start:s -(Friendship:e)- Person:t
+           SAMPLE 10 EDGE WHEN s.outdegree() > 10
+           WHERE t.age > 18 AND s != t
+           ACCUM t.@count += 1, @@total += 1
+           POST-ACCUM t.@count = t.@count * 2
+           POST_ACCUM @@x += t.@count
+           HAVING t.@count > 1
+           ORDER BY t.@count DESC, t.name ASC
+           LIMIT 10;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    body: (query_body
+      (assignment_statement
+        left: (identifier)
+        right: (select_statement
+          result: (identifier)
+          (from_clause
+            (path_pattern
+              (vertex_pattern
+                type: (identifier)
+                alias: (identifier))
+              (edge_step
+                (edge_pattern
+                  type: (edge_atom
+                    name: (identifier))
+                  alias: (identifier))
+                (vertex_pattern
+                  type: (identifier)
+                  alias: (identifier)))))
+          (sample_clause
+            size: (integer)
+            condition: (binary_expression
+              left: (call_expression
+                function: (member_expression
+                  object: (identifier)
+                  property: (identifier))
+                arguments: (argument_list))
+              right: (integer)))
+          (where_clause
+            condition: (binary_expression
+              left: (binary_expression
+                left: (member_expression
+                  object: (identifier)
+                  property: (identifier))
+                right: (integer))
+              right: (binary_expression
+                left: (identifier)
+                right: (identifier))))
+          (accum_clause
+            (assignment_statement
+              left: (member_expression
+                object: (identifier)
+                property: (local_accumulator))
+              right: (integer))
+            (assignment_statement
+              left: (global_accumulator)
+              right: (integer)))
+          (post_accum_clause
+            (assignment_statement
+              left: (member_expression
+                object: (identifier)
+                property: (local_accumulator))
+              right: (binary_expression
+                left: (member_expression
+                  object: (identifier)
+                  property: (local_accumulator))
+                right: (integer))))
+          (post_accum_clause
+            (assignment_statement
+              left: (global_accumulator)
+              right: (member_expression
+                object: (identifier)
+                property: (local_accumulator))))
+          (having_clause
+            condition: (binary_expression
+              left: (member_expression
+                object: (identifier)
+                property: (local_accumulator))
+              right: (integer)))
+          (order_by_clause
+            (order_item
+              value: (member_expression
+                object: (identifier)
+                property: (local_accumulator)))
+            (order_item
+              value: (member_expression
+                object: (identifier)
+                property: (identifier))))
+          (limit_clause
+            count: (integer)))))))
+
+================================================================================
+Edge and vertex type alternatives
+================================================================================
+
+CREATE QUERY q() {
+  R = SELECT t FROM Start:s -((Friendship|Follows):e)-> (Person|Account):t;
+  R = SELECT t FROM Start:s -(Friendship|Follows:e)-> :t;
+  R = SELECT t FROM ANY:s -(_:e)- _:t;
+  R = SELECT t FROM Start:s -(@@edge_types:e)- @@vertex_types:t;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    body: (query_body
+      (assignment_statement
+        left: (identifier)
+        right: (select_statement
+          result: (identifier)
+          (from_clause
+            (path_pattern
+              (vertex_pattern
+                type: (identifier)
+                alias: (identifier))
+              (edge_step
+                (edge_pattern
+                  type: (edge_group
+                    (edge_alternation
+                      (edge_atom
+                        name: (identifier))
+                      (edge_atom
+                        name: (identifier))))
+                  alias: (identifier))
+                (vertex_pattern
+                  type: (vertex_type_alternation
+                    (identifier)
+                    (identifier))
+                  alias: (identifier)))))))
+      (assignment_statement
+        left: (identifier)
+        right: (select_statement
+          result: (identifier)
+          (from_clause
+            (path_pattern
+              (vertex_pattern
+                type: (identifier)
+                alias: (identifier))
+              (edge_step
+                (edge_pattern
+                  type: (edge_alternation
+                    (edge_atom
+                      name: (identifier))
+                    (edge_atom
+                      name: (identifier)))
+                  alias: (identifier))
+                (vertex_pattern
+                  alias: (identifier)))))))
+      (assignment_statement
+        left: (identifier)
+        right: (select_statement
+          result: (identifier)
+          (from_clause
+            (path_pattern
+              (vertex_pattern
+                type: (any)
+                alias: (identifier))
+              (edge_step
+                (edge_pattern
+                  type: (edge_atom
+                    name: (wildcard))
+                  alias: (identifier))
+                (vertex_pattern
+                  type: (wildcard)
+                  alias: (identifier)))))))
+      (assignment_statement
+        left: (identifier)
+        right: (select_statement
+          result: (identifier)
+          (from_clause
+            (path_pattern
+              (vertex_pattern
+                type: (identifier)
+                alias: (identifier))
+              (edge_step
+                (edge_pattern
+                  type: (edge_atom
+                    name: (global_accumulator))
+                  alias: (identifier))
+                (vertex_pattern
+                  type: (global_accumulator)
+                  alias: (identifier))))))))))
+
+================================================================================
+Pattern matching (SYNTAX v2)
+================================================================================
+
+CREATE QUERY q() SYNTAX v2 {
+  R = SELECT t FROM Person:s -(Knows>)- Person:m -(<Likes:e)- Post:t;
+  R = SELECT t FROM Person:s -(Knows>*1..3)- Person:t;
+  R = SELECT t FROM Person:s -((Knows>|<Follows)*..2)- Person:t;
+  R = SELECT t FROM Person:s -(Knows>*2)- Person:t, Person:t -(Likes>)- Post:p;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    (syntax_clause
+      version: (identifier))
+    body: (query_body
+      (assignment_statement
+        left: (identifier)
+        right: (select_statement
+          result: (identifier)
+          (from_clause
+            (path_pattern
+              (vertex_pattern
+                type: (identifier)
+                alias: (identifier))
+              (edge_step
+                (edge_pattern
+                  type: (edge_atom
+                    name: (identifier)))
+                (vertex_pattern
+                  type: (identifier)
+                  alias: (identifier)))
+              (edge_step
+                (edge_pattern
+                  type: (edge_atom
+                    name: (identifier))
+                  alias: (identifier))
+                (vertex_pattern
+                  type: (identifier)
+                  alias: (identifier)))))))
+      (assignment_statement
+        left: (identifier)
+        right: (select_statement
+          result: (identifier)
+          (from_clause
+            (path_pattern
+              (vertex_pattern
+                type: (identifier)
+                alias: (identifier))
+              (edge_step
+                (edge_pattern
+                  type: (edge_repetition
+                    (edge_atom
+                      name: (identifier))
+                    (repetition_bounds
+                      min: (integer)
+                      max: (integer))))
+                (vertex_pattern
+                  type: (identifier)
+                  alias: (identifier)))))))
+      (assignment_statement
+        left: (identifier)
+        right: (select_statement
+          result: (identifier)
+          (from_clause
+            (path_pattern
+              (vertex_pattern
+                type: (identifier)
+                alias: (identifier))
+              (edge_step
+                (edge_pattern
+                  type: (edge_repetition
+                    (edge_group
+                      (edge_alternation
+                        (edge_atom
+                          name: (identifier))
+                        (edge_atom
+                          name: (identifier))))
+                    (repetition_bounds
+                      max: (integer))))
+                (vertex_pattern
+                  type: (identifier)
+                  alias: (identifier)))))))
+      (assignment_statement
+        left: (identifier)
+        right: (select_statement
+          result: (identifier)
+          (from_clause
+            (path_pattern
+              (vertex_pattern
+                type: (identifier)
+                alias: (identifier))
+              (edge_step
+                (edge_pattern
+                  type: (edge_repetition
+                    (edge_atom
+                      name: (identifier))
+                    (repetition_bounds
+                      exact: (integer))))
+                (vertex_pattern
+                  type: (identifier)
+                  alias: (identifier))))
+            (path_pattern
+              (vertex_pattern
+                type: (identifier)
+                alias: (identifier))
+              (edge_step
+                (edge_pattern
+                  type: (edge_atom
+                    name: (identifier)))
+                (vertex_pattern
+                  type: (identifier)
+                  alias: (identifier))))))))))
+
+================================================================================
+openCypher-style patterns (SYNTAX v3)
+================================================================================
+
+CREATE QUERY q() SYNTAX v3 {
+  R = SELECT t FROM (s:Person) -[e:Knows]-> (t:Person);
+  R = SELECT t FROM (s:Person|Company) <-[:Works*1..2]- (t) -[]- (:City);
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    (syntax_clause
+      version: (identifier))
+    body: (query_body
+      (assignment_statement
+        left: (identifier)
+        right: (select_statement
+          result: (identifier)
+          (from_clause
+            (cypher_pattern
+              (node_pattern
+                alias: (identifier)
+                type: (identifier))
+              (relationship_pattern
+                (relationship_detail
+                  alias: (identifier)
+                  type: (identifier)))
+              (node_pattern
+                alias: (identifier)
+                type: (identifier))))))
+      (assignment_statement
+        left: (identifier)
+        right: (select_statement
+          result: (identifier)
+          (from_clause
+            (cypher_pattern
+              (node_pattern
+                alias: (identifier)
+                type: (identifier)
+                type: (identifier))
+              (relationship_pattern
+                (relationship_detail
+                  type: (identifier)
+                  (repetition_bounds
+                    min: (integer)
+                    max: (integer))))
+              (node_pattern
+                alias: (identifier))
+              (relationship_pattern
+                (relationship_detail))
+              (node_pattern
+                type: (identifier)))))))))
+
+================================================================================
+SQL-like SELECT INTO with GROUP BY
+================================================================================
+
+CREATE QUERY q() {
+  SELECT s.name AS n, COUNT(DISTINCT t) AS c INTO T FROM Person:s -(Friendship)- Person:t GROUP BY s.name;
+  PRINT T;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    body: (query_body
+      (select_statement
+        result: (aliased_expression
+          value: (member_expression
+            object: (identifier)
+            property: (identifier))
+          alias: (identifier))
+        result: (aliased_expression
+          value: (call_expression
+            function: (identifier)
+            arguments: (argument_list
+              (identifier)))
+          alias: (identifier))
+        (into_clause
+          table: (identifier))
+        (from_clause
+          (path_pattern
+            (vertex_pattern
+              type: (identifier)
+              alias: (identifier))
+            (edge_step
+              (edge_pattern
+                type: (edge_atom
+                  name: (identifier)))
+              (vertex_pattern
+                type: (identifier)
+                alias: (identifier)))))
+        (group_by_clause
+          (member_expression
+            object: (identifier)
+            property: (identifier))))
+      (print_statement
+        (identifier)))))
+
+================================================================================
+Multi-hop edge patterns and omitted vertices (SYNTAX v2)
+================================================================================
+
+CREATE QUERY hops() SYNTAX v2 {
+  R = SELECT u FROM X:x -(E2>.<E3.E4)- U:u;
+  R = SELECT c FROM Country:c -(<Is_Part_Of.<Is_Located_In.Likes>*1..2)- Post:p;
+  R = SELECT s FROM (Comment|Post):s -((E1>|<E2).E3)- Order:o;
+  R = SELECT msg FROM -(Likes>:e)- :msg;
+  R = SELECT f FROM Person:p -(Knows:r1)- -(Knows:r2)- :f;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    (syntax_clause
+      version: (identifier))
+    body: (query_body
+      (assignment_statement
+        left: (identifier)
+        right: (select_statement
+          result: (identifier)
+          (from_clause
+            (path_pattern
+              (vertex_pattern
+                type: (identifier)
+                alias: (identifier))
+              (edge_step
+                (edge_pattern
+                  type: (edge_sequence
+                    (edge_atom
+                      name: (identifier))
+                    (edge_atom
+                      name: (identifier))
+                    (edge_atom
+                      name: (identifier))))
+                (vertex_pattern
+                  type: (identifier)
+                  alias: (identifier)))))))
+      (assignment_statement
+        left: (identifier)
+        right: (select_statement
+          result: (identifier)
+          (from_clause
+            (path_pattern
+              (vertex_pattern
+                type: (identifier)
+                alias: (identifier))
+              (edge_step
+                (edge_pattern
+                  type: (edge_sequence
+                    (edge_atom
+                      name: (identifier))
+                    (edge_atom
+                      name: (identifier))
+                    (edge_repetition
+                      (edge_atom
+                        name: (identifier))
+                      (repetition_bounds
+                        min: (integer)
+                        max: (integer)))))
+                (vertex_pattern
+                  type: (identifier)
+                  alias: (identifier)))))))
+      (assignment_statement
+        left: (identifier)
+        right: (select_statement
+          result: (identifier)
+          (from_clause
+            (path_pattern
+              (vertex_pattern
+                type: (vertex_type_alternation
+                  (identifier)
+                  (identifier))
+                alias: (identifier))
+              (edge_step
+                (edge_pattern
+                  type: (edge_sequence
+                    (edge_group
+                      (edge_alternation
+                        (edge_atom
+                          name: (identifier))
+                        (edge_atom
+                          name: (identifier))))
+                    (edge_atom
+                      name: (identifier))))
+                (vertex_pattern
+                  type: (identifier)
+                  alias: (identifier)))))))
+      (assignment_statement
+        left: (identifier)
+        right: (select_statement
+          result: (identifier)
+          (from_clause
+            (path_pattern
+              (edge_step
+                (edge_pattern
+                  type: (edge_atom
+                    name: (identifier))
+                  alias: (identifier))
+                (vertex_pattern
+                  alias: (identifier)))))))
+      (assignment_statement
+        left: (identifier)
+        right: (select_statement
+          result: (identifier)
+          (from_clause
+            (path_pattern
+              (vertex_pattern
+                type: (identifier)
+                alias: (identifier))
+              (edge_step
+                (edge_pattern
+                  type: (edge_atom
+                    name: (identifier))
+                  alias: (identifier)))
+              (edge_step
+                (edge_pattern
+                  type: (edge_atom
+                    name: (identifier))
+                  alias: (identifier))
+                (vertex_pattern
+                  alias: (identifier))))))))))
+
+================================================================================
+PER and POST-ACCUM with an alias
+================================================================================
+
+CREATE QUERY per_post() {
+  R = SELECT c FROM Country:c -(<Located_In)- Person:p
+      PER (c)
+      POST-ACCUM (c) @@count += 1;
+  R = SELECT v FROM Person:v
+      POST-ACCUM (v) CASE WHEN v.age > 1 THEN @@adults += 1 END;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    body: (query_body
+      (assignment_statement
+        left: (identifier)
+        right: (select_statement
+          result: (identifier)
+          (from_clause
+            (path_pattern
+              (vertex_pattern
+                type: (identifier)
+                alias: (identifier))
+              (edge_step
+                (edge_pattern
+                  type: (edge_atom
+                    name: (identifier)))
+                (vertex_pattern
+                  type: (identifier)
+                  alias: (identifier)))))
+          (per_clause
+            (identifier))
+          (post_accum_clause
+            alias: (identifier)
+            (assignment_statement
+              left: (global_accumulator)
+              right: (integer)))))
+      (assignment_statement
+        left: (identifier)
+        right: (select_statement
+          result: (identifier)
+          (from_clause
+            (path_pattern
+              (vertex_pattern
+                type: (identifier)
+                alias: (identifier))))
+          (post_accum_clause
+            alias: (identifier)
+            (case_statement
+              (when_clause
+                condition: (binary_expression
+                  left: (member_expression
+                    object: (identifier)
+                    property: (identifier))
+                  right: (integer))
+                body: (block
+                  (assignment_statement
+                    left: (global_accumulator)
+                    right: (integer)))))))))))
+
+================================================================================
+openCypher-style property maps and relationship wildcards
+================================================================================
+
+CREATE QUERY props() SYNTAX v3 {
+  SELECT f INTO T
+  FROM (u:Person {name: "Adam"})-[r:Knows {since: 2020}]-()-[:_*1..3]-(f),
+       (n {name: "x"}) --> (m),
+       (a)-[e:]->(b);
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    (syntax_clause
+      version: (identifier))
+    body: (query_body
+      (select_statement
+        result: (identifier)
+        (into_clause
+          table: (identifier))
+        (from_clause
+          (cypher_pattern
+            (node_pattern
+              alias: (identifier)
+              type: (identifier)
+              properties: (property_map
+                (pair
+                  key: (identifier)
+                  value: (string
+                    (string_content)))))
+            (relationship_pattern
+              (relationship_detail
+                alias: (identifier)
+                type: (identifier)
+                properties: (property_map
+                  (pair
+                    key: (identifier)
+                    value: (integer)))))
+            (node_pattern)
+            (relationship_pattern
+              (relationship_detail
+                type: (wildcard)
+                (repetition_bounds
+                  min: (integer)
+                  max: (integer))))
+            (node_pattern
+              alias: (identifier)))
+          (cypher_pattern
+            (node_pattern
+              alias: (identifier)
+              properties: (property_map
+                (pair
+                  key: (identifier)
+                  value: (string
+                    (string_content)))))
+            (relationship_pattern)
+            (node_pattern
+              alias: (identifier)))
+          (cypher_pattern
+            (node_pattern
+              alias: (identifier))
+            (relationship_pattern
+              (relationship_detail
+                alias: (identifier)))
+            (node_pattern
+              alias: (identifier))))))))

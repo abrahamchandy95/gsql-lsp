@@ -1,0 +1,14 @@
+// Counts triangles with the neighbor-set intersection method.
+CREATE QUERY tg_tri_count(STRING v_type, STRING e_type) SYNTAX V1 {
+    SumAccum<INT> @@triangles;
+    SetAccum<VERTEX> @neighbors;
+
+    All = {v_type};
+    All = SELECT s FROM All:s -(e_type:e)- :t
+          ACCUM s.@neighbors += t;
+    All = SELECT s FROM All:s -(e_type:e)- :t
+          WHERE getvid(s) < getvid(t)
+          ACCUM @@triangles += COUNT(s.@neighbors INTERSECT t.@neighbors);
+    // Every triangle is counted once per edge.
+    PRINT @@triangles / 3 AS triangles;
+}

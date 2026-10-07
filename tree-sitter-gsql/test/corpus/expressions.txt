@@ -1,0 +1,466 @@
+================================================================================
+Operator precedence
+================================================================================
+
+CREATE QUERY q() {
+  x = a + b * c - d / e % f;
+  y = NOT a AND b OR c;
+  z = a << 2 | b & c;
+  w = -a + b;
+  s = A UNION B MINUS C INTERSECT D;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    body: (query_body
+      (assignment_statement
+        left: (identifier)
+        right: (binary_expression
+          left: (binary_expression
+            left: (identifier)
+            right: (binary_expression
+              left: (identifier)
+              right: (identifier)))
+          right: (binary_expression
+            left: (binary_expression
+              left: (identifier)
+              right: (identifier))
+            right: (identifier))))
+      (assignment_statement
+        left: (identifier)
+        right: (binary_expression
+          left: (binary_expression
+            left: (unary_expression
+              operand: (identifier))
+            right: (identifier))
+          right: (identifier)))
+      (assignment_statement
+        left: (identifier)
+        right: (binary_expression
+          left: (binary_expression
+            left: (identifier)
+            right: (integer))
+          right: (binary_expression
+            left: (identifier)
+            right: (identifier))))
+      (assignment_statement
+        left: (identifier)
+        right: (binary_expression
+          left: (unary_expression
+            operand: (identifier))
+          right: (identifier)))
+      (assignment_statement
+        left: (identifier)
+        right: (binary_expression
+          left: (binary_expression
+            left: (identifier)
+            right: (identifier))
+          right: (binary_expression
+            left: (identifier)
+            right: (identifier)))))))
+
+================================================================================
+Predicates
+================================================================================
+
+CREATE QUERY q() {
+  b = x BETWEEN 1 AND 10 AND y IS NOT NULL;
+  b = x NOT IN (1, 2, 3) OR x IN @@set;
+  b = s LIKE "a%" ESCAPE "\\" AND t NOT LIKE "b";
+  b = x == 1 OR x != 2 OR x <> 3 OR x <= 4 OR x >= 5;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    body: (query_body
+      (assignment_statement
+        left: (identifier)
+        right: (binary_expression
+          left: (between_expression
+            left: (identifier)
+            low: (integer)
+            high: (integer))
+          right: (is_expression
+            left: (identifier)
+            right: (null))))
+      (assignment_statement
+        left: (identifier)
+        right: (binary_expression
+          left: (in_expression
+            left: (identifier)
+            right: (tuple
+              (integer)
+              (integer)
+              (integer)))
+          right: (in_expression
+            left: (identifier)
+            right: (global_accumulator))))
+      (assignment_statement
+        left: (identifier)
+        right: (binary_expression
+          left: (like_expression
+            left: (identifier)
+            pattern: (string
+              (string_content))
+            escape: (string
+              (escape_sequence)))
+          right: (like_expression
+            left: (identifier)
+            pattern: (string
+              (string_content)))))
+      (assignment_statement
+        left: (identifier)
+        right: (binary_expression
+          left: (binary_expression
+            left: (binary_expression
+              left: (binary_expression
+                left: (binary_expression
+                  left: (identifier)
+                  right: (integer))
+                right: (binary_expression
+                  left: (identifier)
+                  right: (integer)))
+              right: (binary_expression
+                left: (identifier)
+                right: (integer)))
+            right: (binary_expression
+              left: (identifier)
+              right: (integer)))
+          right: (binary_expression
+            left: (identifier)
+            right: (integer)))))))
+
+================================================================================
+Literals and collection expressions
+================================================================================
+
+CREATE QUERY q() {
+  x = 1;
+  x = 1.5e-3;
+  x = .5;
+  x = "a\"b";
+  x = TRUE;
+  x = false;
+  x = NULL;
+  x = [1, 2, 3];
+  x = [];
+  x = (1, "a");
+  x = ("k" -> 1);
+  x = GSQL_INT_MAX;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    body: (query_body
+      (assignment_statement
+        left: (identifier)
+        right: (integer))
+      (assignment_statement
+        left: (identifier)
+        right: (float))
+      (assignment_statement
+        left: (identifier)
+        right: (float))
+      (assignment_statement
+        left: (identifier)
+        right: (string
+          (string_content)
+          (escape_sequence)
+          (string_content)))
+      (assignment_statement
+        left: (identifier)
+        right: (boolean))
+      (assignment_statement
+        left: (identifier)
+        right: (boolean))
+      (assignment_statement
+        left: (identifier)
+        right: (null))
+      (assignment_statement
+        left: (identifier)
+        right: (list_literal
+          (integer)
+          (integer)
+          (integer)))
+      (assignment_statement
+        left: (identifier)
+        right: (list_literal))
+      (assignment_statement
+        left: (identifier)
+        right: (tuple
+          (integer)
+          (string
+            (string_content))))
+      (assignment_statement
+        left: (identifier)
+        right: (key_value_pair
+          (string
+            (string_content))
+          (integer)))
+      (assignment_statement
+        left: (identifier)
+        right: (identifier)))))
+
+================================================================================
+Member access, calls and the prime operator
+================================================================================
+
+CREATE QUERY q() {
+  x = s.@score' - s.@score;
+  x = s.outdegree("Knows");
+  x = @@m.get("a").size();
+  x = lib.sub.helper(1);
+  x = datetime_add(d, INTERVAL 1 DAY);
+  x = trim(LEADING " " FROM name);
+  x = COUNT(DISTINCT @@set);
+  x = s.type;
+  R = vectorSearch({Doc.embedding}, q, 5, {distance_map: @@dist, filter: S});
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    body: (query_body
+      (assignment_statement
+        left: (identifier)
+        right: (binary_expression
+          left: (member_expression
+            object: (identifier)
+            property: (local_accumulator))
+          right: (member_expression
+            object: (identifier)
+            property: (local_accumulator))))
+      (assignment_statement
+        left: (identifier)
+        right: (call_expression
+          function: (member_expression
+            object: (identifier)
+            property: (identifier))
+          arguments: (argument_list
+            (string
+              (string_content)))))
+      (assignment_statement
+        left: (identifier)
+        right: (call_expression
+          function: (member_expression
+            object: (call_expression
+              function: (member_expression
+                object: (global_accumulator)
+                property: (identifier))
+              arguments: (argument_list
+                (string
+                  (string_content))))
+            property: (identifier))
+          arguments: (argument_list)))
+      (assignment_statement
+        left: (identifier)
+        right: (call_expression
+          function: (member_expression
+            object: (member_expression
+              object: (identifier)
+              property: (identifier))
+            property: (identifier))
+          arguments: (argument_list
+            (integer))))
+      (assignment_statement
+        left: (identifier)
+        right: (call_expression
+          function: (identifier)
+          arguments: (argument_list
+            (identifier)
+            (interval_expression
+              value: (integer)))))
+      (assignment_statement
+        left: (identifier)
+        right: (call_expression
+          function: (identifier)
+          arguments: (argument_list
+            (from_argument
+              (string
+                (string_content))
+              (identifier)))))
+      (assignment_statement
+        left: (identifier)
+        right: (call_expression
+          function: (identifier)
+          arguments: (argument_list
+            (global_accumulator))))
+      (assignment_statement
+        left: (identifier)
+        right: (member_expression
+          object: (identifier)
+          property: (identifier)))
+      (assignment_statement
+        left: (identifier)
+        right: (call_expression
+          function: (identifier)
+          arguments: (argument_list
+            (vertex_set_literal
+              (member_expression
+                object: (identifier)
+                property: (identifier)))
+            (identifier)
+            (integer)
+            (vertex_set_literal
+              (pair
+                key: (identifier)
+                value: (global_accumulator))
+              (pair
+                key: (identifier)
+                value: (identifier)))))))))
+
+================================================================================
+Equality with = and <> (SYNTAX v3)
+================================================================================
+
+CREATE QUERY eq() SYNTAX v3 {
+  IF a = 1 AND b <> 2 THEN PRINT a; END;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    (syntax_clause
+      version: (identifier))
+    body: (query_body
+      (if_statement
+        condition: (binary_expression
+          left: (binary_expression
+            left: (identifier)
+            right: (integer))
+          right: (binary_expression
+            left: (identifier)
+            right: (integer)))
+        consequence: (block
+          (print_statement
+            (identifier)))))))
+
+================================================================================
+Bitwise XOR and NOT, and range() calls
+================================================================================
+
+CREATE QUERY bits() {
+  PRINT @@a ^ @@b | @@c & ~@@d;
+  FOREACH i IN range(0, 10, 2) DO PRINT i; END;
+  @@a.xor(@@b);
+  @@a.and(@@b);
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    body: (query_body
+      (print_statement
+        (binary_expression
+          left: (binary_expression
+            left: (global_accumulator)
+            right: (global_accumulator))
+          right: (binary_expression
+            left: (global_accumulator)
+            right: (unary_expression
+              operand: (global_accumulator)))))
+      (foreach_statement
+        variable: (identifier)
+        collection: (call_expression
+          function: (identifier)
+          arguments: (argument_list
+            (integer)
+            (integer)
+            (integer)))
+        body: (block
+          (print_statement
+            (identifier))))
+      (expression_statement
+        (call_expression
+          function: (member_expression
+            object: (global_accumulator)
+            property: (identifier))
+          arguments: (argument_list
+            (global_accumulator))))
+      (expression_statement
+        (call_expression
+          function: (member_expression
+            object: (global_accumulator)
+            property: (identifier))
+          arguments: (argument_list
+            (global_accumulator)))))))
+
+================================================================================
+Map literals and accumulator pairs
+================================================================================
+
+CREATE QUERY q() {
+  S = {Person.*};
+  UPDATE s FROM S:s SET s.skill_map = ("a" -> 1, "b" -> 2);
+  @@groups += ("x", 1 -> 2, 3);
+  @@m += ("k" -> 1);
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    body: (query_body
+      (assignment_statement
+        left: (identifier)
+        right: (vertex_set_literal
+          (type_wildcard
+            type: (identifier))))
+      (update_statement
+        alias: (identifier)
+        (from_clause
+          (path_pattern
+            (vertex_pattern
+              type: (identifier)
+              alias: (identifier))))
+        body: (block
+          (assignment_statement
+            left: (member_expression
+              object: (identifier)
+              property: (identifier))
+            right: (map_literal
+              (map_entry
+                key: (string
+                  (string_content))
+                value: (integer))
+              (map_entry
+                key: (string
+                  (string_content))
+                value: (integer))))))
+      (assignment_statement
+        left: (global_accumulator)
+        right: (key_value_pair
+          (string
+            (string_content))
+          (integer)
+          (integer)
+          (integer)))
+      (assignment_statement
+        left: (global_accumulator)
+        right: (key_value_pair
+          (string
+            (string_content))
+          (integer))))))

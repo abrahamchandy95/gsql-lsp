@@ -1,0 +1,55 @@
+CREATE QUERY tg_wcc (
+    SET<STRING> v_type_set,
+    SET<STRING> e_type_set,
+    INT print_limit = 100,
+    BOOL print_results = TRUE,
+    STRING result_attribute = "",
+    STRING file_path = ""
+) SYNTAX V1 {
+    MinAccum<INT> @min_cc_id = 0;       //each vertex's tentative component id
+    MapAccum<INT, INT> @@comp_sizes_map;
+    MapAccum<INT, ListAccum<INT>> @@comp_group_by_size_map;
+    FILE f(file_path);
+
+    Start = {v_type_set};
+
+    // Initialize: Label each vertex with its own internal ID
+    S = SELECT x
+        FROM Start:x
+        POST-ACCUM x.@min_cc_id = getvid(x);
+
+    // Propagate smaller internal IDs until no more ID changes can be Done
+    WHILE (S.size()>0) DO
+        S = SELECT t
+            FROM S:s -(e_type_set:e)- v_type_set:t
+            ACCUM t.@min_cc_id += s.@min_cc_id // If s has smaller id than t, copy the id to t
+            HAVING t.@min_cc_id != t.@min_cc_id';
+    END;
+    IF file_path != "" THEN
+        f.println("Vertex_ID","Component_ID");
+    END;
+
+    Start = {v_type_set};
+    Start = SELECT s
+            FROM Start:s
+            POST-ACCUM
+                IF result_attribute != "" THEN
+                    s.setAttr(result_attribute, s.@min_cc_id)
+                END,
+                IF print_results THEN
+                    @@comp_sizes_map += (s.@min_cc_id -> 1)
+                END,
+                IF file_path != "" THEN
+                    f.println(s, s.@min_cc_id)
+                END;
+
+    IF print_results THEN
+        IF print_limit > 0 THEN
+            FOREACH (compId,size) IN @@comp_sizes_map DO
+                @@comp_group_by_size_map += (size -> compId);
+            END;
+            PRINT @@comp_group_by_size_map;
+            PRINT @@comp_sizes_map.size() AS num_of_components;
+        END;
+    END;
+}

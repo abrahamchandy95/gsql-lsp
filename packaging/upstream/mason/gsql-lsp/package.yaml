@@ -1,0 +1,44 @@
+# Draft for mason-org/mason-registry: packages/gsql-lsp/package.yaml
+# Repository URL: change it in source.id, homepage and schemas.lsp when the
+# project moves. Assets are named by .github/workflows/release.yml as
+# gsql-lsp-<rust target>.{tar.gz,zip}, each with a top-level directory of the
+# same name that holds the binary.
+---
+name: gsql-lsp
+description: Language server for TigerGraph GSQL with diagnostics, completion, hover, navigation, formatting and inlay hints.
+homepage: https://github.com/gsql-lsp/gsql-lsp
+licenses:
+  - MIT
+languages:
+  - GSQL
+categories:
+  - LSP
+
+source:
+  # Release tags are v-prefixed.
+  id: pkg:github/gsql-lsp/gsql-lsp@v0.1.0
+  asset:
+    - target: darwin_x64
+      file: gsql-lsp-x86_64-apple-darwin.tar.gz
+      bin: gsql-lsp-x86_64-apple-darwin/gsql-lsp
+    - target: darwin_arm64
+      file: gsql-lsp-aarch64-apple-darwin.tar.gz
+      bin: gsql-lsp-aarch64-apple-darwin/gsql-lsp
+    - target: linux_x64
+      file: gsql-lsp-x86_64-unknown-linux-musl.tar.gz
+      bin: gsql-lsp-x86_64-unknown-linux-musl/gsql-lsp
+    - target: linux_arm64
+      file: gsql-lsp-aarch64-unknown-linux-musl.tar.gz
+      bin: gsql-lsp-aarch64-unknown-linux-musl/gsql-lsp
+    - target: win_x64
+      file: gsql-lsp-x86_64-pc-windows-msvc.zip
+      bin: gsql-lsp-x86_64-pc-windows-msvc/gsql-lsp.exe
+
+schemas:
+  lsp: vscode:https://raw.githubusercontent.com/gsql-lsp/gsql-lsp/{{version}}/editors/vscode/package.json
+
+bin:
+  gsql-lsp: "{{source.asset.bin}}"
+
+neovim:
+  lspconfig: gsql_lsp

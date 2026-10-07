@@ -1,0 +1,353 @@
+================================================================================
+Accumulator declarations
+================================================================================
+
+CREATE QUERY accums() {
+  SumAccum<INT> @@total = 0, @@other;
+  SumAccum<STRING COMPRESS> @names;
+  MaxAccum<DOUBLE> @@max;
+  AvgAccum @avg;
+  OrAccum @visited = FALSE;
+  BitwiseAndAccum @@bits;
+  ListAccum<STRING> @@l = ["a", "b"];
+  SetAccum<VERTEX<Person>> @@people;
+  SetAccum<EDGE> @@edges;
+  BagAccum<INT> @@bag = (1, 2, 2);
+  MapAccum<STRING, SumAccum<INT>> @@counts;
+  MapAccum<INT, MapAccum<STRING, SetAccum<VERTEX<Person>>>> @@nested;
+  HeapAccum<Rec>(10, score DESC, name ASC) @@heap;
+  GroupByAccum<INT a, STRING b, SumAccum<INT> c, MaxAccum<FLOAT> m> @@group;
+  ArrayAccum<SumAccum<INT>> @@arr[5][10];
+  STATIC ListAccum<INT> @@persisted;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    body: (query_body
+      (accumulator_declaration
+        type: (accumulator_type
+          kind: (accumulator_kind)
+          argument: (primitive_type))
+        (accumulator_declarator
+          name: (global_accumulator)
+          value: (integer))
+        (accumulator_declarator
+          name: (global_accumulator)))
+      (accumulator_declaration
+        type: (accumulator_type
+          kind: (accumulator_kind)
+          argument: (primitive_type))
+        (accumulator_declarator
+          name: (local_accumulator)))
+      (accumulator_declaration
+        type: (accumulator_type
+          kind: (accumulator_kind)
+          argument: (primitive_type))
+        (accumulator_declarator
+          name: (global_accumulator)))
+      (accumulator_declaration
+        type: (accumulator_type
+          kind: (accumulator_kind))
+        (accumulator_declarator
+          name: (local_accumulator)))
+      (accumulator_declaration
+        type: (accumulator_type
+          kind: (accumulator_kind))
+        (accumulator_declarator
+          name: (local_accumulator)
+          value: (boolean)))
+      (accumulator_declaration
+        type: (accumulator_type
+          kind: (accumulator_kind))
+        (accumulator_declarator
+          name: (global_accumulator)))
+      (accumulator_declaration
+        type: (accumulator_type
+          kind: (accumulator_kind)
+          argument: (primitive_type))
+        (accumulator_declarator
+          name: (global_accumulator)
+          value: (list_literal
+            (string
+              (string_content))
+            (string
+              (string_content)))))
+      (accumulator_declaration
+        type: (accumulator_type
+          kind: (accumulator_kind)
+          argument: (vertex_type
+            type: (identifier)))
+        (accumulator_declarator
+          name: (global_accumulator)))
+      (accumulator_declaration
+        type: (accumulator_type
+          kind: (accumulator_kind)
+          argument: (edge_type))
+        (accumulator_declarator
+          name: (global_accumulator)))
+      (accumulator_declaration
+        type: (accumulator_type
+          kind: (accumulator_kind)
+          argument: (primitive_type))
+        (accumulator_declarator
+          name: (global_accumulator)
+          value: (tuple
+            (integer)
+            (integer)
+            (integer))))
+      (accumulator_declaration
+        type: (accumulator_type
+          kind: (accumulator_kind)
+          argument: (primitive_type)
+          argument: (accumulator_type
+            kind: (accumulator_kind)
+            argument: (primitive_type)))
+        (accumulator_declarator
+          name: (global_accumulator)))
+      (accumulator_declaration
+        type: (accumulator_type
+          kind: (accumulator_kind)
+          argument: (primitive_type)
+          argument: (accumulator_type
+            kind: (accumulator_kind)
+            argument: (primitive_type)
+            argument: (accumulator_type
+              kind: (accumulator_kind)
+              argument: (vertex_type
+                type: (identifier)))))
+        (accumulator_declarator
+          name: (global_accumulator)))
+      (accumulator_declaration
+        type: (accumulator_type
+          kind: (accumulator_kind)
+          argument: (type_identifier)
+          heap: (heap_options
+            capacity: (integer)
+            (sort_key
+              name: (identifier))
+            (sort_key
+              name: (identifier))))
+        (accumulator_declarator
+          name: (global_accumulator)))
+      (accumulator_declaration
+        type: (accumulator_type
+          kind: (accumulator_kind)
+          argument: (group_by_field
+            type: (primitive_type)
+            name: (identifier))
+          argument: (group_by_field
+            type: (primitive_type)
+            name: (identifier))
+          argument: (group_by_field
+            type: (accumulator_type
+              kind: (accumulator_kind)
+              argument: (primitive_type))
+            name: (identifier))
+          argument: (group_by_field
+            type: (accumulator_type
+              kind: (accumulator_kind)
+              argument: (primitive_type))
+            name: (identifier)))
+        (accumulator_declarator
+          name: (global_accumulator)))
+      (accumulator_declaration
+        type: (accumulator_type
+          kind: (accumulator_kind)
+          argument: (accumulator_type
+            kind: (accumulator_kind)
+            argument: (primitive_type)))
+        (accumulator_declarator
+          name: (global_accumulator)
+          (array_dimension
+            (integer))
+          (array_dimension
+            (integer))))
+      (accumulator_declaration
+        type: (accumulator_type
+          kind: (accumulator_kind)
+          argument: (primitive_type))
+        (accumulator_declarator
+          name: (global_accumulator))))))
+
+================================================================================
+Accumulator updates
+================================================================================
+
+CREATE QUERY updates() {
+  @@total += 1;
+  @@counts += ("a" -> 1);
+  @@group += (1, "a" -> 2, 3.5);
+  @@arr[1][2] += 5;
+  @@heap += Rec(1, "x");
+  @@l.clear();
+  x = @@heap.top().score;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    body: (query_body
+      (assignment_statement
+        left: (global_accumulator)
+        right: (integer))
+      (assignment_statement
+        left: (global_accumulator)
+        right: (key_value_pair
+          (string
+            (string_content))
+          (integer)))
+      (assignment_statement
+        left: (global_accumulator)
+        right: (key_value_pair
+          (integer)
+          (string
+            (string_content))
+          (integer)
+          (float)))
+      (assignment_statement
+        left: (subscript_expression
+          object: (subscript_expression
+            object: (global_accumulator)
+            (integer))
+          (integer))
+        right: (integer))
+      (assignment_statement
+        left: (global_accumulator)
+        right: (call_expression
+          function: (identifier)
+          arguments: (argument_list
+            (integer)
+            (string
+              (string_content)))))
+      (expression_statement
+        (call_expression
+          function: (member_expression
+            object: (global_accumulator)
+            property: (identifier))
+          arguments: (argument_list)))
+      (assignment_statement
+        left: (identifier)
+        right: (member_expression
+          object: (call_expression
+            function: (member_expression
+              object: (global_accumulator)
+              property: (identifier))
+            arguments: (argument_list))
+          property: (identifier))))))
+
+================================================================================
+Accumulator TYPEDEF, edge accumulators and other accumulator forms
+================================================================================
+
+TYPEDEF HeapAccum<Rec>(3, score DESC) Top_Heap
+
+CREATE QUERY more_accums(INT len) {
+  TYPEDEF HeapAccum <Rec> (2, name DESC, age ASC) My_Heap;
+  My_Heap @@heap;
+  HeapAccum<Rec>(score DESC) @@unbounded;
+  HeapAccum<Rec>(k, score DESC) @@top_k;
+  SumAccum<INT> EDGE @weight = 1;
+  DeviationAccum @@dev;
+  DeviationPAccum @@devp;
+  BitwiseOrAccum<128> @@wide;
+  BitwiseAndAccum<len> @@sized;
+  ListAccum<TUPLE<INT, STRING>> @@pairs;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (typedef_statement
+    type: (accumulator_type
+      kind: (accumulator_kind)
+      argument: (type_identifier)
+      heap: (heap_options
+        capacity: (integer)
+        (sort_key
+          name: (identifier))))
+    name: (identifier))
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list
+      (parameter
+        type: (primitive_type)
+        name: (identifier)))
+    body: (query_body
+      (typedef_statement
+        type: (accumulator_type
+          kind: (accumulator_kind)
+          argument: (type_identifier)
+          heap: (heap_options
+            capacity: (integer)
+            (sort_key
+              name: (identifier))
+            (sort_key
+              name: (identifier))))
+        name: (identifier))
+      (accumulator_declaration
+        type: (type_identifier)
+        (accumulator_declarator
+          name: (global_accumulator)))
+      (accumulator_declaration
+        type: (accumulator_type
+          kind: (accumulator_kind)
+          argument: (type_identifier)
+          heap: (heap_options
+            (sort_key
+              name: (identifier))))
+        (accumulator_declarator
+          name: (global_accumulator)))
+      (accumulator_declaration
+        type: (accumulator_type
+          kind: (accumulator_kind)
+          argument: (type_identifier)
+          heap: (heap_options
+            capacity: (identifier)
+            (sort_key
+              name: (identifier))))
+        (accumulator_declarator
+          name: (global_accumulator)))
+      (accumulator_declaration
+        type: (accumulator_type
+          kind: (accumulator_kind)
+          argument: (primitive_type))
+        (accumulator_declarator
+          name: (local_accumulator)
+          value: (integer)))
+      (accumulator_declaration
+        type: (accumulator_type
+          kind: (accumulator_kind))
+        (accumulator_declarator
+          name: (global_accumulator)))
+      (accumulator_declaration
+        type: (accumulator_type
+          kind: (accumulator_kind))
+        (accumulator_declarator
+          name: (global_accumulator)))
+      (accumulator_declaration
+        type: (accumulator_type
+          kind: (accumulator_kind)
+          argument: (integer))
+        (accumulator_declarator
+          name: (global_accumulator)))
+      (accumulator_declaration
+        type: (accumulator_type
+          kind: (accumulator_kind)
+          argument: (type_identifier))
+        (accumulator_declarator
+          name: (global_accumulator)))
+      (accumulator_declaration
+        type: (accumulator_type
+          kind: (accumulator_kind)
+          argument: (tuple_type
+            (primitive_type)
+            (primitive_type)))
+        (accumulator_declarator
+          name: (global_accumulator))))))

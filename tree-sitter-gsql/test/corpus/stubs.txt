@@ -1,0 +1,41 @@
+================================================================================
+Stub declarations of built-ins
+================================================================================
+
+BUILTIN FUNCTION datetime_format(dt, [format]) -> STRING;
+/* doc */
+BUILTIN OBJECT HeapAccum<tuple_type>([capacity,] field [ASC | DESC], ...) {
+  METHOD size() -> INT;
+  MUTATOR clear();
+}
+BUILTIN TYPE INT;
+BUILTIN KEYWORD ELSE IF;
+BUILTIN CONSTANT GSQL_INT_MAX;
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (stub_declaration
+    (stub_function
+      name: (identifier)
+      (stub_signature
+        parameters: (stub_text)
+        returns: (stub_text))))
+  (comment)
+  (stub_declaration
+    (stub_object
+      name: (identifier)
+      syntax: (stub_syntax)
+      (stub_method
+        name: (identifier)
+        (stub_signature
+          returns: (stub_text)))
+      (stub_method
+        name: (identifier)
+        (stub_signature))))
+  (stub_declaration
+    name: (stub_word))
+  (stub_declaration
+    name: (stub_word))
+  (stub_declaration
+    name: (identifier)))
