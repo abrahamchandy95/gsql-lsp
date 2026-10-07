@@ -1,6 +1,3 @@
-# Common development tasks. Requires: cargo, tree-sitter (0.27), python3;
-# vim and nvim (0.11+) for the editor tests.
-
 TREE_SITTER ?= tree-sitter
 GSQL_LSP_BIN ?= target/debug/gsql-lsp
 
@@ -46,19 +43,14 @@ neovim-test: build
 	GSQL_LSP_BIN=$(GSQL_LSP_BIN) nvim --headless --clean -u NONE -l editors/neovim/test/install.lua
 	nvim --headless --clean -u NONE -l editors/neovim/test/layout.lua   # LAZY_NVIM=<lazy.nvim dir> adds a real lazy.nvim run
 
-# Offline tests of the release installer and the Homebrew formula generator; the
-# crates are packaged (and built from the packages) too.
 packaging-test: build
 	GSQL_LSP_BIN=$(GSQL_LSP_BIN) sh scripts/test_install.sh
 	sh scripts/test_homebrew.sh
 	cargo package --workspace --allow-dirty
 
-# Parse the examples of the online GSQL language reference (needs network access).
 docs-examples:
 	python3 scripts/docs_examples.py
 
-# Regenerate the function and method pages of the built-ins from the cached docs
-# (run docs-examples first).
 builtin-docs:
 	python3 scripts/sync_builtin_docs.py
 
