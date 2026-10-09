@@ -2,7 +2,7 @@
 
 The language server for TigerGraph GSQL. It depends only on `tree-sitter`, the
 `tree-sitter-gsql` grammar and `serde`/`serde_json`; the JSON-RPC transport and
-the protocol types it needs are implemented in `src/lsp`.
+the protocol types needed are implemented in `src/lsp`.
 
 ## How it works
 
@@ -13,7 +13,7 @@ the protocol types it needs are implemented in `src/lsp`.
    negotiated in `initialize`).
 2. **Analysis** (`analysis/`) turns a tree into a semantic model in two passes:
    declarations and scopes first (queries, SELECT blocks, FOREACH loops, loading
-   jobs), then every identifier is classified by its syntactic *role* (vertex
+   jobs), then every identifier is classified by its syntactic _role_ (vertex
    type, edge type, attribute of `x`, accumulator, value, ...) and resolved
    against the scope chain. Types are inferred where cheap: alias types from FROM
    patterns, vertex-set element types from seeds and SELECT results, loop

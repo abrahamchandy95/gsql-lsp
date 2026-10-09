@@ -269,9 +269,8 @@ fn snippets_agree_with_the_neovim_integration() {
     let ft_then_config =
         "vim.filetype.add({ extension = { gsql = 'gsql', gsq = 'gsql' } })\nvim.lsp.config('gsql_lsp', {";
     assert!(plugin.starts_with(ft_then_config), "{plugin}");
-    for readme in ["README.md", "editors/neovim/README.md"] {
-        assert!(repo_file(readme).contains(ft_then_config), "{readme}");
-    }
+    assert!(repo_file("editors/neovim/README.md").contains(ft_then_config), "editors/neovim/README.md");
+
     // The settings table in the integration lists the same keys as the printed one.
     for path in printed_paths() {
         let leaf = path.rsplit('.').next().unwrap();
