@@ -1,8 +1,8 @@
 #!/bin/sh
 # Installs the gsql-lsp language server from a GitHub release.
 #
-#   curl -fsSL https://github.com/gsql-lsp/gsql-lsp/releases/latest/download/install.sh | sh
-
+#   curl -fsSL https://github.com/abrahamchandy95/gsql-lsp/releases/latest/download/install.sh | sh
+#
 # Environment:
 #   GSQL_LSP_VERSION      release to install, e.g. 0.1.0 or v0.1.0 (default: latest)
 #   GSQL_LSP_INSTALL_DIR  target directory (default: $HOME/.local/bin)
@@ -12,8 +12,6 @@
 
 set -eu
 
-# PLACEHOLDER: the repository URL. Change it here (and in the places listed in
-# docs/deployment.md) once the repository exists.
 REPO_URL="https://github.com/abrahamchandy95/gsql-lsp"
 
 BIN=gsql-lsp

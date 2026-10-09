@@ -73,21 +73,24 @@ Reference for diagnostic codes emitted by `gsql-lsp`.
 
 ## Query Logic
 
-| Code                | Severity | Description                                             | Setting         |
-| ------------------- | -------- | ------------------------------------------------------- | --------------- |
-| `v3-comparison`     | Warning  | Equality operator requires SYNTAX V3                    | —               |
-| `cypher-syntax`     | Warning  | OpenCypher pattern used in V1 or V2 syntax              | `languageRules` |
-| `limit-offset`      | Error    | OFFSET specified without ORDER BY                       | `languageRules` |
-| `kleene-edge-alias` | Error    | Variable-length path pattern cannot bind an edge alias  | `languageRules` |
-| `having-alias`      | Error    | HAVING clause references unselected vertex alias        | `languageRules` |
-| `per-alias`         | Error    | Alias used outside PER clause list                      | `languageRules` |
-| `pattern-join`      | Warning  | Disjoint FROM patterns cannot be joined                 | `languageRules` |
-| `type-mismatch`     | Warning  | Incompatible types in expression, assignment, or return | `languageRules` |
-| `float-equality`    | Warning  | Exact equality comparison on floating-point values      | `floatEquality` |
-| `virtual-edge`      | Error    | Invalid declaration or placement of virtual edge        | `languageRules` |
-| `interpreted-mode`  | Warning  | Feature not supported in interpreted query execution    | `languageRules` |
-| `distributed-mode`  | Warning  | Feature not supported in distributed query execution    | `languageRules` |
-| `deprecated`        | Hint     | Deprecated syntax or feature usage                      | `languageRules` |
+| Code                     | Severity | Description                                             | Setting         |
+| ------------------------ | -------- | ------------------------------------------------------- | --------------- |
+| `v3-comparison`          | Warning  | Equality operator requires SYNTAX V3                    | —               |
+| `cypher-syntax`          | Warning  | OpenCypher pattern used in V1 or V2 syntax              | `languageRules` |
+| `limit-offset`           | Error    | OFFSET specified without ORDER BY                       | `languageRules` |
+| `kleene-edge-alias`      | Error    | Variable-length path pattern cannot bind an edge alias  | `languageRules` |
+| `having-alias`           | Error    | HAVING clause references unselected vertex alias        | `languageRules` |
+| `per-alias`              | Error    | Alias used outside PER clause list                      | `languageRules` |
+| `pattern-join`           | Warning  | Disjoint FROM patterns cannot be joined                 | `languageRules` |
+| `type-mismatch`          | Warning  | Incompatible types in expression, assignment, or return | `languageRules` |
+| `float-equality`         | Warning  | Exact equality comparison on floating-point values      | `floatEquality` |
+| `virtual-edge`           | Error    | Invalid declaration or placement of virtual edge        | `languageRules` |
+| `interpreted-mode`       | Warning  | Feature not supported in interpreted query execution    | `languageRules` |
+| `distributed-mode`       | Warning  | Feature not supported in distributed query execution    | `languageRules` |
+| `deprecated`             | Hint     | Deprecated syntax or feature usage                      | `languageRules` |
+| `compared-condition`     | Error    | Parenthesized condition compared with `==`, `!=`, `<`   | `languageRules` |
+| `set-expression-method`  | Error    | Method called on a parenthesized UNION/INTERSECT/MINUS  | `languageRules` |
+| `non-binding-post-accum` | Warning  | POST-ACCUM clause binds no vertex alias (WARN-7)        | `languageRules` |
 
 ---
 

@@ -348,6 +348,7 @@ mod tests {
 
     /// Runs `check` with the current folder set to `cwd`, serialised with other
     /// tests that change it.
+    #[cfg(unix)]
     fn check_in(cwd: &Path, paths: Vec<PathBuf>) -> String {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -358,6 +359,7 @@ mod tests {
         out
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_project_root_is_not_a_duplicate_of_itself_under_any_spelling() {
         let dir = std::fs::canonicalize(project("spelling")).unwrap();
