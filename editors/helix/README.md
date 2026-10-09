@@ -8,18 +8,15 @@ server. Nothing to install from a marketplace: copy three things.
 Any one of:
 
 ```sh
-sh scripts/install.sh                     # release binary (from a checkout; see the script header for options)
-cargo install --path crates/gsql-lsp      # build from a checkout
+sh scripts/install.sh
+cargo install --path crates/gsql-lsp
 ```
 
-or download `gsql-lsp-<target>.tar.gz` (`.zip` on Windows) from the GitHub releases
+Or download `gsql-lsp-<target>.tar.gz` (`.zip` on Windows) from the GitHub releases
 page and put the `gsql-lsp` binary on PATH. To use a binary that is not on PATH, set
 `command = "/full/path/gsql-lsp"` in `languages.toml`.
 
-The repository URL (`https://github.com/gsql-lsp/gsql-lsp`, a placeholder until the
-project is published) appears in the `[[grammar]]` block of `languages.toml` only.
-
-## 2. The language and grammar
+# 2. The language and grammar
 
 Append `editors/helix/languages.toml` to `~/.config/helix/languages.toml`, then:
 

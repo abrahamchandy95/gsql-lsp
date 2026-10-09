@@ -6,7 +6,7 @@
 ---
 name: gsql-lsp
 description: Language server for TigerGraph GSQL with diagnostics, completion, hover, navigation, formatting and inlay hints.
-homepage: https://github.com/gsql-lsp/gsql-lsp
+homepage: https://github.com/abrahamchandy95/gsql-lsp
 licenses:
   - MIT
 languages:
@@ -16,7 +16,7 @@ categories:
 
 source:
   # Release tags are v-prefixed.
-  id: pkg:github/gsql-lsp/gsql-lsp@v0.1.0
+  id: pkg:github/abrahamchandy95/gsql-lsp@v0.1.0
   asset:
     - target: darwin_x64
       file: gsql-lsp-x86_64-apple-darwin.tar.gz
@@ -35,7 +35,7 @@ source:
       bin: gsql-lsp-x86_64-pc-windows-msvc/gsql-lsp.exe
 
 schemas:
-  lsp: vscode:https://raw.githubusercontent.com/gsql-lsp/gsql-lsp/{{version}}/editors/vscode/package.json
+  lsp: vscode:https://raw.githubusercontent.com/abrahamchandy95/gsql-lsp/{{version}}/editors/vscode/package.json
 
 bin:
   gsql-lsp: "{{source.asset.bin}}"

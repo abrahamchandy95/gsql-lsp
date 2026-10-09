@@ -4,9 +4,7 @@ use zed_extension_api::{
     LanguageServerId, LanguageServerInstallationStatus, Os, Result,
 };
 
-/// GitHub `owner/name` the server is downloaded from (asset names come from
-/// .github/workflows/release.yml). The only place the repository is named in this file.
-const REPOSITORY: &str = "gsql-lsp/gsql-lsp";
+const REPOSITORY: &str = "abrahamchandy95/gsql-lsp";
 
 struct GsqlExtension {
     /// Path of the downloaded binary, relative to the extension's working directory.
@@ -58,13 +56,8 @@ impl GsqlExtension {
 
         let (target, file_type, extension) = Self::release_target()?;
         zed::set_language_server_installation_status(id, &LanguageServerInstallationStatus::CheckingForUpdate);
-        let release = zed::latest_github_release(
-            REPOSITORY,
-            GithubReleaseOptions {
-                require_assets: true,
-                pre_release: false,
-            },
-        );
+        let release =
+            zed::latest_github_release(REPOSITORY, GithubReleaseOptions { require_assets: true, pre_release: false });
         let release = match release {
             Ok(release) => release,
             Err(e) => {
@@ -75,7 +68,10 @@ impl GsqlExtension {
                     return Ok(path);
                 }
                 let message = format!("could not look up the latest gsql-lsp release: {e}");
-                zed::set_language_server_installation_status(id, &LanguageServerInstallationStatus::Failed(message.clone()));
+                zed::set_language_server_installation_status(
+                    id,
+                    &LanguageServerInstallationStatus::Failed(message.clone()),
+                );
                 return Err(message);
             }
         };
@@ -101,7 +97,10 @@ impl GsqlExtension {
                         .map_err(|e| format!("could not make gsql-lsp executable: {e}"))
                 });
             if let Err(message) = result {
-                zed::set_language_server_installation_status(id, &LanguageServerInstallationStatus::Failed(message.clone()));
+                zed::set_language_server_installation_status(
+                    id,
+                    &LanguageServerInstallationStatus::Failed(message.clone()),
+                );
                 return Err(message);
             }
 
@@ -125,9 +124,7 @@ impl GsqlExtension {
 
 impl zed::Extension for GsqlExtension {
     fn new() -> Self {
-        GsqlExtension {
-            cached_binary_path: None,
-        }
+        GsqlExtension { cached_binary_path: None }
     }
 
     /// Order: `lsp.gsql-lsp.binary.path` (handled by Zed before this is called), `gsql-lsp`
@@ -141,11 +138,7 @@ impl zed::Extension for GsqlExtension {
             Some(path) => path,
             None => self.download_binary(language_server_id)?,
         };
-        Ok(zed::Command {
-            command,
-            args: Vec::new(),
-            env: worktree.shell_env(),
-        })
+        Ok(zed::Command { command, args: Vec::new(), env: worktree.shell_env() })
     }
 
     fn language_server_initialization_options(

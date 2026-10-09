@@ -1,7 +1,7 @@
 " Vim syntax file
 " Language:    TigerGraph GSQL
-" Maintainer:  gsql-lsp contributors
-" URL:         https://github.com/gsql-lsp/gsql-lsp
+" Maintainer:  Abraham Chandy
+" URL:         https://github.com/abrahamchandy95/gsql-lsp
 
 if exists('b:current_syntax')
   finish

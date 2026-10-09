@@ -1,14 +1,12 @@
 # GSQL for Emacs
 
-`gsql-ts-mode.el` is a tree-sitter major mode (Emacs 29.1 or later, built with
-tree-sitter support) with font-lock, indentation, imenu and defun navigation. It
-registers `gsql-lsp` with Eglot (built in since Emacs 29).
+`gsql-ts-mode.el` is a tree-sitter major mode. It registers `gsql-lsp` with Eglot.
 
 ## 1. The server
 
 ```sh
-sh scripts/install.sh                     # release binary (from a checkout; see the script header for options)
-cargo install --path crates/gsql-lsp      # or build from a checkout
+sh scripts/install.sh
+cargo install --path crates/gsql-lsp
 ```
 
 or download `gsql-lsp-<target>.tar.gz` from the GitHub releases page and put the
@@ -30,7 +28,7 @@ Needs a C compiler. `gsql-ts-mode.el` adds this entry to
 generated `src/parser.c` is committed, so the tree-sitter CLI is not needed):
 
 ```elisp
-(gsql "https://github.com/gsql-lsp/gsql-lsp" "main" "tree-sitter-gsql/src")
+(gsql "https://github.com/abrahamchandy95/gsql-lsp" "main" "tree-sitter-gsql/src")
 ```
 
 Run `M-x treesit-install-language-grammar RET gsql RET` once. From a local

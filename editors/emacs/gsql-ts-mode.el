@@ -1,10 +1,10 @@
 ;;; gsql-ts-mode.el --- Tree-sitter major mode for TigerGraph GSQL  -*- lexical-binding: t; -*-
 
-;; Author: gsql-lsp contributors
+;; Author: Abraham Chandy
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: languages, databases
-;; URL: https://github.com/gsql-lsp/gsql-lsp
+;; URL: https://github.com/abrahamchandy95/gsql-lsp
 
 ;;; Commentary:
 
@@ -37,7 +37,7 @@ The GSQL Style Guide indents the body of a block by 4 spaces."
   :group 'gsql)
 
 (add-to-list 'treesit-language-source-alist
-             '(gsql "https://github.com/gsql-lsp/gsql-lsp" "main" "tree-sitter-gsql/src"))
+             '(gsql "https://github.com/abrahamchandy95/gsql-lsp" "main" "tree-sitter-gsql/src"))
 
 (defvar gsql-ts-mode--syntax-table
   (let ((table (make-syntax-table)))

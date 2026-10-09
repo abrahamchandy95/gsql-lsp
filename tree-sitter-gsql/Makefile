@@ -1,5 +1,5 @@
 LANGUAGE_NAME := tree-sitter-gsql
-HOMEPAGE_URL := https://github.com/gsql-lsp/gsql-lsp
+HOMEPAGE_URL := https://github.com/abrahamchandy95/gsql-lsp
 VERSION := 0.1.0
 DESCRIPTION := TigerGraph GSQL grammar for tree-sitter
 

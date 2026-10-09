@@ -1,6 +1,6 @@
 /**
  * @file TigerGraph GSQL grammar for tree-sitter
- * @author gsql-lsp contributors
+ * @author Abraham Chandy
  * @license MIT
  *
  * Covers the GSQL shell/DDL commands (schema, graphs, jobs, users), loading
@@ -1738,30 +1738,30 @@ export default grammar({
           optional(choice(alias('*', $.wildcard), $.string, commaSep1(field('name', $.name_pattern)))),
         ),
         seq(field('kind', choice(
-        kw('VERTEX'),
-        kw('EDGE'),
-        kw('GRAPH'),
-        kw('QUERY'),
-        kw('JOB'),
-        kw('PACKAGE'),
-        kw('USER'),
-        kw('ROLE'),
-        kw('SECRET'),
-        kw('TOKEN'),
-        kw('DATA_SOURCE'),
-        kw('TAG'),
-        kw('PRIVILEGE'),
-        kw('GROUP'),
-        kw('SCHEMA'),
-        kw('LOADING'),
-        // `SHOW DEFAULT ROLES IN GRAPH g`, `SHOW PROXY USER u`, `SHOW WORKLOAD QUEUE q`
-        kw('DEFAULT'),
-        kw('PROXY'),
-        kw('WORKLOAD'),
-        // `SHOW ROW POLICY`
-        kw('ROW'),
-      )),
-            repeat(choice($._command_argument, $._command_name))),
+          kw('VERTEX'),
+          kw('EDGE'),
+          kw('GRAPH'),
+          kw('QUERY'),
+          kw('JOB'),
+          kw('PACKAGE'),
+          kw('USER'),
+          kw('ROLE'),
+          kw('SECRET'),
+          kw('TOKEN'),
+          kw('DATA_SOURCE'),
+          kw('TAG'),
+          kw('PRIVILEGE'),
+          kw('GROUP'),
+          kw('SCHEMA'),
+          kw('LOADING'),
+          // `SHOW DEFAULT ROLES IN GRAPH g`, `SHOW PROXY USER u`, `SHOW WORKLOAD QUEUE q`
+          kw('DEFAULT'),
+          kw('PROXY'),
+          kw('WORKLOAD'),
+          // `SHOW ROW POLICY`
+          kw('ROW'),
+        )),
+          repeat(choice($._command_argument, $._command_name))),
       ),
     )),
 

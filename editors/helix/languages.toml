@@ -25,4 +25,4 @@ semanticTokens = { lexical = false }
 name = "gsql"
 # Pin `rev` to a commit of the repository; for a local checkout use
 #   source = { path = "/path/to/gsql-lsp/tree-sitter-gsql" }
-source = { git = "https://github.com/gsql-lsp/gsql-lsp", rev = "main", subpath = "tree-sitter-gsql" }
+source = { git = "https://github.com/abrahamchandy95/gsql-lsp", rev = "main", subpath = "tree-sitter-gsql" }

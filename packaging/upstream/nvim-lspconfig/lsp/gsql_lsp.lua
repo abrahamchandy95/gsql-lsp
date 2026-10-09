@@ -1,16 +1,9 @@
 ---@brief
 ---
---- https://github.com/gsql-lsp/gsql-lsp
+--- https://github.com/abrahamchandy95/gsql-lsp
 ---
 --- Language server for TigerGraph GSQL: diagnostics, completion, hover, navigation, formatting and inlay hints.
----
---- Pre-built binaries for Linux, macOS and Windows are attached to the releases at
---- https://github.com/gsql-lsp/gsql-lsp/releases. The server can also be installed with
---- `mason.nvim` (`:MasonInstall gsql-lsp`) or built from source:
---- ```sh
---- cargo install --locked --git https://github.com/gsql-lsp/gsql-lsp gsql-lsp
---- ```
----
+
 --- The default `cmd` assumes that the `gsql-lsp` binary can be found in `$PATH`.
 ---
 --- Nvim does not detect `*.gsql` and `*.gsq` files. Register the filetype with
@@ -30,7 +23,7 @@
 
 ---@type vim.lsp.Config
 return {
-  cmd = { 'gsql-lsp' },
-  filetypes = { 'gsql' },
-  root_markers = { '.gsqlroot', '.git' },
+  cmd = { "gsql-lsp" },
+  filetypes = { "gsql" },
+  root_markers = { ".gsqlroot", ".git" },
 }

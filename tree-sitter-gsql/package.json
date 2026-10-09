@@ -1,15 +1,15 @@
 {
   "name": "tree-sitter-gsql",
-  "version": "0.1.0",
+  "version": "0.1.0-rc.1",
   "description": "TigerGraph GSQL grammar for tree-sitter",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/gsql-lsp/gsql-lsp.git"
+    "url": "git+https://github.com/abrahamchandy95/gsql-lsp"
   },
   "license": "MIT",
   "author": {
-    "name": "gsql-lsp contributors"
+    "name": "Abraham Chandy"
   },
   "main": "bindings/node",
   "types": "bindings/node",

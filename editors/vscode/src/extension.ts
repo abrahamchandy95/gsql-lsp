@@ -5,7 +5,7 @@ import * as vscode from 'vscode';
 import { LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } from 'vscode-languageclient/node';
 
 /** Where to get the server. The one place the repository URL appears in this file. */
-const RELEASES_URL = 'https://github.com/gsql-lsp/gsql-lsp/releases';
+const RELEASES_URL = 'https://github.com/abrahamchandy95/gsql-lsp/releases';
 
 let client: LanguageClient | undefined;
 
@@ -64,7 +64,7 @@ function resolvable(command: string): boolean {
 async function reportMissingServer(command: string, detail: string): Promise<void> {
   const choice = await vscode.window.showErrorMessage(
     `Could not start gsql-lsp (${command}): ${detail}. Install a release build (or run \`cargo install --path crates/gsql-lsp\`) ` +
-      'and make sure it is on PATH, or set "gsql.server.path" to the executable.',
+    'and make sure it is on PATH, or set "gsql.server.path" to the executable.',
     'Open Settings',
     'Open Releases',
   );

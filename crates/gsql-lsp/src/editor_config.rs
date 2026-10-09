@@ -12,7 +12,7 @@ use crate::features::{Config, KeywordCase};
 
 /// Repository the snippets refer to (grammar sources, Neovim plugin). The one
 /// place to change it; `--repo URL` overrides it per invocation.
-pub const REPOSITORY: &str = "https://github.com/gsql-lsp/gsql-lsp";
+pub const REPOSITORY: &str = "https://github.com/abrahamchandy95/gsql-lsp";
 
 /// The server command when it is not given as an absolute path.
 const COMMAND: &str = "gsql-lsp";

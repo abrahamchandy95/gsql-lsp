@@ -16,11 +16,11 @@
     }
   ],
   "metadata": {
-    "version": "0.1.0",
+    "version": "0.1.0-rc.1",
     "license": "MIT",
     "description": "TigerGraph GSQL grammar for tree-sitter",
-    "authors": [{ "name": "gsql-lsp contributors" }],
-    "links": { "repository": "https://github.com/gsql-lsp/gsql-lsp" }
+    "authors": [{ "name": "Abraham Chandy" }],
+    "links": { "repository": "https://github.com/abrahamchandy95/gsql-lsp" }
   },
   "bindings": {
     "c": true,

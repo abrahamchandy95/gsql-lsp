@@ -2,12 +2,12 @@
   "name": "gsql",
   "displayName": "GSQL (TigerGraph)",
   "description": "TigerGraph GSQL support: syntax highlighting, diagnostics, completion, hover, navigation and formatting through gsql-lsp.",
-  "version": "0.1.0",
+  "version": "0.1.0-rc.1",
   "publisher": "gsql-lsp",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/gsql-lsp/gsql-lsp"
+    "url": "https://github.com/abrahamchandy95/gsql-lsp"
   },
   "engines": {
     "vscode": "^1.82.0"

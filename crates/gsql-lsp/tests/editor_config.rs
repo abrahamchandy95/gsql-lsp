@@ -282,7 +282,7 @@ fn snippets_agree_with_the_neovim_integration() {
     let lazy = body("neovim", "lazy");
     assert!(lazy.contains("require('gsql').setup(") && lazy.contains("plugin.dir .. '/editors/neovim'"));
     assert!(repo_file("editors/neovim/lua/gsql/init.lua").contains("function M.setup("));
-    assert!(lazy.contains("'gsql-lsp/gsql-lsp'"));
+    assert!(lazy.contains("'abrahamchandy95/gsql-lsp'"));
 }
 
 #[test]
@@ -354,7 +354,7 @@ fn repository_is_configurable_in_one_place() {
     let github = Options { repo: Some("https://github.com/me/gsql"), ..Options::default() };
     assert!(bodies("neovim", &github)[0].1.contains("'me/gsql'"));
     // The default appears only through the constant.
-    assert!(bodies("neovim", &Options::default())[0].1.contains(&format!("'{}'", "gsql-lsp/gsql-lsp")));
+    assert!(bodies("neovim", &Options::default())[0].1.contains(&format!("'{}'", "abrahamchandy95/gsql-lsp")));
 }
 
 #[test]

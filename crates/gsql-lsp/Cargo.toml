@@ -24,7 +24,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tree-sitter = "0.27"
 # `version` is what crates.io sees; scripts/set_version.py keeps it in step.
-tree-sitter-gsql = { path = "../../tree-sitter-gsql", version = "0.1.0" }
+tree-sitter-gsql = { path = "../../tree-sitter-gsql", version = "0.1.0-rc.1" }
 
 # cargo-binstall: the release assets of .github/workflows/release.yml.
 # `{ repo }` is the `repository` field of this manifest.
