@@ -309,11 +309,17 @@ impl<'s> Checker<'s, '_> {
             }
             "accumulator_kind" => self.accumulator_case(node),
             "binary_expression" => {
+                if context.query.is_some() {
+                    self.compared_condition(node);
+                }
                 if let Some(mode) = context.query.filter(|_| self.snapshot.config.diagnostics_float_equality) {
                     self.float_equality(node, mode);
                 }
             }
             "call_expression" => {
+                if context.query.is_some() {
+                    self.set_expression_method(node);
+                }
                 self.mutator(node, context);
                 self.accumulator_method(node);
                 if context.query.is_some() {
@@ -536,6 +542,9 @@ impl<'s> Checker<'s, '_> {
         // The vertex aliases the block selects.
         let selected: Vec<Node> =
             results.iter().copied().filter(|r| r.kind() == "identifier" && aliases.contains(&self.text(*r))).collect();
+        for clause in children.iter().filter(|c| c.kind() == "post_accum_clause") {
+            self.non_binding_post_accum(*clause, &aliases, &selected);
+        }
         // HAVING: "The SELECT block selects src, but the HAVING clause uses tgt"
         // (SEM-50, the HAVING section of the SELECT statement: "The condition
         // in a HAVING clause is applied to each vertex in the SELECT set").
@@ -580,6 +589,34 @@ impl<'s> Checker<'s, '_> {
                 self.report(used, severity::ERROR, "per-alias", message);
             }
         }
+    }
+
+    /// A POST-ACCUM clause that uses no vertex alias of the FROM clause binds
+    /// to none: the query compiler warns that such clauses "will be deprecated
+    /// soon" and asks for `POST-ACCUM (selectAlias) ...` (WARN-7).
+    fn non_binding_post_accum(&mut self, clause: Node, aliases: &[&str], selected: &[Node]) {
+        if aliases.is_empty() || clause.child_by_field_name("alias").is_some() {
+            return;
+        }
+        let mut binds = false;
+        syntax::walk(clause, |n| binds |= n.kind() == "identifier" && aliases.contains(&self.text(n)));
+        let Some(keyword) = clause.child(0).filter(|_| !binds) else {
+            return;
+        };
+        let mut d = diagnostic(
+            self.snapshot,
+            Span::of(keyword),
+            severity::WARNING,
+            "non-binding-post-accum",
+            "This POST-ACCUM clause uses no vertex alias; the query compiler warns that non-binding POST-ACCUM clauses will be deprecated soon (WARN-7). Write it as `POST-ACCUM (selectAlias) ...`".into(),
+        );
+        if let [one] = selected {
+            let name = self.text(*one);
+            let at = Span::new(keyword.end_byte(), keyword.end_byte());
+            let edit = TextEdit { range: self.snapshot.range(at), new_text: format!(" ({name})") };
+            add_fix(&mut d, format!("Bind the clause to `{name}`: `POST-ACCUM ({name})`"), vec![edit], false);
+        }
+        self.out.push(d);
     }
 
     /// Conjunctive patterns: "If the match tables of the patterns in a FROM
@@ -1416,6 +1453,70 @@ impl<'s> Checker<'s, '_> {
             "cypher-syntax",
             "openCypher patterns need a SYNTAX V3 declaration; V1 and V2 queries reject them".into(),
         );
+    }
+
+    /// A parenthesized condition cannot be the left side of a comparison: the
+    /// query parser rejects `(a < b AND c) != (d < e)` at the operator, and then
+    /// reports every later line of the statement too. `>` is left out, as the
+    /// parser lists it among the tokens it accepts there.
+    fn compared_condition(&mut self, node: Node) {
+        let Some(operator) = node.child_by_field_name("operator") else {
+            return;
+        };
+        if !matches!(operator.kind(), "==" | "!=" | "<>" | "=" | "<" | "<=" | ">=") {
+            return;
+        }
+        let Some(left) = node.child_by_field_name("left").filter(|l| l.kind() == "parenthesized_expression") else {
+            return;
+        };
+        let inner = unparenthesized(left);
+        let condition = match inner.kind() {
+            "binary_expression" => inner.child_by_field_name("operator").is_some_and(|o| {
+                matches!(o.kind(), "==" | "!=" | "<>" | "=" | "<" | "<=" | ">" | ">=")
+                    || matches!(self.text(o).to_ascii_uppercase().as_str(), "AND" | "OR")
+            }),
+            "unary_expression" => {
+                inner.child_by_field_name("operator").is_some_and(|o| self.text(o).eq_ignore_ascii_case("NOT"))
+            }
+            "in_expression" | "like_expression" | "is_expression" | "between_expression" => true,
+            _ => false,
+        };
+        if condition {
+            let message = format!(
+                "GSQL cannot compare a parenthesized condition with `{}`; combine the conditions with AND, OR and NOT instead (for \"exactly one of A and B\": `(A AND NOT B) OR (NOT A AND B)`)",
+                self.text(operator)
+            );
+            self.report(operator, severity::ERROR, "compared-condition", message);
+        }
+    }
+
+    /// The query compiler rejects a method called on a parenthesized set
+    /// expression, `(@@a MINUS @@b).size()`; the result has to be stored first.
+    fn set_expression_method(&mut self, node: Node) {
+        let Some(function) = node.child_by_field_name("function").filter(|f| f.kind() == "member_expression") else {
+            return;
+        };
+        let Some(object) = function.child_by_field_name("object").filter(|o| o.kind() == "parenthesized_expression")
+        else {
+            return;
+        };
+        let inner = unparenthesized(object);
+        let Some(operator) = inner.child_by_field_name("operator").filter(|_| inner.kind() == "binary_expression")
+        else {
+            return;
+        };
+        let operator = self.text(operator).to_ascii_uppercase();
+        if !matches!(operator.as_str(), "UNION" | "INTERSECT" | "MINUS") {
+            return;
+        }
+        let Some(method) = function.child_by_field_name("property") else {
+            return;
+        };
+        let message = format!(
+            "GSQL cannot call `{}()` on a parenthesized {operator} expression; store the result in an accumulator or variable first and call the method on that",
+            self.text(method)
+        );
+        self.report(method, severity::ERROR, "set-expression-method", message);
     }
 
     /// The query compiler warns about exact comparison of floating-point values.
@@ -2487,6 +2588,51 @@ mod tests {
         let query = "CREATE QUERY q(INT k, STRING label) {\n  S = {Account.*};\n  R = SELECT a FROM S:a WHERE a.n == \"7\" OR a.name == 7 OR k > \"1\" OR label != 1 OR a.n == k OR a.name == label OR a.name == \"x\" OR a.n >= 1;\n  PRINT R;\n}\n";
         let found = findings(query, &[("file:///test/schema.gsql", schema)]);
         assert_eq!(with_code(&found, "type-mismatch").len(), 4, "{found:?}");
+    }
+
+    #[test]
+    fn conditions_cannot_be_compared() {
+        let query = "CREATE QUERY q(INT a, INT b, BOOL x) {\n  IF (a < 1 AND b > 2) != (a > 3) THEN PRINT a; END;\n  IF (NOT x) == TRUE OR ((a IN (1, 2))) <= x THEN PRINT a; END;\n  IF x == (a < b) OR (a + 1) != b OR (x) == TRUE OR (a < b) > x OR a < b != x THEN PRINT a; END;\n}\n";
+        let found = findings(query, &[]);
+        let messages = with_code(&found, "compared-condition");
+        // Not: a condition on the right, arithmetic or a plain name in parentheses,
+        // `>`, or a comparison without parentheses.
+        assert_eq!(messages.len(), 3, "{found:?}");
+        assert!(messages[0].starts_with("GSQL cannot compare a parenthesized condition with `!=`"), "{messages:?}");
+    }
+
+    #[test]
+    fn methods_need_a_stored_set_expression() {
+        let query = "CREATE QUERY q() {\n  SetAccum<INT> @@a, @@b, @@c;\n  PRINT (@@a MINUS @@b).size(), ((@@a union @@b)).contains(1), (@@a INTERSECT @@b).size();\n  @@c = @@a MINUS @@b;\n  PRINT @@c.size(), (@@c).size();\n}\n";
+        let found = findings(query, &[]);
+        let messages = with_code(&found, "set-expression-method");
+        // Not: the stored result, or a plain accumulator in parentheses.
+        assert_eq!(messages.len(), 3, "{found:?}");
+        assert!(
+            messages[0].starts_with("GSQL cannot call `size()` on a parenthesized MINUS expression"),
+            "{messages:?}"
+        );
+        assert!(
+            messages[1].starts_with("GSQL cannot call `contains()` on a parenthesized UNION expression"),
+            "{messages:?}"
+        );
+    }
+
+    #[test]
+    fn post_accum_clauses_bind_to_an_alias() {
+        let query = "CREATE QUERY q() {\n  SumAccum<INT> @@n;\n  SumAccum<INT> @c;\n  S = {ANY};\n  R = SELECT v FROM S:v POST-ACCUM @@n += 1 POST-ACCUM v.@c += 1 POST-ACCUM (v) @@n += 1;\n  T = SELECT v FROM S:v POST_ACCUM @@n += v.@c;\n  PRINT R, T;\n}\n";
+        let fixture = Fixture::new(query);
+        let snapshot = fixture.snapshot();
+        let found: Vec<_> = diagnostics(&snapshot)
+            .into_iter()
+            .filter(|d| d.code.as_deref() == Some("non-binding-post-accum"))
+            .collect();
+        // Only the first clause: the others use `v` or are bound to it.
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].range.start, Position { line: 4, character: 24 });
+        let actions = code_actions(&snapshot, found[0].range, std::slice::from_ref(&found[0]), None, &found);
+        let titles: Vec<&str> = actions.iter().map(|a| a.title.as_str()).collect();
+        assert_eq!(titles, ["Bind the clause to `v`: `POST-ACCUM (v)`"]);
     }
 
     #[test]

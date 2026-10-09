@@ -25,7 +25,7 @@ CREATE QUERY tg_k_hop(
                    ACCUM t.@visited += TRUE,
                          t.@distance += s.@distance + 1,
                          t.@path = s.@path + [t]
-                   POST-ACCUM @@frontier_size += 1;
+                   POST-ACCUM (t) @@frontier_size += 1;
         Reached = Reached UNION Frontier;
         LOG(TRUE, "hop", hop, "frontier", @@frontier_size);
     END;
