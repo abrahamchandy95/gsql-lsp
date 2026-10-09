@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn texts_over_the_size_bound_keep_the_incremental_tree() {
-        let base = include_str!("testdata/stale_tree.gsql");
+        let base = &include_str!("testdata/stale_tree.gsql").replace("\r\n", "\n");
         let edits: [(usize, usize, &str); 4] =
             [(801, 858, ""), (419, 491, "a\u{1F600}b"), (1163, 1191, "END;"), (326, 383, "}")];
         let mut parser = syntax::new_parser();

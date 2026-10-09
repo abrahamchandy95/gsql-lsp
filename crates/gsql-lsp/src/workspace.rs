@@ -609,7 +609,7 @@ mod tests {
         std::fs::write(dir.join("a/b/c/zz.gsql"), "-- x\ncreate  undirected edge E (FROM A, TO B)\n").unwrap();
         let report = scan_with_limit(std::slice::from_ref(&dir), 3);
         let names: Vec<String> =
-            report.files.iter().map(|p| p.strip_prefix(&dir).unwrap().to_string_lossy().into_owned()).collect();
+            report.files.iter().map(|p| p.strip_prefix(&dir).unwrap().to_string_lossy().replace('\\', "/")).collect();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(names, ["a/b/c/zz.gsql", "q0.gsql", "q1.gsql"]);
         assert_eq!(report.dropped_files, 2);
