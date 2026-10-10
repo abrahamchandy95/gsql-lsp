@@ -46,29 +46,39 @@ pub fn keywords() -> &'static [String] {
 
 /// Edit distance with transpositions (optimal string alignment), ignoring case.
 pub fn distance(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.to_ascii_lowercase().chars().collect();
-    let b: Vec<char> = b.to_ascii_lowercase().chars().collect();
-    let mut rows = vec![vec![0usize; b.len() + 1]; a.len() + 1];
-    for (i, row) in rows.iter_mut().enumerate() {
-        row[0] = i;
+    let width = b.chars().count() + 1;
+    // The last three rows (a transposition looks two back), on the stack for
+    // words of up to 32 letters.
+    let mut stack = [0; 3 * 33];
+    let mut heap = Vec::new();
+    let rows = if 3 * width <= stack.len() {
+        &mut stack[..3 * width]
+    } else {
+        heap.resize(3 * width, 0);
+        &mut heap[..]
+    };
+    let cell = |i: usize, j: usize| (i % 3) * width + j;
+    for (j, first) in rows[..width].iter_mut().enumerate() {
+        *first = j;
     }
-    for (j, cell) in rows[0].iter_mut().enumerate() {
-        *cell = j;
-    }
-    for i in 1..=a.len() {
-        for j in 1..=b.len() {
-            let cost = usize::from(a[i - 1] != b[j - 1]);
-            let mut best = (rows[i - 1][j] + 1)
-                .min(rows[i][j - 1] + 1)
-                .min(rows[i - 1][j - 1] + cost);
-            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1]
-            {
-                best = best.min(rows[i - 2][j - 2] + 1);
+    let (mut i, mut x_before) = (0, None);
+    for x in a.chars().map(|c| c.to_ascii_lowercase()) {
+        i += 1;
+        rows[cell(i, 0)] = i;
+        let mut y_before = None;
+        for (j, y) in (1..).zip(b.chars().map(|c| c.to_ascii_lowercase())) {
+            let mut best = (rows[cell(i - 1, j)] + 1)
+                .min(rows[cell(i, j - 1)] + 1)
+                .min(rows[cell(i - 1, j - 1)] + usize::from(x != y));
+            if x_before == Some(y) && y_before == Some(x) {
+                best = best.min(rows[cell(i - 2, j - 2)] + 1);
             }
-            rows[i][j] = best;
+            rows[cell(i, j)] = best;
+            y_before = Some(y);
         }
+        x_before = Some(x);
     }
-    rows[a.len()][b.len()]
+    rows[cell(i, width - 1)]
 }
 
 /// How far a word may be from a suggestion: one edit for short words, two
@@ -955,6 +965,7 @@ impl<'s> Search<'s> {
         let mut seen: std::collections::HashSet<u64> =
             std::collections::HashSet::new();
         let mut found: Vec<TokenEdit> = Vec::new();
+        let mut edited = String::new();
         for (_, kind, _, at, removed, with, token) in edits {
             if found.len() > MAX_TOKEN_REPAIRS || self.exhausted() {
                 break;
@@ -968,9 +979,13 @@ impl<'s> Search<'s> {
             }
             // The same text can come from several edits (a token removed from a run of equal ones,
             // or an insertion and a removal that end up in the same place).
+            // Hashed whole, so equal texts split elsewhere hash alike.
+            edited.clear();
+            edited.push_str(&text[..at]);
+            edited.push_str(&with);
+            edited.push_str(&text[at + removed..]);
             let mut hasher = std::hash::DefaultHasher::new();
-            format!("{}{}{}", &text[..at], with, &text[at + removed..])
-                .hash(&mut hasher);
+            edited.hash(&mut hasher);
             if !seen.insert(hasher.finish()) {
                 continue;
             }
@@ -1750,6 +1765,33 @@ pub fn repair_of(snapshot: &Snapshot) -> Option<Rc<Repair>> {
     typos_and_repair(snapshot.root(), snapshot.source, snapshot.encoding).1
 }
 
+/// Runs a feature on the document, falling back to an autocorrected copy
+/// if there are syntax errors
+pub(crate) fn run_with_repair_fallback<R>(
+    snapshot: &Snapshot,
+    position: Position,
+    run: impl Fn(&Snapshot, Position) -> R,
+    found: impl Fn(&R) -> bool,
+    back: impl Fn(R, &Repair, &str) -> R,
+) -> R {
+    let result = run(snapshot, position);
+    if found(&result) {
+        return result;
+    }
+    let Some(repair) = repair_of(snapshot) else {
+        return result;
+    };
+    let analysis = repair.analysis(snapshot.workspace);
+    let repaired =
+        snapshot.with_document(&repair.source, &repair.tree, &analysis);
+    let again = run(&repaired, repair.to_repaired(position));
+    if found(&again) {
+        back(again, &repair, snapshot.uri)
+    } else {
+        result
+    }
+}
+
 /// Documents larger than this are not repaired (analysis is the costly part).
 const MAX_REPAIR_BYTES: usize = 512 << 10;
 
@@ -2036,6 +2078,9 @@ mod tests {
         assert_eq!(distance("edn", "END"), 1);
         assert_eq!(distance("SELCT", "SELECT"), 1);
         assert_eq!(distance("abc", "xyz"), 3);
+        // Past 32 letters the rows are on the heap.
+        let long = "q".repeat(40);
+        assert_eq!(distance(&(long.clone() + "ab"), &(long + "BA")), 1);
     }
 
     #[test]

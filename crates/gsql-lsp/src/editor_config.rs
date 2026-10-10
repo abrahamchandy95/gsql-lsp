@@ -49,7 +49,7 @@ USAGE:
 Editors: neovim, vscode, helix, zed, emacs, vim (`--list` shows the variants).
     --settings    only the server settings, with their defaults, in the editor's syntax
     --absolute    use the path of this executable instead of `gsql-lsp` from PATH
-    --repo URL    repository URL used in snippets (default: the built-in placeholder)
+    --repo URL    repository URL used in snippets (default: this project's repository)
 ";
 
 /// Every setting the server reads, as the JSON object `Config::update` accepts
@@ -613,13 +613,6 @@ pub fn run(
         writeln!(err, "{editor} ({}): put this in {}", s.variant, s.target)
             .map_err(io_err)?;
         writeln!(out, "{}", s.body.trim_end()).map_err(io_err)?;
-    }
-    if options.repo.is_none() && matches!(editor, "neovim" | "helix") {
-        writeln!(
-            err,
-            "note: the repository URL {REPOSITORY} is a placeholder until the project is published; pass --repo URL"
-        )
-        .map_err(io_err)?;
     }
     if names.len() > 1 && options.variant.is_none() && !options.all {
         writeln!(

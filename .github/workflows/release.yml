@@ -44,7 +44,7 @@ jobs:
               exit 1
             fi
           done
-          # The Zed grammar must point at a real commit (docs/deployment.md, step 3).
+          # The Zed grammar must point at a real commit.
           if grep -q '^rev = "0\{40\}"' editors/zed/extension.toml; then
             echo "editors/zed/extension.toml still has the placeholder grammar rev" >&2
             exit 1

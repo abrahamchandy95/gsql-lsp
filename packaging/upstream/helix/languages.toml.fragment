@@ -2,8 +2,8 @@
 # Not validated against a Helix checkout (none is available offline); it mirrors
 # editors/helix/languages.toml, which is the user-facing copy.
 #
-# Placeholders: the repository URL and `rev` (a commit that contains
-# tree-sitter-gsql/src/parser.c). Helix wants a full commit SHA in `rev`.
+# `rev` is a commit that contains tree-sitter-gsql/src/parser.c; Helix wants
+# a full commit SHA.
 
 [language-server.gsql-lsp]
 command = "gsql-lsp"

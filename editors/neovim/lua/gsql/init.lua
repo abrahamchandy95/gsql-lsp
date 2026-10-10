@@ -1,7 +1,7 @@
 local M = {}
 
---- The GitHub repository. PLACEHOLDER: the one place to change for the release
---- downloads (:GsqlInstall) and the nvim-treesitter registration.
+--- The GitHub repository: the one place for the release downloads
+--- (:GsqlInstall) and the nvim-treesitter registration.
 M.repo_url = "https://github.com/abrahamchandy95/gsql-lsp"
 
 --- Directory of this plugin (editors/neovim) and of the repository.

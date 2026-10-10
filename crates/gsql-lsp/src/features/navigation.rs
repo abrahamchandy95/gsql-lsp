@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use crate::analysis::{Reference, Role, ScopeId, SymbolId, SymbolKind};
 use crate::features::Snapshot;
+use crate::features::autocorrect::{self, Repair};
 use crate::features::resolve::{self, Target};
 use crate::lsp::types::{
     DocumentHighlight, Location, Position, Range, TextEdit, WorkspaceEdit,
@@ -12,39 +13,9 @@ use crate::lsp::types::{
 use crate::syntax::BuiltinWord;
 use crate::text::is_identifier;
 
-/// Runs a feature on the document as written and, when that finds nothing
-/// and a misspelled keyword has thrown the parser off (so that a variable
-/// declared in the broken statement is unknown), on the document as
-/// corrected, with the result placed back in the written one.
-pub(crate) fn in_repaired<R>(
-    snapshot: &Snapshot,
-    position: Position,
-    run: impl Fn(&Snapshot, Position) -> R,
-    found: impl Fn(&R) -> bool,
-    back: impl Fn(R, &crate::features::autocorrect::Repair, &str) -> R,
-) -> R {
-    let result = run(snapshot, position);
-    if found(&result) {
-        return result;
-    }
-    let Some(repair) = crate::features::autocorrect::repair_of(snapshot)
-    else {
-        return result;
-    };
-    let analysis = repair.analysis(snapshot.workspace);
-    let repaired =
-        snapshot.with_document(&repair.source, &repair.tree, &analysis);
-    let again = run(&repaired, repair.to_repaired(position));
-    if found(&again) {
-        back(again, &repair, snapshot.uri)
-    } else {
-        result
-    }
-}
-
 fn back_locations(
     mut locations: Vec<Location>,
-    repair: &crate::features::autocorrect::Repair,
+    repair: &Repair,
     uri: &str,
 ) -> Vec<Location> {
     for location in locations.iter_mut().filter(|l| l.uri == uri) {
@@ -54,7 +25,7 @@ fn back_locations(
 }
 
 pub fn definition(snapshot: &Snapshot, position: Position) -> Vec<Location> {
-    in_repaired(
+    autocorrect::run_with_repair_fallback(
         snapshot,
         position,
         definition_here,
@@ -151,7 +122,7 @@ pub fn references(
     position: Position,
     include_declaration: bool,
 ) -> Vec<Location> {
-    in_repaired(
+    autocorrect::run_with_repair_fallback(
         snapshot,
         position,
         |s, p| references_here(s, p, include_declaration),
@@ -201,32 +172,56 @@ fn references_here(
             .collect(),
         None => Vec::new(),
     };
+    sort_unique(&mut locations);
+    locations
+}
+
+/// Sorts `locations` and drops repeats; the end is part of the order so
+/// that equal locations are adjacent.
+fn sort_unique(locations: &mut Vec<Location>) {
     locations.sort_by(|a, b| {
-        (&a.uri, a.range.start).cmp(&(&b.uri, b.range.start))
+        (&a.uri, a.range.start, a.range.end).cmp(&(
+            &b.uri,
+            b.range.start,
+            b.range.end,
+        ))
     });
     locations.dedup();
-    locations
 }
 
 fn same_target_in_document<'a>(
     snapshot: &'a Snapshot,
     target: &Target,
 ) -> Vec<&'a Reference> {
+    // Built-in names match in any case.
+    let name = target_name(snapshot, target);
     snapshot
         .analysis
         .references
         .iter()
+        .filter(|r| r.name.eq_ignore_ascii_case(name))
         .filter(|r| {
             resolve::target(snapshot, r).is_some_and(|t| t.same_as(target))
         })
         .collect()
 }
 
+/// The name `target` is declared or built in under.
+fn target_name<'a>(snapshot: &'a Snapshot, target: &'a Target) -> &'a str {
+    match target {
+        Target::Local(id) => &snapshot.analysis.symbols[*id].name,
+        Target::Global(key) => &key.name,
+        Target::Function(function) => function.name,
+        Target::Method(method) => method.name,
+        Target::Constant(name, _) => name,
+    }
+}
+
 pub fn document_highlight(
     snapshot: &Snapshot,
     position: Position,
 ) -> Vec<DocumentHighlight> {
-    in_repaired(
+    autocorrect::run_with_repair_fallback(
         snapshot,
         position,
         highlight_here,
@@ -275,14 +270,23 @@ pub fn prepare_rename(
     snapshot: &Snapshot,
     position: Position,
 ) -> Result<(Range, String), String> {
+    let (reference, _) = rename_target(snapshot, position)?;
+    Ok((snapshot.range(reference.span), reference.name.clone()))
+}
+
+/// The reference at `position` and what it names, if that can be renamed.
+fn rename_target<'a>(
+    snapshot: &'a Snapshot,
+    position: Position,
+) -> Result<(&'a Reference, Target), String> {
+    let nothing = || "No symbol to rename at this position".to_string();
     let reference = snapshot
         .reference_at(position)
-        .ok_or("No symbol to rename at this position")?;
-    match resolve::target(snapshot, reference) {
-        Some(Target::Local(_)) => {
-            Ok((snapshot.range(reference.span), reference.name.clone()))
-        }
-        Some(Target::Global(key)) => {
+        .ok_or_else(nothing)?;
+    let target = resolve::target(snapshot, reference).ok_or_else(nothing)?;
+    match &target {
+        Target::Local(_) => {}
+        Target::Global(key) => {
             if key.owner.is_none()
                 && matches!(
                     key.kind,
@@ -293,17 +297,16 @@ pub fn prepare_rename(
                     "The owning type of this attribute is ambiguous".into()
                 );
             }
-            if resolve::declarations(snapshot, &key).is_empty() {
+            if resolve::declarations(snapshot, key).is_empty() {
                 return Err(format!(
                     "`{}` is not declared in the workspace",
                     key.name
                 ));
             }
-            Ok((snapshot.range(reference.span), reference.name.clone()))
         }
-        Some(_) => Err("Built-ins cannot be renamed".into()),
-        None => Err("No symbol to rename at this position".into()),
+        _ => return Err("Built-ins cannot be renamed".into()),
     }
+    Ok((reference, target))
 }
 
 /// Refuses a new name that would change what a name means in a nested or
@@ -363,21 +366,21 @@ fn check_capture(
         .flat_map(rivals)
         .collect();
     let captures = analysis.references.iter().any(|r| {
-        inside(r.scope)
-            && match r.target {
-                Some(target) => outer.contains(&target),
-                None => {
-                    !symbol.kind.is_accumulator()
-                        && r.name == name
-                        && matches!(
-                            r.role,
-                            Role::Value
-                                | Role::VertexSource
-                                | Role::EdgeSource
-                                | Role::SchemaType
-                        )
-                }
+        let rival = match r.target {
+            Some(target) => outer.contains(&target),
+            None => {
+                !symbol.kind.is_accumulator()
+                    && r.name == name
+                    && matches!(
+                        r.role,
+                        Role::Value
+                            | Role::VertexSource
+                            | Role::EdgeSource
+                            | Role::SchemaType
+                    )
             }
+        };
+        rival && inside(r.scope)
     });
     if captures {
         return Err(format!(
@@ -450,12 +453,7 @@ pub fn rename(
     position: Position,
     new_name: &str,
 ) -> Result<WorkspaceEdit, String> {
-    prepare_rename(snapshot, position)?;
-    let reference = snapshot
-        .reference_at(position)
-        .ok_or("No symbol to rename at this position")?;
-    let target = resolve::target(snapshot, reference)
-        .ok_or("No symbol to rename at this position")?;
+    let (reference, target) = rename_target(snapshot, position)?;
     // Accumulators keep their `@` / `@@` prefix.
     let prefix: String = reference
         .name
@@ -495,10 +493,7 @@ pub fn rename(
                     .into_iter()
                     .map(|s| s.location()),
             );
-            locations.sort_by(|a, b| {
-                (&a.uri, a.range.start).cmp(&(&b.uri, b.range.start))
-            });
-            locations.dedup();
+            sort_unique(&mut locations);
             for location in locations {
                 changes
                     .entry(location.uri)
@@ -1162,6 +1157,35 @@ mod tests {
                 "{needle}"
             );
         }
+    }
+
+    #[test]
+    fn sort_unique_drops_a_repeat_split_by_a_longer_range() {
+        let at = |line, end| Location {
+            uri: "file:///a.gsql".into(),
+            range: Range::new(
+                Position::new(line, 0),
+                Position::new(line, end),
+            ),
+        };
+        let mut locations = vec![at(1, 3), at(1, 5), at(1, 3), at(0, 2)];
+        sort_unique(&mut locations);
+        assert_eq!(locations, vec![at(0, 2), at(1, 3), at(1, 5)]);
+    }
+
+    #[test]
+    fn highlights_a_builtin_function_in_any_case() {
+        let (text, offset) = cursor(concat!(
+            "CREATE QUERY q() {\n",
+            "  INT a = |abs(1);\n",
+            "  INT b = ABS(2);\n",
+            "  PRINT a, b;\n}\n",
+        ));
+        let fixture = Fixture::new(&text);
+        let snapshot = fixture.snapshot();
+        let highlights =
+            document_highlight(&snapshot, snapshot.position(offset));
+        assert_eq!(highlights.len(), 2, "{highlights:?}");
     }
 
     #[test]

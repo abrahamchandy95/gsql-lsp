@@ -10,7 +10,7 @@ use crate::text::Span;
 use crate::workspace::GlobalSymbol;
 
 pub fn hover(snapshot: &Snapshot, position: Position) -> Option<Hover> {
-    super::navigation::in_repaired(
+    super::autocorrect::run_with_repair_fallback(
         snapshot,
         position,
         hover_here,

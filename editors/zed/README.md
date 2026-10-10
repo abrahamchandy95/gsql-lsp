@@ -12,8 +12,7 @@ The server is found in this order:
    are removed.
 
 The repository used for the download is the `REPOSITORY` constant in
-`src/lib.rs`; the grammar repository and `rev` are in `extension.toml`. Both are
-placeholders until the project is published.
+`src/lib.rs`; the grammar repository and `rev` are in `extension.toml`.
 
 Status: `src/lib.rs` is written against the `zed_extension_api` 0.6 documentation
 (no crate source or wasm32 toolchain available offline); it has not been compiled.

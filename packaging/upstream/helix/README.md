@@ -7,7 +7,7 @@ It is the same as `editors/helix/languages.toml` (the user-facing copy) except:
 - `injection-regex` is added (same value as `tree-sitter-gsql/tree-sitter.json`);
 - the `[language-server.gsql-lsp.config.gsql]` defaults are left out (they
   repeat the server's own defaults);
-- `rev` is a placeholder commit SHA instead of `main`.
+- `rev` is a pinned commit SHA instead of `main`.
 
 Checked locally: the blocks differ from `editors/helix/languages.toml` only in
 those three points (diff of the non-comment lines). Not checked: that Helix

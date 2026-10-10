@@ -662,10 +662,15 @@ fn an_option_does_not_swallow_the_next_option() {
 }
 
 #[test]
-fn says_when_the_repository_is_a_placeholder() {
+fn snippets_use_the_project_repository_unless_given_another() {
     let out = gsql_lsp(&["config", "neovim"]);
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains("placeholder"),
+        String::from_utf8_lossy(&out.stdout)
+            .contains("abrahamchandy95/gsql-lsp"),
+        "{out:?}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains("placeholder"),
         "{out:?}"
     );
     let out = gsql_lsp(&[
@@ -674,10 +679,6 @@ fn says_when_the_repository_is_a_placeholder() {
         "--repo",
         "https://github.com/me/gsql",
     ]);
-    assert!(
-        !String::from_utf8_lossy(&out.stderr).contains("placeholder"),
-        "{out:?}"
-    );
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("me/gsql"),
         "{out:?}"

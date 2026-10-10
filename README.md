@@ -17,7 +17,7 @@ Language Server Protocol (LSP) implementation and Tree-sitter grammar for TigerG
 
 ```sh
 # Install to ~/.local/bin
-curl -fsSL https://raw.githubusercontent.com/abrahamchandy95/gsql-lsp/main/scripts/install.sh | sh
+curl -fsSL https://github.com/abrahamchandy95/gsql-lsp/releases/latest/download/install.sh | sh
 
 # Or build from source
 cargo install --path crates/gsql-lsp

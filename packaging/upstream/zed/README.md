@@ -37,9 +37,7 @@ available when this was written.
 - Present: `id = "gsql"`, `name`, `version`, `schema_version = 1`, `authors`,
   `repository`, `[grammars.gsql]` with `repository`, `rev`, `path`, and
   `[language_servers.gsql-lsp]`.
-- `rev` is the all-zero placeholder and the repository URL is the placeholder
-  URL: both must be set to real values before submission (the comment in the
-  file says so).
+- `rev` and the repository URL are real values.
 - There is no `editors/zed/LICENSE`. The repository root has an MIT `LICENSE`;
   if the registry wants the file beside `extension.toml`, copy or symlink it
   (not done here: `editors/zed` belongs to another task).
@@ -51,10 +49,9 @@ available when this was written.
 
 ## Steps
 
-1. Replace the placeholder URL everywhere it appears in `editors/zed`.
-2. Pin `rev` to a commit that contains `tree-sitter-gsql/src/parser.c` and the
+1. Pin `rev` to a commit that contains `tree-sitter-gsql/src/parser.c` and the
    queries copied into `editors/zed/languages/gsql` (`python3 scripts/sync_queries.py`).
-3. Test locally: in Zed run `zed: install dev extension` and select `editors/zed`
+2. Test locally: in Zed run `zed: install dev extension` and select `editors/zed`
    (to verify; this also builds the wasm).
-4. Fork `zed-industries/extensions`, `git submodule add <repo-url> extensions/gsql`,
+3. Fork `zed-industries/extensions`, `git submodule add <repo-url> extensions/gsql`,
    add the entry above, run the registry's sort script, open a PR.

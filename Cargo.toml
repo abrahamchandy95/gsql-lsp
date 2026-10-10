@@ -9,11 +9,10 @@ edition = "2024"
 rust-version = "1.90"
 license = "MIT"
 authors = ["Abraham Chandy"]
-# PLACEHOLDER: the one place the repository URL lives for the Rust packages.
-# cargo-binstall builds its download URLs from it; the editor files are listed
-# in docs/deployment.md.
+# The one place the repository URL lives for the Rust packages.
+# cargo-binstall builds its download URLs from it.
 repository = "https://github.com/abrahamchandy95/gsql-lsp"
-homepage = "https://github.com/gsql-lsp/gsql-lsp"
+homepage = "https://github.com/abrahamchandy95/gsql-lsp"
 
 [profile.release]
 lto = "thin"
