@@ -21,7 +21,11 @@ pub fn to_path(uri: &str) -> Option<PathBuf> {
     let decoded = percent_decode(path);
     // "/C:/dir" on Windows.
     let bytes = decoded.as_bytes();
-    if cfg!(windows) && bytes.len() >= 3 && bytes[0] == b'/' && bytes[2] == b':' {
+    if cfg!(windows)
+        && bytes.len() >= 3
+        && bytes[0] == b'/'
+        && bytes[2] == b':'
+    {
         return Some(PathBuf::from(&decoded[1..]));
     }
     Some(PathBuf::from(decoded))
@@ -43,10 +47,27 @@ pub fn from_path(path: &Path) -> String {
     uri
 }
 
+/// The decoded file name of a URI, or its raw last segment when it is not a file path.
+pub fn file_name(uri: &str) -> String {
+    to_path(uri)
+        .and_then(|p| {
+            p.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| {
+            uri.rsplit('/')
+                .next()
+                .unwrap_or(uri)
+                .to_string()
+        })
+}
+
 /// A key that identifies the same file regardless of how its URI is encoded.
 pub fn key(uri: &str) -> String {
     match to_path(uri) {
-        Some(path) => canonical(&path).to_string_lossy().into_owned(),
+        Some(path) => canonical(&path)
+            .to_string_lossy()
+            .into_owned(),
         None => uri.to_string(),
     }
 }
@@ -56,7 +77,10 @@ pub fn key(uri: &str) -> String {
 /// path without such segments is returned as it is.
 pub fn resolve_dots(path: &Path) -> PathBuf {
     use std::path::Component;
-    if path.components().any(|c| matches!(c, Component::ParentDir | Component::CurDir)) {
+    if path
+        .components()
+        .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
+    {
         let resolved = canonical(path);
         // The nonexistent tail may still hold segments: remove them lexically.
         let mut out = PathBuf::new();
@@ -82,7 +106,9 @@ fn canonical(path: &Path) -> PathBuf {
         return canonical;
     }
     for ancestor in path.ancestors().skip(1) {
-        if let (Ok(base), Ok(rest)) = (std::fs::canonicalize(ancestor), path.strip_prefix(ancestor)) {
+        if let (Ok(base), Ok(rest)) =
+            (std::fs::canonicalize(ancestor), path.strip_prefix(ancestor))
+        {
             return base.join(rest);
         }
     }
@@ -96,7 +122,9 @@ fn percent_decode(text: &str) -> String {
     while index < bytes.len() {
         if bytes[index] == b'%' && index + 2 < bytes.len() {
             let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).ok();
-            if let Some(value) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+            if let Some(value) =
+                hex.and_then(|h| u8::from_str_radix(h, 16).ok())
+            {
                 decoded.push(value);
                 index += 3;
                 continue;
@@ -115,8 +143,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn keys_stay_the_same_when_a_new_file_is_saved() {
-        let dir = std::env::temp_dir().join(format!("gsql-uri-{}", std::process::id()));
-        let link = std::env::temp_dir().join(format!("gsql-uri-link-{}", std::process::id()));
+        let dir = std::env::temp_dir()
+            .join(format!("gsql-uri-{}", std::process::id()));
+        let link = std::env::temp_dir()
+            .join(format!("gsql-uri-link-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let _ = std::fs::remove_file(&link);
         std::os::unix::fs::symlink(&dir, &link).unwrap();
@@ -157,20 +187,33 @@ mod tests {
 
     #[test]
     fn resolves_dot_segments() {
-        let dir = std::env::temp_dir().join(format!("gsql-dots-{}", std::process::id()));
+        let dir = std::env::temp_dir()
+            .join(format!("gsql-dots-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("a")).unwrap();
         std::fs::create_dir_all(dir.join("b")).unwrap();
         let base = std::fs::canonicalize(&dir).unwrap();
-        assert_eq!(resolve_dots(&dir.join("a/../b/q.gsql")), base.join("b/q.gsql"));
-        assert_eq!(resolve_dots(&dir.join("a/./../b/missing/../q.gsql")), base.join("b/q.gsql"));
+        assert_eq!(
+            resolve_dots(&dir.join("a/../b/q.gsql")),
+            base.join("b/q.gsql")
+        );
+        assert_eq!(
+            resolve_dots(&dir.join("a/./../b/missing/../q.gsql")),
+            base.join("b/q.gsql")
+        );
         assert_eq!(resolve_dots(&dir.join("a/q.gsql")), dir.join("a/q.gsql"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn decodes_client_uris() {
-        assert_eq!(to_path("file:///a/b%C3%A9.gsql").unwrap(), Path::new("/a/bé.gsql"));
-        assert_eq!(to_path("file://localhost/a/b.gsql").unwrap(), Path::new("/a/b.gsql"));
+        assert_eq!(
+            to_path("file:///a/b%C3%A9.gsql").unwrap(),
+            Path::new("/a/bé.gsql")
+        );
+        assert_eq!(
+            to_path("file://localhost/a/b.gsql").unwrap(),
+            Path::new("/a/b.gsql")
+        );
         assert_eq!(to_path("untitled:Untitled-1"), None);
     }
 }

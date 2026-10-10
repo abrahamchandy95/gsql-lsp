@@ -65,12 +65,21 @@ fn run() -> ExitCode {
                 match arg.as_str() {
                     "--errors-only" => options.errors_only = true,
                     "--format" => {
-                        options.format = match rest.next().map(String::as_str) {
-                            Some("text") => gsql_lsp::check::OutputFormat::Text,
-                            Some("github") => gsql_lsp::check::OutputFormat::Github,
-                            Some("json") => gsql_lsp::check::OutputFormat::Json,
+                        options.format = match rest.next().map(String::as_str)
+                        {
+                            Some("text") => {
+                                gsql_lsp::check::OutputFormat::Text
+                            }
+                            Some("github") => {
+                                gsql_lsp::check::OutputFormat::Github
+                            }
+                            Some("json") => {
+                                gsql_lsp::check::OutputFormat::Json
+                            }
                             _ => {
-                                eprintln!("--format takes text, github or json\n\n{USAGE}");
+                                eprintln!(
+                                    "--format takes text, github or json\n\n{USAGE}"
+                                );
                                 return ExitCode::from(2);
                             }
                         }
@@ -92,7 +101,9 @@ fn run() -> ExitCode {
             match gsql_lsp::check::run(&options, &mut io::stdout().lock()) {
                 Ok(summary) => exit_code(summary),
                 // The reader went away (`gsql-lsp check | head`).
-                Err(err) if err.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+                Err(err) if err.kind() == io::ErrorKind::BrokenPipe => {
+                    ExitCode::SUCCESS
+                }
                 Err(err) => {
                     eprintln!("gsql-lsp: {err}");
                     ExitCode::from(2)
@@ -106,20 +117,30 @@ fn run() -> ExitCode {
                 match arg.as_str() {
                     "--check" => options.check = true,
                     "--keyword-case" => {
-                        options.keyword_case = match rest.next().map(String::as_str) {
-                            Some("upper") => gsql_lsp::features::KeywordCase::Upper,
-                            Some("lower") => gsql_lsp::features::KeywordCase::Lower,
-                            Some("preserve") => gsql_lsp::features::KeywordCase::Preserve,
-                            _ => {
-                                eprintln!("--keyword-case takes upper, lower or preserve\n\n{USAGE}");
+                        options.keyword_case = match rest
+                            .next()
+                            .map(String::as_str)
+                            .and_then(
+                                gsql_lsp::features::KeywordCase::from_name,
+                            ) {
+                            Some(case) => case,
+                            None => {
+                                eprintln!(
+                                    "--keyword-case takes upper, lower or preserve\n\n{USAGE}"
+                                );
                                 return ExitCode::from(2);
                             }
                         }
                     }
-                    "--indent" => match rest.next().and_then(|n| n.parse::<u32>().ok()) {
+                    "--indent" => match rest
+                        .next()
+                        .and_then(|n| n.parse::<u32>().ok())
+                    {
                         Some(n) if n > 0 => options.indent = n,
                         _ => {
-                            eprintln!("--indent takes a positive number\n\n{USAGE}");
+                            eprintln!(
+                                "--indent takes a positive number\n\n{USAGE}"
+                            );
                             return ExitCode::from(2);
                         }
                     },
@@ -140,7 +161,9 @@ fn run() -> ExitCode {
             }
             match gsql_lsp::format::run(&options, &mut io::stdout().lock()) {
                 Ok(summary) => exit_code(summary),
-                Err(err) if err.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+                Err(err) if err.kind() == io::ErrorKind::BrokenPipe => {
+                    ExitCode::SUCCESS
+                }
                 Err(err) => {
                     eprintln!("gsql-lsp: {err}");
                     ExitCode::from(2)
@@ -148,10 +171,17 @@ fn run() -> ExitCode {
             }
         }
         Some("config") => {
-            match gsql_lsp::editor_config::run(&args[1..], &mut io::stdout().lock(), &mut io::stderr().lock()) {
+            match gsql_lsp::editor_config::run(
+                &args[1..],
+                &mut io::stdout().lock(),
+                &mut io::stderr().lock(),
+            ) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(message) => {
-                    eprintln!("gsql-lsp config: {message}\n\n{}", gsql_lsp::editor_config::HELP);
+                    eprintln!(
+                        "gsql-lsp config: {message}\n\n{}",
+                        gsql_lsp::editor_config::HELP
+                    );
                     ExitCode::from(2)
                 }
             }

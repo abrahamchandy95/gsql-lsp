@@ -169,13 +169,7 @@
     "Returns a `SetAccum` of strings of role names granted to the current user."
    ],
    "returns": "`STRING`",
-   "parameters": [
-    {
-     "name": "None",
-     "description": "None",
-     "type": "None"
-    }
-   ],
+   "parameters": [],
    "notes": [],
    "examples": [
     "GSQL > create query test() {\nprint current_roles();\n}",
@@ -462,9 +456,7 @@
    ],
    "returns": "`DATETIME`",
    "parameters": [],
-   "notes": [
-    "None."
-   ],
+   "notes": [],
    "examples": [
     "now() => \"2021-11-13 00:32:16\""
    ]
@@ -815,9 +807,7 @@
    ],
    "returns": "`DOUBLE`",
    "parameters": [],
-   "notes": [
-    "None."
-   ],
+   "notes": [],
    "examples": [
     " PI() * 1000000000 -> 3.141592653589793E9"
    ]
@@ -1318,9 +1308,7 @@
      "type": "Number"
     }
    ],
-   "notes": [
-    "Copyright © 2026 TigerGraph"
-   ],
+   "notes": [],
    "examples": []
   },
   {
@@ -1486,9 +1474,7 @@
    ],
    "returns": "`STRING`",
    "parameters": [],
-   "notes": [
-    "None."
-   ],
+   "notes": [],
    "examples": []
   },
   {
@@ -2135,7 +2121,7 @@
    ],
    "notes": [],
    "examples": [
-    "to_string(1000.1) -> \"1000.1\"\nto_string(0.0000000001) -> \"1E-10\"\nto_string(12300000000) -> \"12300000000\"  // Using an `INT` or `UINT` value returns the full number as a string without scientific notation\nto_string(12300000000.0) -> \"1.23e+10\"  // Using a `DOUBLE` value returns scientific notation for large numbers\nto_string(12300000000.0) -> \"1.23e+10\"  // Using a `FLOAT` value also returns scientific notation for large numbers"
+    "to_string(1000.1) -> \"1000.1\"\nto_string(0.0000000001) -> \"1E-10\"\nto_string(12300000000) -> \"12300000000\"  // Using an INT or UINT value returns the full number as a string without scientific notation\nto_string(12300000000.0) -> \"1.23e+10\"  // Using a DOUBLE value returns scientific notation for large numbers\nto_string(12300000000.0) -> \"1.23e+10\"  // Using a FLOAT value also returns scientific notation for large numbers"
    ]
   },
   {
@@ -2579,7 +2565,7 @@
    "notes": [],
    "examples": [
     "If we have the following edge:\n{\n      \"e_type\": \"User_Video\",\n      \"directed\": false,\n      \"from_id\": \"0\",\n      \"from_type\": \"VidUser\",\n      \"to_id\": \"2\",\n      \"to_type\": \"Video\",\n      \"attributes\": {\n        \"rating\": 5.2,\n        \"date_time\": 0\n}",
-    "Assume the alias of the edge is `e`:\ne.getAttr(\"rating\", \"DOUBLE\") -> 5.2"
+    "Assume the alias of the edge is e:\ne.getAttr(\"rating\", \"DOUBLE\") -> 5.2"
    ]
   },
   {
@@ -2593,9 +2579,7 @@
    ],
    "returns": "`BOOL`",
    "parameters": [],
-   "notes": [
-    "None."
-   ],
+   "notes": [],
    "examples": []
   },
   {
@@ -2669,7 +2653,7 @@
    ],
    "notes": [],
    "examples": [
-    "If we have the following JSON object represented by the variable `han`:\n{\n    \"name\": \"Han Solo\",\n    \"age\": \"39\",\n    \"occupation\": \"mercenary\"\n}",
+    "If we have the following JSON object represented by the variable han:\n{\n    \"name\": \"Han Solo\",\n    \"age\": \"39\",\n    \"occupation\": \"mercenary\"\n}",
     "Then:\nhan.containsKey(\"name\") -> true\nhan.containsKey(\"isJedi\") -> false"
    ]
   },
@@ -2692,7 +2676,7 @@
    ],
    "notes": [],
    "examples": [
-    "If we have the following JSON object represented by the variable `han`:\n{\n    \"name\": \"Han Solo\",\n    \"age\": 39,\n    \"occupation\": \"mercenary\",\n    \"isJedi\": false\n}",
+    "If we have the following JSON object represented by the variable han:\n{\n    \"name\": \"Han Solo\",\n    \"age\": 39,\n    \"occupation\": \"mercenary\",\n    \"isJedi\": false\n}",
     "Then:\nhan.getBool(\"isJedi\") -> false"
    ]
   },
@@ -2793,9 +2777,7 @@
      "type": "STRING"
     }
    ],
-   "notes": [
-    "Copyright © 2026 TigerGraph"
-   ],
+   "notes": [],
    "examples": []
   },
   {
@@ -3103,7 +3085,7 @@
    "description": [
     "Returns the current time in Unix epoch seconds."
    ],
-   "returns": "`UINT` Copyright © 2026 TigerGraph",
+   "returns": "`UINT`",
    "parameters": [],
    "notes": [
     "The function takes one `INT` parameter. This parameter is actually ignored, but by convention, set its value to 0."
@@ -3679,9 +3661,7 @@
    ],
    "returns": "`STRING`",
    "parameters": [],
-   "notes": [
-    "None."
-   ],
+   "notes": [],
    "examples": [
     "The function doesn’t take any arguments and returns a version-4 UUID:\ngsql_uuid_v4() -> \"3e9ca3e6-5ad4-4a32-9cfc-9f53367bd420\""
    ]
@@ -3973,7 +3953,7 @@
    ],
    "description": [
     "The BitwiseAndAccum and BitwiseOrAccum types represent fixed-length or dynamic-length bit sequences. They calculate the cumulative result of bitwise boolean operations and store the resulting sequences.",
-    "Integers are stored as sequences of 1s and 0s (bits) in base-2, with each bit acting as a boolean value (1 for true, 0 for false). Computing the Bitwise `AND` of two numbers A and B means computing the bit sequence C where the \\(j_{th}\\) bit of C, denoted \\(C_j\\), is equal to \\(A_j\\) `AND` \\(B_j\\)."
+    "Integers are stored as sequences of 1s and 0s (bits) in base-2, with each bit acting as a boolean value (1 for true, 0 for false). Computing the Bitwise `AND` of two numbers A and B means computing the bit sequence C where the j_th bit of C, denoted C_j, is equal to A_j `AND` B_j."
    ],
    "methods": [
     {

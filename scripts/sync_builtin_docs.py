@@ -99,7 +99,7 @@ class Page(HTMLParser):
         if tag in ("h1", "h2", "h3", "h4", "p", "li", "pre", "dt") and self.stack and self.stack[-1][0] == {"h1": "h", "h2": "h", "h3": "h", "h4": "h"}.get(tag, tag):
             self.flush()
         elif tag in ("td", "th") and self.cell is not None:
-            self.row.append(" ".join("".join(self.cell).split()))
+            self.row.append(plain_math(" ".join("".join(self.cell).split())))
             self.cell = None
         elif tag == "tr" and self.row is not None:
             self.blocks.append(("row", 0, False, self.row))
@@ -121,7 +121,7 @@ class Page(HTMLParser):
         kind, level, discrete = self.stack.pop()
         raw = "".join(self.text)
         self.text = []
-        text = raw.strip("\n") if kind == "pre" else " ".join(raw.split())
+        text = raw.strip("\n") if kind == "pre" else plain_math(" ".join(raw.split()))
         text = text.replace("` `", " ").replace("``", "")
         if text:
             self.blocks.append((kind, level, discrete, text))
@@ -138,6 +138,26 @@ EXTRA_NOTES = {
 }
 
 
+def is_page_junk(text):
+    """A paragraph or table cell that documents nothing: the placeholder of an
+    empty section or the copyright line of the page footer."""
+    return text in ("None", "None.") or text.startswith("Copyright ©")
+
+
+def plain_math(text):
+    r"""MathJax written out: `\(C_{j}\)` becomes `C_j`."""
+    def written_out(m):
+        return m.group(1).replace("{", "").replace("}", "")
+
+    return re.sub(r"\\\((.*?)\\\)", written_out, text)
+
+
+def example_text(text):
+    """Text shown as code (an example or its caption): the backticks of inline
+    code would be shown as they are."""
+    return text.replace("`", "")
+
+
 def heading_name(text):
     m = re.match(r"^\.?([A-Za-z_]\w*)\s*\(", text.replace("`", ""))
     return m.group(1) if m else None
@@ -149,6 +169,8 @@ def parse_page(path, group):
     entries, current, label, caption = [], None, None, ""
     for block in page.blocks:
         kind, level, discrete, text = block
+        if kind in ("p", "li") and is_page_junk(text):
+            continue
         if kind == "h":
             section = LABELS.get(text.strip().lower().rstrip(":"))
             if section:
@@ -187,6 +209,9 @@ def parse_page(path, group):
         elif label == "returns" and kind in ("p", "li"):
             current["returns"] = (current["returns"] + " " + text).strip()
         elif label == "parameters" and kind == "row" and len(text) >= 2 and text[0].lower() != "parameter":
+            # A row of placeholders: "None | None | None".
+            if all(is_page_junk(cell) or not cell.strip() for cell in text):
+                continue
             if not text[0].strip():  # a note set in a box under the table
                 current["notes"].append(text[1])
                 continue
@@ -197,9 +222,10 @@ def parse_page(path, group):
         elif label == "parameters" and kind in ("p", "li"):
             current["notes"].append(("- " if kind == "li" else "") + text)
         elif label == "examples" and kind == "p":
-            caption = text
+            caption = example_text(text)
         elif label == "examples" and kind == "pre":
-            current["examples"].append((caption + "\n" if caption else "") + text)
+            code = example_text(text)
+            current["examples"].append((caption + "\n" if caption else "") + code)
             caption = ""
     return entries
 

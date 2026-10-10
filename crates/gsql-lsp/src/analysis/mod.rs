@@ -3,5 +3,8 @@
 mod builder;
 mod model;
 
-pub use builder::{analyze, analyze_in, canonical_accumulator, collapse_whitespace, type_of_type_node};
+pub use builder::{
+    canonical_accumulator, collapse_whitespace, literal_type,
+    type_of_type_node,
+};
 pub use model::*;

@@ -36,8 +36,13 @@ impl Default for ClientFormats {
 
 /// `false` only when the list at `pointer` is declared and lacks `markdown`.
 fn accepts_markdown(capabilities: &Value, pointer: &str) -> bool {
-    match capabilities.pointer(pointer).and_then(Value::as_array) {
-        Some(formats) => formats.iter().any(|f| f.as_str() == Some("markdown")),
+    match capabilities
+        .pointer(pointer)
+        .and_then(Value::as_array)
+    {
+        Some(formats) => formats
+            .iter()
+            .any(|f| f.as_str() == Some("markdown")),
         None => true,
     }
 }
@@ -45,7 +50,10 @@ fn accepts_markdown(capabilities: &Value, pointer: &str) -> bool {
 impl ClientFormats {
     pub fn from_capabilities(capabilities: &Value) -> ClientFormats {
         ClientFormats {
-            hover_markdown: accepts_markdown(capabilities, "/textDocument/hover/contentFormat"),
+            hover_markdown: accepts_markdown(
+                capabilities,
+                "/textDocument/hover/contentFormat",
+            ),
             completion_markdown: accepts_markdown(
                 capabilities,
                 "/textDocument/completion/completionItem/documentationFormat",
@@ -65,7 +73,14 @@ impl ClientFormats {
 impl MarkupContent {
     /// The same content as plain text.
     pub fn into_plain(self) -> MarkupContent {
-        if self.kind == "markdown" { MarkupContent { kind: "plaintext", value: to_plain(&self.value) } } else { self }
+        if self.kind == "markdown" {
+            MarkupContent {
+                kind: "plaintext",
+                value: to_plain(&self.value),
+            }
+        } else {
+            self
+        }
     }
 }
 
@@ -77,23 +92,38 @@ pub fn to_plain(markdown: &str) -> String {
     let mut fence: Option<(char, usize)> = None;
     for line in markdown.lines() {
         let trimmed = line.trim_start();
-        let run = |c: char| trimmed.chars().take_while(|&x| x == c).count();
+        let run = |c: char| {
+            trimmed
+                .chars()
+                .take_while(|&x| x == c)
+                .count()
+        };
         if let Some((c, n)) = fence {
-            if run(c) >= n && trimmed.trim_start_matches(c).trim().is_empty() {
+            if run(c) >= n
+                && trimmed
+                    .trim_start_matches(c)
+                    .trim()
+                    .is_empty()
+            {
                 fence = None;
             } else {
                 out.push(line.to_string());
             }
             continue;
         }
-        let opener = [('`', run('`')), ('~', run('~'))].into_iter().find(|&(_, n)| n >= 3);
+        let opener = [('`', run('`')), ('~', run('~'))]
+            .into_iter()
+            .find(|&(_, n)| n >= 3);
         if let Some(opener) = opener {
             fence = Some(opener);
             continue;
         }
         let mut text = trimmed;
         let indent = &line[..line.len() - trimmed.len()];
-        let hashes = text.chars().take_while(|&c| c == '#').count();
+        let hashes = text
+            .chars()
+            .take_while(|&c| c == '#')
+            .count();
         if (1..=6).contains(&hashes) && text[hashes..].starts_with(' ') {
             out.push(inline(text[hashes..].trim()));
             continue;
@@ -119,12 +149,18 @@ fn inline(line: &str) -> String {
     while i < chars.len() {
         let c = chars[i];
         match c {
-            '\\' if chars.get(i + 1).is_some_and(|n| n.is_ascii_punctuation()) => {
+            '\\' if chars
+                .get(i + 1)
+                .is_some_and(|n| n.is_ascii_punctuation()) =>
+            {
                 out.push(chars[i + 1]);
                 i += 2;
             }
             '`' => {
-                let n = chars[i..].iter().take_while(|&&x| x == '`').count();
+                let n = chars[i..]
+                    .iter()
+                    .take_while(|&&x| x == '`')
+                    .count();
                 match find_run(&chars, i + n, '`', n) {
                     Some(close) => {
                         out.extend(&chars[i + n..close]);
@@ -155,10 +191,16 @@ fn inline(line: &str) -> String {
                 let n = if chars.get(i + 1) == Some(&c) { 2 } else { 1 };
                 let before = if i == 0 { None } else { Some(chars[i - 1]) };
                 let after = chars.get(i + n).copied();
-                let opens = after.is_some_and(|a| !a.is_whitespace() && a != c)
+                let opens = after
+                    .is_some_and(|a| !a.is_whitespace() && a != c)
                     && before.is_none_or(|b| !b.is_alphanumeric() && b != c);
-                if opens && let Some(close) = find_closer(&chars, i + n, c, n) {
-                    out.push_str(&inline(&chars[i + n..close].iter().collect::<String>()));
+                if opens && let Some(close) = find_closer(&chars, i + n, c, n)
+                {
+                    out.push_str(&inline(
+                        &chars[i + n..close]
+                            .iter()
+                            .collect::<String>(),
+                    ));
                     i = close + n;
                     continue;
                 }
@@ -179,7 +221,10 @@ fn find_run(chars: &[char], from: usize, c: char, n: usize) -> Option<usize> {
     let mut i = from;
     while i < chars.len() {
         if chars[i] == c {
-            let len = chars[i..].iter().take_while(|&&x| x == c).count();
+            let len = chars[i..]
+                .iter()
+                .take_while(|&&x| x == c)
+                .count();
             if len == n {
                 return Some(i);
             }
@@ -194,20 +239,35 @@ fn find_run(chars: &[char], from: usize, c: char, n: usize) -> Option<usize> {
 /// Closing marker of emphasis opened before `from`: `n` `c` characters, not
 /// preceded by whitespace and (for `_`) not followed by a letter or digit.
 /// Code spans are skipped.
-fn find_closer(chars: &[char], from: usize, c: char, n: usize) -> Option<usize> {
+fn find_closer(
+    chars: &[char],
+    from: usize,
+    c: char,
+    n: usize,
+) -> Option<usize> {
     let mut i = from;
     while i < chars.len() {
         if chars[i] == '`' {
-            let ticks = chars[i..].iter().take_while(|&&x| x == '`').count();
+            let ticks = chars[i..]
+                .iter()
+                .take_while(|&&x| x == '`')
+                .count();
             match find_run(chars, i + ticks, '`', ticks) {
                 Some(close) => i = close + ticks,
                 None => i += ticks,
             }
-        } else if chars[i] == c && chars[i..].iter().take_while(|&&x| x == c).count() >= n {
+        } else if chars[i] == c
+            && chars[i..]
+                .iter()
+                .take_while(|&&x| x == c)
+                .count()
+                >= n
+        {
             let followed = chars.get(i + n).copied();
             let ok = i > from
                 && !chars[i - 1].is_whitespace()
-                && (c == '*' || followed.is_none_or(|f| !f.is_alphanumeric()))
+                && (c == '*'
+                    || followed.is_none_or(|f| !f.is_alphanumeric()))
                 && followed != Some(c);
             if ok {
                 return Some(i);
@@ -241,7 +301,11 @@ fn link(chars: &[char], start: usize) -> Option<(String, String, usize)> {
     if chars.get(close + 1) != Some(&'(') {
         return None;
     }
-    let end = close + 2 + chars[close + 2..].iter().position(|&c| c == ')')?;
+    let end = close
+        + 2
+        + chars[close + 2..]
+            .iter()
+            .position(|&c| c == ')')?;
     let text: String = chars[start + 1..close].iter().collect();
     let url: String = chars[close + 2..end].iter().collect();
     Some((text, url.trim().to_string(), end + 1))
@@ -254,13 +318,19 @@ mod tests {
 
     #[test]
     fn strips_code_fences_and_keeps_the_code() {
-        assert_eq!(to_plain("text\n```gsql\nSELECT *\n  FROM x;\n```\nafter"), "text\nSELECT *\n  FROM x;\nafter");
+        assert_eq!(
+            to_plain("text\n```gsql\nSELECT *\n  FROM x;\n```\nafter"),
+            "text\nSELECT *\n  FROM x;\nafter"
+        );
         assert_eq!(to_plain("~~~\n**not bold**\n~~~"), "**not bold**");
     }
 
     #[test]
     fn fence_content_is_not_interpreted() {
-        assert_eq!(to_plain("```\n# not a heading\n- not a list\n```"), "# not a heading\n- not a list");
+        assert_eq!(
+            to_plain("```\n# not a heading\n- not a list\n```"),
+            "# not a heading\n- not a list"
+        );
     }
 
     #[test]
@@ -271,14 +341,20 @@ mod tests {
 
     #[test]
     fn removes_emphasis() {
-        assert_eq!(to_plain("**bold** and *italic* and __b__ and _i_"), "bold and italic and b and i");
+        assert_eq!(
+            to_plain("**bold** and *italic* and __b__ and _i_"),
+            "bold and italic and b and i"
+        );
         assert_eq!(to_plain("*vertex type*"), "vertex type");
         assert_eq!(to_plain("**bold `code` inside**"), "bold code inside");
     }
 
     #[test]
     fn leaves_non_emphasis_alone() {
-        assert_eq!(to_plain("page_rank and my_var_name"), "page_rank and my_var_name");
+        assert_eq!(
+            to_plain("page_rank and my_var_name"),
+            "page_rank and my_var_name"
+        );
         assert_eq!(to_plain("2 * 3 * 4"), "2 * 3 * 4");
         assert_eq!(to_plain("@@total*2"), "@@total*2");
         assert_eq!(to_plain("a_b_ and _c"), "a_b_ and _c");
@@ -286,14 +362,23 @@ mod tests {
 
     #[test]
     fn turns_headings_and_lists_into_plain_lines() {
-        assert_eq!(to_plain("# Title\n## Sub *x*\ntext"), "Title\nSub x\ntext");
-        assert_eq!(to_plain("- one\n* two\n  - three"), "- one\n- two\n  - three");
+        assert_eq!(
+            to_plain("# Title\n## Sub *x*\ntext"),
+            "Title\nSub x\ntext"
+        );
+        assert_eq!(
+            to_plain("- one\n* two\n  - three"),
+            "- one\n- two\n  - three"
+        );
         assert_eq!(to_plain("#hashtag"), "#hashtag");
     }
 
     #[test]
     fn writes_links_as_text_and_url() {
-        assert_eq!(to_plain("see [the docs](https://x.y/z) now"), "see the docs (https://x.y/z) now");
+        assert_eq!(
+            to_plain("see [the docs](https://x.y/z) now"),
+            "see the docs (https://x.y/z) now"
+        );
         assert_eq!(to_plain("[https://x.y](https://x.y)"), "https://x.y");
         assert_eq!(to_plain("array[0] and (x)"), "array[0] and (x)");
     }
@@ -315,28 +400,46 @@ mod tests {
         // Nothing declared: Markdown, flat symbols.
         let none = ClientFormats::from_capabilities(&json!({}));
         assert_eq!(none, ClientFormats::default());
-        assert!(none.hover_markdown && none.completion_markdown && none.signature_markdown);
+        assert!(
+            none.hover_markdown
+                && none.completion_markdown
+                && none.signature_markdown
+        );
         assert!(!none.hierarchical_symbols);
         // A full client.
-        let full = ClientFormats::from_capabilities(&json!({ "textDocument": {
-            "hover": { "contentFormat": ["markdown", "plaintext"] },
-            "completion": { "completionItem": { "documentationFormat": ["plaintext", "markdown"] } },
-            "signatureHelp": { "signatureInformation": { "documentationFormat": ["markdown"] } },
-            "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
-        }}));
-        assert!(full.hover_markdown && full.completion_markdown && full.signature_markdown);
+        let full = ClientFormats::from_capabilities(
+            &json!({ "textDocument": {
+                "hover": { "contentFormat": ["markdown", "plaintext"] },
+                "completion": { "completionItem": { "documentationFormat": ["plaintext", "markdown"] } },
+                "signatureHelp": { "signatureInformation": { "documentationFormat": ["markdown"] } },
+                "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
+            }}),
+        );
+        assert!(
+            full.hover_markdown
+                && full.completion_markdown
+                && full.signature_markdown
+        );
         assert!(full.hierarchical_symbols);
         // Plain text only.
-        let plain = ClientFormats::from_capabilities(&json!({ "textDocument": {
-            "hover": { "contentFormat": ["plaintext"] },
-            "completion": { "completionItem": { "documentationFormat": [] } },
-            "signatureHelp": { "signatureInformation": { "documentationFormat": ["plaintext"] } },
-            "documentSymbol": { "dynamicRegistration": true },
-        }}));
-        assert!(!plain.hover_markdown && !plain.completion_markdown && !plain.signature_markdown);
+        let plain = ClientFormats::from_capabilities(
+            &json!({ "textDocument": {
+                "hover": { "contentFormat": ["plaintext"] },
+                "completion": { "completionItem": { "documentationFormat": [] } },
+                "signatureHelp": { "signatureInformation": { "documentationFormat": ["plaintext"] } },
+                "documentSymbol": { "dynamicRegistration": true },
+            }}),
+        );
+        assert!(
+            !plain.hover_markdown
+                && !plain.completion_markdown
+                && !plain.signature_markdown
+        );
         assert!(!plain.hierarchical_symbols);
         // Capability objects without the list keep Markdown.
-        let objects = ClientFormats::from_capabilities(&json!({ "textDocument": { "hover": {}, "completion": {} } }));
+        let objects = ClientFormats::from_capabilities(
+            &json!({ "textDocument": { "hover": {}, "completion": {} } }),
+        );
         assert!(objects.hover_markdown && objects.completion_markdown);
     }
 }

@@ -4,10 +4,10 @@
 
 use tree_sitter::Node;
 
-use crate::analysis::SymbolKind;
-use crate::features::Snapshot;
+use crate::analysis::{FILE_SCOPE, SymbolKind};
 use crate::features::diagnostics::diagnostic;
-use crate::lsp::types::{Diagnostic, Range, severity};
+use crate::features::{Snapshot, plural};
+use crate::lsp::types::{Diagnostic, severity};
 use crate::syntax;
 use crate::text::Span;
 
@@ -60,18 +60,20 @@ pub fn value_lists<'t>(snapshot: &Snapshot<'t>) -> Vec<ValueList<'t>> {
     lists
 }
 
-fn values_of(list: Node) -> Vec<Node> {
-    syntax::named_children(list).into_iter().filter(|v| v.kind() != "comment").collect()
-}
-
-fn load_destination<'t>(snapshot: &Snapshot<'t>, node: Node<'t>) -> Option<ValueList<'t>> {
+fn load_destination<'t>(
+    snapshot: &Snapshot<'t>,
+    node: Node<'t>,
+) -> Option<ValueList<'t>> {
     let source = snapshot.text();
     let list = node.child_by_field_name("values")?;
     let target = syntax::field_text(node, "target", source)?;
     let kind = node.child_by_field_name("kind")?.kind();
-    let make = |slots: Vec<Slot>, source: Source, target: String, schema: Option<&Schema>| ValueList {
+    let make = |slots: Vec<Slot>,
+                source: Source,
+                target: String,
+                schema: Option<&Schema>| ValueList {
         list,
-        values: values_of(list),
+        values: syntax::code_children(list),
         slots,
         source,
         target,
@@ -87,10 +89,20 @@ fn load_destination<'t>(snapshot: &Snapshot<'t>, node: Node<'t>) -> Option<Value
                 .filter(|c| c.kind() == "identifier")
                 .map(|c| {
                     let name = syntax::text(c, source).to_string();
-                    Slot { detail: format!("column {name} of TEMP_TABLE {target}"), name }
+                    Slot {
+                        detail: format!(
+                            "column {name} of TEMP_TABLE {target}"
+                        ),
+                        name,
+                    }
                 })
                 .collect();
-            Some(make(slots, Source::Columns, format!("TEMP_TABLE `{target}`"), None))
+            Some(make(
+                slots,
+                Source::Columns,
+                format!("TEMP_TABLE `{target}`"),
+                None,
+            ))
         }
         "VERTEX" | "EDGE" => {
             let schema = schema(snapshot, target)?;
@@ -98,21 +110,40 @@ fn load_destination<'t>(snapshot: &Snapshot<'t>, node: Node<'t>) -> Option<Value
                 return None;
             }
             let slots = schema.slots();
-            Some(make(slots, Source::Schema, format!("`{target}`"), Some(&schema)))
+            Some(make(
+                slots,
+                Source::Schema,
+                format!("`{target}`"),
+                Some(&schema),
+            ))
         }
         "VECTOR" => {
             let attribute = syntax::field_text(node, "attribute", source)?;
             let slots = vec![
-                Slot { name: "id".into(), detail: format!("primary id of {target}") },
-                Slot { name: attribute.into(), detail: format!("vector attribute {target}.{attribute}") },
+                Slot {
+                    name: "id".into(),
+                    detail: format!("primary id of {target}"),
+                },
+                Slot {
+                    name: attribute.into(),
+                    detail: format!("vector attribute {target}.{attribute}"),
+                },
             ];
-            Some(make(slots, Source::Columns, format!("vector attribute `{attribute}`"), None))
+            Some(make(
+                slots,
+                Source::Columns,
+                format!("vector attribute `{attribute}`"),
+                None,
+            ))
         }
         _ => None,
     }
 }
 
-fn insert<'t>(snapshot: &Snapshot<'t>, node: Node<'t>) -> Option<ValueList<'t>> {
+fn insert<'t>(
+    snapshot: &Snapshot<'t>,
+    node: Node<'t>,
+) -> Option<ValueList<'t>> {
     let source = snapshot.text();
     let list = node.child_by_field_name("values")?;
     let target_node = node.child_by_field_name("target")?;
@@ -121,15 +152,17 @@ fn insert<'t>(snapshot: &Snapshot<'t>, node: Node<'t>) -> Option<ValueList<'t>> 
         return None;
     }
     let target = syntax::text(target_node, source);
-    let make = |slots: Vec<Slot>, source: Source, schema: Option<&Schema>| ValueList {
-        list,
-        values: values_of(list),
-        slots,
-        source,
-        target: format!("`{target}`"),
-        load: false,
-        any_endpoint: schema.is_some_and(|s| s.any_endpoint),
-        primary_id_first: schema.is_some_and(|s| s.primary_id_first),
+    let make = |slots: Vec<Slot>, source: Source, schema: Option<&Schema>| {
+        ValueList {
+            list,
+            values: syntax::code_children(list),
+            slots,
+            source,
+            target: format!("`{target}`"),
+            load: false,
+            any_endpoint: schema.is_some_and(|s| s.any_endpoint),
+            primary_id_first: schema.is_some_and(|s| s.primary_id_first),
+        }
     };
     match node.child_by_field_name("columns") {
         Some(columns) => {
@@ -140,7 +173,10 @@ fn insert<'t>(snapshot: &Snapshot<'t>, node: Node<'t>) -> Option<ValueList<'t>> 
                     "identifier" => syntax::text(c, source).to_string(),
                     _ => return,
                 };
-                slots.push(Slot { detail: format!("{target} column {name}"), name });
+                slots.push(Slot {
+                    detail: format!("{target} column {name}"),
+                    name,
+                });
             });
             Some(make(slots, Source::Columns, None))
         }
@@ -165,8 +201,14 @@ impl Schema {
     fn slots(&self) -> Vec<Slot> {
         let endpoints = if self.edge {
             vec![
-                Slot { name: "FROM".into(), detail: format!("source vertex of {}", self.name) },
-                Slot { name: "TO".into(), detail: format!("target vertex of {}", self.name) },
+                Slot {
+                    name: "FROM".into(),
+                    detail: format!("source vertex of {}", self.name),
+                },
+                Slot {
+                    name: "TO".into(),
+                    detail: format!("target vertex of {}", self.name),
+                },
             ]
         } else {
             Vec::new()
@@ -176,14 +218,13 @@ impl Schema {
             .chain(
                 self.attributes
                     .iter()
-                    .map(|(name, detail)| Slot { name: name.clone(), detail: format!("{}.{detail}", self.name) }),
+                    .map(|(name, detail)| Slot {
+                        name: name.clone(),
+                        detail: format!("{}.{detail}", self.name),
+                    }),
             )
             .collect()
     }
-}
-
-fn contains(outer: Range, inner: Range) -> bool {
-    outer.start <= inner.start && inner.end <= outer.end
 }
 
 /// The attributes of `name` in declaration order, when they are known: the
@@ -195,34 +236,47 @@ fn schema(snapshot: &Snapshot, name: &str) -> Option<Schema> {
     let local: Vec<_> = analysis
         .symbols
         .iter()
-        .filter(|s| s.scope != 0 && s.name == name && matches!(s.kind, SymbolKind::VertexType | SymbolKind::EdgeType))
+        .filter(|s| {
+            s.scope != FILE_SCOPE
+                && s.name == name
+                && matches!(
+                    s.kind,
+                    SymbolKind::VertexType | SymbolKind::EdgeType
+                )
+        })
         .collect();
     if let [ty] = local.as_slice() {
         let mut attributes: Vec<_> = analysis
-            .symbols
-            .iter()
-            .filter(|s| s.kind == SymbolKind::Attribute && !s.vector && s.owner.as_deref() == Some(name))
+            .symbols_owned_by(SymbolKind::Attribute, name)
+            .filter(|s| !s.vector)
             .collect();
-        if attributes.iter().any(|a| !ty.span.contains(a.span.start)) {
+        if attributes
+            .iter()
+            .any(|a| !ty.span.contains(a.span.start))
+        {
             return None;
         }
         attributes.sort_by_key(|a| a.span.start);
         return Some(Schema {
             name: name.to_string(),
             edge: ty.kind == SymbolKind::EdgeType,
-            attributes: attributes.iter().map(|a| (a.name.clone(), a.detail.clone())).collect(),
+            attributes: attributes
+                .iter()
+                .map(|a| (a.name.clone(), a.detail.clone()))
+                .collect(),
             any_endpoint: ty.members == ["*"],
             primary_id_first: false,
         });
     }
     let workspace = snapshot.workspace;
-    let types = workspace.find_any(&[SymbolKind::VertexType, SymbolKind::EdgeType], name);
-    let [ty] = types.as_slice() else {
-        return None;
-    };
+    let ty = workspace
+        .find_unique(&[SymbolKind::VertexType, SymbolKind::EdgeType], name)?;
     let mut attributes = workspace.attributes(Some(name));
     attributes.retain(|a| !a.vector);
-    if attributes.iter().any(|a| a.uri != ty.uri || !contains(ty.range, a.range)) {
+    if attributes
+        .iter()
+        .any(|a| a.uri != ty.uri || !ty.range.contains_range(a.range))
+    {
         return None;
     }
     attributes.sort_by_key(|a| a.range.start);
@@ -233,9 +287,13 @@ fn schema(snapshot: &Snapshot, name: &str) -> Option<Schema> {
     Some(Schema {
         name: name.to_string(),
         edge: ty.kind == SymbolKind::EdgeType,
-        attributes: attributes.iter().map(|a| (a.name.clone(), a.detail.clone())).collect(),
+        attributes: attributes
+            .iter()
+            .map(|a| (a.name.clone(), a.detail.clone()))
+            .collect(),
         any_endpoint: ty.members == ["*"],
-        primary_id_first: ty.kind == SymbolKind::VertexType && primary_id_first,
+        primary_id_first: ty.kind == SymbolKind::VertexType
+            && primary_id_first,
     })
 }
 
@@ -245,18 +303,24 @@ fn schema(snapshot: &Snapshot, name: &str) -> Option<Schema> {
 fn width(value: Node, source: &str) -> Option<usize> {
     let function = value
         .child_by_field_name("function")
-        .filter(|f| value.kind() == "call_expression" && f.kind() == "identifier")
+        .filter(|f| {
+            value.kind() == "call_expression" && f.kind() == "identifier"
+        })
         .map(|f| syntax::text(f, source).to_ascii_lowercase());
     let arguments: Vec<Node> = value
         .child_by_field_name("arguments")
-        .map(|a| syntax::named_children(a).into_iter().filter(|n| n.kind() != "comment").collect())
+        .map(syntax::code_children)
         .unwrap_or_default();
     match function.as_deref() {
         Some("flatten") => {
-            let last = arguments.last().filter(|a| a.kind() == "integer")?;
+            let last = arguments
+                .last()
+                .filter(|a| a.kind() == "integer")?;
             syntax::text(*last, source).parse().ok()
         }
-        Some("flatten_json_array") => Some(arguments.len().saturating_sub(1).max(1)),
+        Some("flatten_json_array") => {
+            Some(arguments.len().saturating_sub(1).max(1))
+        }
         _ => Some(1),
     }
 }
@@ -268,12 +332,21 @@ pub fn check(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
         if list.list.has_error() {
             continue;
         }
-        let Some(given) = list.values.iter().map(|v| width(*v, source)).sum::<Option<usize>>() else {
+        let Some(given) = list
+            .values
+            .iter()
+            .map(|v| width(*v, source))
+            .sum::<Option<usize>>()
+        else {
             continue;
         };
         let expected = list.slots.len();
         if given != expected {
-            let names: Vec<&str> = list.slots.iter().map(|s| s.name.as_str()).collect();
+            let names: Vec<&str> = list
+                .slots
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect();
             let message = match list.source {
                 Source::Schema => format!(
                     "{} takes {expected} value{} ({}), but {given} {} given",
@@ -289,15 +362,30 @@ pub fn check(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
                     if given == 1 { " is" } else { "s are" },
                 ),
             };
-            let level = if list.source == Source::Columns { severity::ERROR } else { severity::WARNING };
-            out.push(diagnostic(snapshot, Span::of(list.list), level, "value-count", message));
+            let level = if list.source == Source::Columns {
+                severity::ERROR
+            } else {
+                severity::WARNING
+            };
+            out.push(diagnostic(
+                snapshot,
+                Span::of(list.list),
+                level,
+                "value-count",
+                message,
+            ));
             continue;
         }
         if !list.load {
             continue;
         }
         // "You can not skip the primary key attributes for vertices."
-        if list.primary_id_first && list.values.first().is_some_and(|v| v.kind() == "wildcard") {
+        if list.primary_id_first
+            && list
+                .values
+                .first()
+                .is_some_and(|v| v.kind() == "wildcard")
+        {
             out.push(diagnostic(
                 snapshot,
                 Span::of(list.values[0]),
@@ -308,7 +396,12 @@ pub fn check(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
         }
         // Edges declared FROM *, TO * need the vertex type of each endpoint.
         if list.any_endpoint {
-            for value in list.values.iter().take(2).filter(|v| v.kind() != "typed_value") {
+            for value in list
+                .values
+                .iter()
+                .take(2)
+                .filter(|v| v.kind() != "typed_value")
+            {
                 out.push(diagnostic(
                     snapshot,
                     Span::of(*value),
@@ -325,14 +418,16 @@ pub fn check(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
     }
 }
 
-fn plural(n: usize) -> &'static str {
-    if n == 1 { "" } else { "s" }
-}
-
 /// The slot that the value containing `offset` fills.
-pub fn slot_at<'s>(lists: &'s [ValueList], offset: usize) -> Option<(&'s ValueList<'s>, &'s Slot)> {
+pub fn slot_at<'s>(
+    lists: &'s [ValueList],
+    offset: usize,
+) -> Option<(&'s ValueList<'s>, &'s Slot)> {
     lists.iter().find_map(|list| {
-        let index = list.values.iter().position(|v| Span::of(*v).contains(offset))?;
+        let index = list
+            .values
+            .iter()
+            .position(|v| Span::of(*v).contains(offset))?;
         Some((list, list.slots.get(index)?))
     })
 }
@@ -340,22 +435,29 @@ pub fn slot_at<'s>(lists: &'s [ValueList], offset: usize) -> Option<(&'s ValueLi
 /// Whether a value already spells out its slot, like `$"name"` for `name`.
 pub fn names_its_slot(value: Node, slot: &Slot, source: &str) -> bool {
     let text = syntax::text(value, source);
-    let bare = text.trim_start_matches('$').trim_matches('"');
+    let bare = text
+        .trim_start_matches('$')
+        .trim_matches('"');
     bare.eq_ignore_ascii_case(&slot.name)
 }
 
 #[cfg(test)]
 mod tests {
     use crate::features::diagnostics::diagnostics;
-    use crate::features::test_support::Fixture;
+    use crate::features::test_support::{Fixture, SCHEMA_URI, messages_with};
 
     const SCHEMA: &str = "CREATE VERTEX Person (PRIMARY_ID id STRING, name STRING, age INT)\nCREATE DIRECTED EDGE Knows (FROM Person, TO Person, since DATETIME)\nCREATE UNDIRECTED EDGE Purchase (FROM *, TO *)\n";
 
     fn messages(text: &str) -> Vec<String> {
-        let fixture = Fixture::with_files(text, &[("file:///test/schema.gsql", SCHEMA)]);
+        let fixture = Fixture::with_schema(text, SCHEMA);
         diagnostics(&fixture.snapshot())
             .into_iter()
-            .filter(|d| matches!(d.code.as_deref(), Some("value-count" | "value-skip" | "endpoint-type")))
+            .filter(|d| {
+                matches!(
+                    d.code.as_deref(),
+                    Some("value-count" | "value-skip" | "endpoint-type")
+                )
+            })
             .map(|d| d.message)
             .collect()
     }
@@ -379,7 +481,10 @@ mod tests {
         let found = messages(
             "CREATE LOADING JOB j FOR GRAPH g {\n  LOAD \"a.json\" TO TEMP_TABLE t (id, name, size) VALUES ($0, flatten_json_array($\"items\", $\"name\", $\"size\"));\n  LOAD \"b.csv\" TO TEMP_TABLE u (id, a, b) VALUES ($0, flatten($1, \"|\", \":\", 2));\n  LOAD \"c.csv\" TO TEMP_TABLE w (id, a) VALUES ($0, flatten($1, \"|\", \":\", 2));\n}\n",
         );
-        assert_eq!(found, ["TEMP_TABLE `w` has 2 columns, but 3 values are given"]);
+        assert_eq!(
+            found,
+            ["TEMP_TABLE `w` has 2 columns, but 3 values are given"]
+        );
     }
 
     #[test]
@@ -413,11 +518,10 @@ mod tests {
     #[test]
     fn skips_types_changed_elsewhere() {
         let alter = "CREATE GLOBAL SCHEMA_CHANGE JOB j { ALTER VERTEX Person ADD ATTRIBUTE (city STRING); }\n";
-        let fixture = Fixture::with_files(
+        let found = messages_with(
             "CREATE LOADING JOB l FOR GRAPH g {\n  DEFINE FILENAME f;\n  LOAD f TO VERTEX Person VALUES ($0, $1, $2, $3);\n}\n",
-            &[("file:///test/schema.gsql", SCHEMA), ("file:///test/alter.gsql", alter)],
+            &[(SCHEMA_URI, SCHEMA), ("file:///test/alter.gsql", alter)],
         );
-        let found: Vec<String> = diagnostics(&fixture.snapshot()).into_iter().map(|d| d.message).collect();
         assert!(!found.iter().any(|m| m.contains("takes")), "{found:?}");
     }
 }

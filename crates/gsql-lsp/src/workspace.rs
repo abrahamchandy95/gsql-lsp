@@ -3,11 +3,15 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tree_sitter::Tree;
 
-use crate::analysis::{Analysis, EdgeEnds, Param, Role, SymbolKind, Ty};
-use crate::features::autocorrect;
+use crate::analysis::{
+    Analysis, EdgeEnds, FILE_SCOPE, Param, REVERSE_EDGE_PREFIX, Role,
+    SymbolKind, Ty,
+};
+use crate::features::{autocorrect, plural};
 use crate::lsp::types::{Location, Range};
 use crate::text::{PositionEncoding, SourceText};
 use crate::uri;
@@ -20,7 +24,14 @@ const MAX_FILES: usize = 10_000;
 /// Stop scanning after this many directories (e.g. a home directory opened as a workspace).
 const MAX_DIRECTORIES: usize = 50_000;
 const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
-const SKIPPED_DIRS: &[&str] = &["node_modules", "target", "build", "dist", "venv", "__pycache__"];
+const SKIPPED_DIRS: &[&str] = &[
+    "node_modules",
+    "target",
+    "build",
+    "dist",
+    "venv",
+    "__pycache__",
+];
 
 /// A workspace-level declaration.
 #[derive(Debug, Clone)]
@@ -49,7 +60,21 @@ pub struct GlobalSymbol {
 
 impl GlobalSymbol {
     pub fn location(&self) -> Location {
-        Location { uri: self.uri.clone(), range: self.selection }
+        Location {
+            uri: self.uri.clone(),
+            range: self.selection,
+        }
+    }
+
+    /// Whether this is a file variable of a loading job.
+    pub fn is_job_file(&self) -> bool {
+        self.kind == SymbolKind::FilenameVariable && self.owner.is_some()
+    }
+
+    /// Whether this edge type is declared by another's `WITH REVERSE_EDGE`.
+    pub fn is_reverse_edge(&self) -> bool {
+        self.kind == SymbolKind::EdgeType
+            && self.detail.starts_with(REVERSE_EDGE_PREFIX)
     }
 }
 
@@ -61,6 +86,8 @@ pub struct GlobalReference {
     pub kinds: Vec<SymbolKind>,
     /// For attributes: the possible owning types (empty when unknown).
     pub owners: Vec<String>,
+    /// A call by plain name: `name(..)`.
+    pub call: bool,
     pub range: Range,
 }
 
@@ -76,17 +103,32 @@ pub struct FileIndex {
 impl FileIndex {
     /// Indexes a document. Statements broken by a misspelled keyword are
     /// indexed as corrected, so their declarations do not vanish meanwhile.
+    /// With `workspace`, aliases in corrected statements are typed by its edges.
     pub fn of_document(
         uri: &str,
         tree: &Tree,
         analysis: &Analysis,
         source: &SourceText,
         encoding: PositionEncoding,
+        workspace: Option<&Workspace>,
     ) -> FileIndex {
         if tree.root_node().has_error() {
-            let (_, repair) = autocorrect::typos_and_repair(tree.root_node(), source, encoding);
+            let (_, repair) = autocorrect::typos_and_repair(
+                tree.root_node(),
+                source,
+                encoding,
+            );
             if let Some(repair) = repair {
-                let mut index = FileIndex::build(uri, &repair.analysis, &repair.source, encoding);
+                let analysis = match workspace {
+                    Some(workspace) => repair.analysis(workspace),
+                    None => repair.analysis.clone(),
+                };
+                let mut index = FileIndex::build(
+                    uri,
+                    &analysis,
+                    &repair.source,
+                    encoding,
+                );
                 for symbol in &mut index.symbols {
                     symbol.range = repair.range(symbol.range);
                     symbol.selection = repair.range(symbol.selection);
@@ -100,21 +142,16 @@ impl FileIndex {
         FileIndex::build(uri, analysis, source, encoding)
     }
 
-    pub fn build(uri: &str, analysis: &Analysis, source: &SourceText, encoding: PositionEncoding) -> FileIndex {
+    pub fn build(
+        uri: &str,
+        analysis: &Analysis,
+        source: &SourceText,
+        encoding: PositionEncoding,
+    ) -> FileIndex {
         let symbols = analysis
             .symbols
             .iter()
-            // Global kinds declared inside a query (virtual edges) stay local.
-            .filter(|s| {
-                (s.scope == 0
-                    && (s.kind.is_global()
-                        || matches!(
-                            s.kind,
-                            SymbolKind::TupleType | SymbolKind::TupleField | SymbolKind::AccumulatorType
-                        )))
-                    // The file variables of a loading job, for the `RUN LOADING JOB` of another file.
-                    || (s.kind == SymbolKind::FilenameVariable && s.owner.is_some())
-            })
+            .filter(|s| s.is_exported())
             .map(|s| GlobalSymbol {
                 uri: uri.to_string(),
                 name: s.name.clone(),
@@ -142,76 +179,124 @@ impl FileIndex {
             .iter()
             .filter(|r| !r.declaration)
             .filter_map(|r| {
-                let (kinds, owners) = match r.target.map(|t| &analysis.symbols[t]) {
-                    Some(symbol) if symbol.scope == 0 || is_job_file(symbol) => {
-                        (vec![symbol.kind], symbol.owner.iter().cloned().collect())
+                let (kinds, owners) = match analysis.target_symbol(r) {
+                    Some(symbol)
+                        if symbol.scope == FILE_SCOPE
+                            || symbol.is_job_file() =>
+                    {
+                        (
+                            vec![symbol.kind],
+                            symbol.owner.iter().cloned().collect(),
+                        )
                     }
                     Some(_) => return None,
                     None => global_candidates(&r.role)?,
                 };
-                Some(GlobalReference { name: r.name.clone(), kinds, owners, range: source.range(r.span, encoding) })
+                Some(GlobalReference {
+                    name: r.name.clone(),
+                    kinds,
+                    owners,
+                    call: r.role == Role::Function,
+                    range: source.range(r.span, encoding),
+                })
             })
             .collect();
-        FileIndex { uri: uri.to_string(), symbols, references, drops: analysis.drops.clone() }
+        FileIndex {
+            uri: uri.to_string(),
+            symbols,
+            references,
+            drops: analysis.drops.clone(),
+        }
     }
 }
 
-fn is_job_file(symbol: &crate::analysis::Symbol) -> bool {
-    symbol.kind == SymbolKind::FilenameVariable && symbol.owner.is_some()
+/// The kinds of workspace declaration an unresolved occurrence can refer to.
+pub fn global_candidates(
+    role: &Role,
+) -> Option<(Vec<SymbolKind>, Vec<String>)> {
+    use SymbolKind as K;
+    if let Some(kinds) = role.global_kinds() {
+        return Some((kinds.to_vec(), Vec::new()));
+    }
+    match role {
+        Role::TupleField(tuple) | Role::Attribute(Ty::Tuple(tuple)) => {
+            Some((vec![K::TupleField], vec![tuple.clone()]))
+        }
+        Role::JobFile(job) => {
+            Some((vec![K::FilenameVariable], vec![job.clone()]))
+        }
+        Role::Attribute(ty) => {
+            Some((vec![K::Attribute], ty.attribute_owners()?.to_vec()))
+        }
+        _ => None,
+    }
 }
 
-/// The kinds of workspace declaration an unresolved occurrence can refer to.
-pub fn global_candidates(role: &Role) -> Option<(Vec<SymbolKind>, Vec<String>)> {
-    use SymbolKind as K;
-    let kinds = match role {
-        Role::VertexType | Role::VertexSource => vec![K::VertexType],
-        Role::EdgeType | Role::EdgeSource => vec![K::EdgeType],
-        Role::SchemaType => vec![K::VertexType, K::EdgeType],
-        Role::Graph => vec![K::Graph],
-        Role::Query => vec![K::Query],
-        Role::Job => vec![K::LoadingJob, K::SchemaChangeJob],
-        Role::TupleType => vec![K::TupleType, K::AccumulatorType],
-        Role::Function => vec![K::Query, K::TupleType],
-        Role::Value => vec![K::VertexType, K::EdgeType, K::Query, K::TupleType],
-        Role::TupleField(tuple) => return Some((vec![K::TupleField], vec![tuple.clone()])),
-        Role::JobFile(job) => return Some((vec![K::FilenameVariable], vec![job.clone()])),
-        Role::Attribute(ty) => {
-            let owners = match ty {
-                Ty::Vertex(types) | Ty::Edge(types) | Ty::VertexSet(types) => types.clone(),
-                Ty::Tuple(tuple) => return Some((vec![K::TupleField], vec![tuple.clone()])),
-                Ty::Unknown => Vec::new(),
-                _ => return None,
-            };
-            return Some((vec![K::Attribute], owners));
-        }
-        _ => return None,
-    };
-    Some((kinds, Vec::new()))
+/// Whether two file versions (`None`: no file) declare the same edge types in order.
+fn same_edge_types(old: Option<&FileIndex>, new: Option<&FileIndex>) -> bool {
+    let (old, new) = (edge_types(old), edge_types(new));
+    old.len() == new.len()
+        && old.iter().zip(new).all(|(a, b)| {
+            let (x, y) = (&a.ends, &b.ends);
+            (&a.uri, &a.name, &x.from, &x.to, x.directed)
+                == (&b.uri, &b.name, &y.from, &y.to, y.directed)
+        })
+}
+
+/// The edge types a file declares, in file order.
+fn edge_types(file: Option<&FileIndex>) -> Vec<&GlobalSymbol> {
+    let mut edges: Vec<&GlobalSymbol> = file
+        .into_iter()
+        .flat_map(|f| &f.symbols)
+        .filter(|s| s.kind == SymbolKind::EdgeType)
+        .collect();
+    edges.sort_by_key(|s| s.selection.start);
+    edges
 }
 
 #[derive(Debug, Default)]
 pub struct Workspace {
     pub roots: Vec<PathBuf>,
-    /// The initial scan of the workspace folders is still running, so the
-    /// schema may not be known yet.
-    pub indexing: bool,
+    /// How many scans of workspace folders are still running.
+    indexers: usize,
     files: HashMap<String, FileIndex>,
     /// Symbol name -> (file key, index into that file's symbols).
     names: HashMap<String, Vec<(String, usize)>>,
+    edge_generation: u64,
 }
 
 impl Workspace {
+    /// Changes whenever the edge types do, so an analysis made with the workspace holds
+    /// while this does. Values are unique across workspaces, except 0 for those that
+    /// never had an edge type.
+    pub fn edge_generation(&self) -> u64 {
+        self.edge_generation
+    }
+
+    /// Starts a new edge generation if `new` changes the edge types at `key`.
+    fn note_edges(&mut self, key: &str, new: Option<&FileIndex>) {
+        static LAST: AtomicU64 = AtomicU64::new(0);
+        if !same_edge_types(self.files.get(key), new) {
+            self.edge_generation = LAST.fetch_add(1, Ordering::Relaxed) + 1;
+        }
+    }
+
     pub fn update(&mut self, index: FileIndex) {
         let key = uri::key(&index.uri);
+        self.note_edges(&key, Some(&index));
         self.unindex(&key);
         for (position, symbol) in index.symbols.iter().enumerate() {
-            self.names.entry(symbol.name.clone()).or_default().push((key.clone(), position));
+            self.names
+                .entry(symbol.name.clone())
+                .or_default()
+                .push((key.clone(), position));
         }
         self.files.insert(key, index);
     }
 
     pub fn remove(&mut self, uri: &str) {
         let key = uri::key(uri);
+        self.note_edges(&key, None);
         self.unindex(&key);
         self.files.remove(&key);
     }
@@ -236,19 +321,45 @@ impl Workspace {
             .get(name)
             .into_iter()
             .flatten()
-            .filter_map(|(file, position)| self.files.get(file).and_then(|f| f.symbols.get(*position)))
+            .filter_map(|(file, position)| {
+                self.files
+                    .get(file)
+                    .and_then(|f| f.symbols.get(*position))
+            })
     }
 
     /// Whether a DROP statement in any file removes the type, graph or query.
     pub fn is_dropped(&self, kind: SymbolKind, name: &str) -> bool {
-        self.files.values().any(|f| f.drops.iter().any(|(k, n)| *k == kind && (n == "*" || n == name)))
+        self.files.values().any(|f| {
+            f.drops
+                .iter()
+                .any(|(k, n)| *k == kind && (n == "*" || n == name))
+        })
+    }
+
+    pub fn start_indexing(&mut self) {
+        self.indexers += 1;
+    }
+
+    pub fn finish_indexing(&mut self) {
+        self.indexers = self.indexers.saturating_sub(1);
+    }
+
+    /// A scan of the workspace folders is still running, so the schema may not be
+    /// known yet.
+    pub fn indexing(&self) -> bool {
+        self.indexers > 0
     }
 
     /// Whether `path` lies under one of the workspace roots.
     pub fn contains(&self, path: &Path) -> bool {
-        let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        let canonical = |p: &Path| {
+            std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+        };
         let path = canonical(path);
-        self.roots.iter().any(|root| path.starts_with(canonical(root)))
+        self.roots
+            .iter()
+            .any(|root| path.starts_with(canonical(root)))
     }
 
     pub fn file(&self, uri: &str) -> Option<&FileIndex> {
@@ -260,7 +371,9 @@ impl Workspace {
     }
 
     pub fn symbols(&self) -> impl Iterator<Item = &GlobalSymbol> {
-        self.files.values().flat_map(|f| f.symbols.iter())
+        self.files
+            .values()
+            .flat_map(|f| f.symbols.iter())
     }
 
     pub fn find(&self, kind: SymbolKind, name: &str) -> Vec<&GlobalSymbol> {
@@ -268,15 +381,52 @@ impl Workspace {
     }
 
     /// (In a fixed order, by file and position: the files are indexed in any order.)
-    pub fn find_any(&self, kinds: &[SymbolKind], name: &str) -> Vec<&GlobalSymbol> {
-        let mut found: Vec<_> = self.named(name).filter(|s| kinds.contains(&s.kind)).collect();
-        found.sort_by(|a, b| (&a.uri, a.selection.start).cmp(&(&b.uri, b.selection.start)));
+    pub fn find_any(
+        &self,
+        kinds: &[SymbolKind],
+        name: &str,
+    ) -> Vec<&GlobalSymbol> {
+        let mut found: Vec<_> = self
+            .named(name)
+            .filter(|s| kinds.contains(&s.kind))
+            .collect();
+        found.sort_by(|a, b| {
+            (&a.uri, a.selection.start).cmp(&(&b.uri, b.selection.start))
+        });
         found
     }
 
+    /// The declaration of `name` among `kinds`, if the workspace has exactly one.
+    pub fn find_unique(
+        &self,
+        kinds: &[SymbolKind],
+        name: &str,
+    ) -> Option<&GlobalSymbol> {
+        let mut found = self
+            .named(name)
+            .filter(|s| kinds.contains(&s.kind));
+        let first = found.next()?;
+        found.next().is_none().then_some(first)
+    }
+
+    /// Whether some workspace file declares `name` as one of `kinds`.
+    pub fn declares(&self, kinds: &[SymbolKind], name: &str) -> bool {
+        self.named(name)
+            .any(|s| kinds.contains(&s.kind))
+    }
+
     pub fn of_kind(&self, kind: SymbolKind) -> Vec<&GlobalSymbol> {
-        let mut symbols: Vec<_> = self.symbols().filter(|s| s.kind == kind).collect();
-        symbols.sort_by(|a, b| (&a.name, &a.uri, a.selection.start).cmp(&(&b.name, &b.uri, b.selection.start)));
+        let mut symbols: Vec<_> = self
+            .symbols()
+            .filter(|s| s.kind == kind)
+            .collect();
+        symbols.sort_by(|a, b| {
+            (&a.name, &a.uri, a.selection.start).cmp(&(
+                &b.name,
+                &b.uri,
+                b.selection.start,
+            ))
+        });
         symbols.dedup_by(|a, b| a.name == b.name && a.owner == b.owner);
         symbols
     }
@@ -285,10 +435,18 @@ impl Workspace {
     pub fn attributes(&self, owner: Option<&str>) -> Vec<&GlobalSymbol> {
         let mut attributes: Vec<_> = self
             .symbols()
-            .filter(|s| s.kind == SymbolKind::Attribute && (owner.is_none() || s.owner.as_deref() == owner))
+            .filter(|s| {
+                s.kind == SymbolKind::Attribute
+                    && (owner.is_none() || s.owner.as_deref() == owner)
+            })
             .collect();
         attributes.sort_by(|a, b| {
-            (&a.owner, &a.name, &a.uri, a.selection.start).cmp(&(&b.owner, &b.name, &b.uri, b.selection.start))
+            (&a.owner, &a.name, &a.uri, a.selection.start).cmp(&(
+                &b.owner,
+                &b.name,
+                &b.uri,
+                b.selection.start,
+            ))
         });
         attributes
     }
@@ -297,19 +455,36 @@ impl Workspace {
     /// CREATE first (by file, then position), then those added by ALTER, so a
     /// schema change job in a file that sorts first does not come before the schema.
     pub fn attributes_declared(&self, owner: &str) -> Vec<&GlobalSymbol> {
-        let mut attributes: Vec<_> =
-            self.symbols().filter(|s| s.kind == SymbolKind::Attribute && s.owner.as_deref() == Some(owner)).collect();
-        attributes.sort_by(|a, b| (a.altered, &a.uri, a.selection.start).cmp(&(b.altered, &b.uri, b.selection.start)));
+        let mut attributes: Vec<_> = self
+            .symbols()
+            .filter(|s| {
+                s.kind == SymbolKind::Attribute
+                    && s.owner.as_deref() == Some(owner)
+            })
+            .collect();
+        attributes.sort_by(|a, b| {
+            (a.altered, &a.uri, a.selection.start).cmp(&(
+                b.altered,
+                &b.uri,
+                b.selection.start,
+            ))
+        });
         attributes
     }
 
     pub fn tuple_fields(&self, tuple: &str) -> Vec<&GlobalSymbol> {
-        self.symbols().filter(|s| s.kind == SymbolKind::TupleField && s.owner.as_deref() == Some(tuple)).collect()
+        self.symbols()
+            .filter(|s| {
+                s.kind == SymbolKind::TupleField
+                    && s.owner.as_deref() == Some(tuple)
+            })
+            .collect()
     }
 
     /// Whether any vertex type is declared, i.e. whether schema checks are meaningful.
     pub fn has_schema(&self) -> bool {
-        self.symbols().any(|s| s.kind == SymbolKind::VertexType)
+        self.symbols()
+            .any(|s| s.kind == SymbolKind::VertexType)
     }
 
     /// Locations of every reference to a workspace-level declaration.
@@ -325,16 +500,24 @@ impl Workspace {
         let mut locations = Vec::new();
         for file in self.files.values() {
             for reference in &file.references {
-                if reference.name != name || !reference.kinds.contains(&kind) {
+                if reference.name != name || !reference.kinds.contains(&kind)
+                {
                     continue;
                 }
                 let owner_matches = match owner {
                     None => true,
-                    Some(owner) if reference.owners.is_empty() => include_uncertain && !owner.is_empty(),
-                    Some(owner) => reference.owners.iter().any(|o| o == owner),
+                    Some(owner) if reference.owners.is_empty() => {
+                        include_uncertain && !owner.is_empty()
+                    }
+                    Some(owner) => {
+                        reference.owners.iter().any(|o| o == owner)
+                    }
                 };
                 if owner_matches {
-                    locations.push(Location { uri: file.uri.clone(), range: reference.range });
+                    locations.push(Location {
+                        uri: file.uri.clone(),
+                        range: reference.range,
+                    });
                 }
             }
         }
@@ -352,7 +535,11 @@ pub fn scan_directory(dir: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = entries
         .flatten()
         .map(|e| e.path())
-        .filter(|p| is_gsql_file(p) && std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.len() <= MAX_FILE_BYTES))
+        .filter(|p| {
+            is_gsql_file(p)
+                && std::fs::metadata(p)
+                    .is_ok_and(|m| m.is_file() && m.len() <= MAX_FILE_BYTES)
+        })
         .collect();
     files.sort();
     files.truncate(MAX_NEIGHBOURS);
@@ -364,26 +551,29 @@ pub fn scan_directory(dir: &Path) -> Vec<PathBuf> {
 pub fn marked_root(file: &Path) -> Option<PathBuf> {
     // Without `..` segments: the ancestors of `a/../b/q.gsql` are not those of the file.
     let file = uri::resolve_dots(file);
-    file.parent()?.ancestors().find(|dir| dir.join(ROOT_MARKER).is_file()).map(Path::to_path_buf)
+    file.parent()?
+        .ancestors()
+        .find(|dir| dir.join(ROOT_MARKER).is_file())
+        .map(Path::to_path_buf)
 }
 
 /// The folder searched for the schema of a file outside every workspace
-/// folder (the `.gsqlroot` folder, else the file's own folder), and the GSQL
-/// files to index from it: all under a marked root, else the neighbours.
-pub fn loose_project(file: &Path) -> Option<(PathBuf, Vec<PathBuf>)> {
+/// folder: the `.gsqlroot` folder, else the file's own folder.
+pub fn loose_dir(file: &Path) -> Option<PathBuf> {
     let file = uri::resolve_dots(file);
-    let file = file.as_path();
-    match marked_root(file) {
-        Some(root) => {
-            let files = scan(std::slice::from_ref(&root));
-            Some((root, files))
-        }
-        None => {
-            let dir = file.parent()?.to_path_buf();
-            let files = scan_directory(&dir);
-            Some((dir, files))
-        }
-    }
+    marked_root(&file).or_else(|| file.parent().map(Path::to_path_buf))
+}
+
+/// The `loose_dir` of a file, and the GSQL files to index from it: all under
+/// a marked root, else the neighbours.
+pub fn loose_project(file: &Path) -> Option<(PathBuf, Vec<PathBuf>)> {
+    let dir = loose_dir(file)?;
+    let files = if dir.join(ROOT_MARKER).is_file() {
+        scan(std::slice::from_ref(&dir))
+    } else {
+        scan_directory(&dir)
+    };
+    Some((dir, files))
 }
 
 /// What `scan` found, and what it had to leave out.
@@ -418,16 +608,19 @@ impl ScanReport {
             ));
         }
         if self.unread_after_path_cap > 0 {
+            let n = self.unread_after_path_cap;
             parts.push(format!(
-                "scanning stopped after collecting 200,000 paths ({} folders not read)",
-                self.unread_after_path_cap
+                "scanning stopped after collecting 200,000 paths ({n} folder{} not read)",
+                plural(n)
             ));
         }
         if self.oversize_files > 0 {
+            let n = self.oversize_files;
             parts.push(format!(
-                "{} file(s) larger than {} MB were skipped",
-                self.oversize_files,
-                MAX_FILE_BYTES / (1024 * 1024)
+                "{n} file{} larger than {} MB {} skipped",
+                plural(n),
+                MAX_FILE_BYTES / (1024 * 1024),
+                if n == 1 { "was" } else { "were" }
             ));
         }
         if parts.is_empty() {
@@ -443,9 +636,15 @@ impl ScanReport {
 /// Whether the start of a file declares schema objects (CREATE VERTEX, EDGE or GRAPH).
 fn declares_schema(path: &Path) -> bool {
     use std::io::Read;
-    let Ok(file) = std::fs::File::open(path) else { return false };
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
     let mut head = Vec::new();
-    if file.take(64 * 1024).read_to_end(&mut head).is_err() {
+    if file
+        .take(64 * 1024)
+        .read_to_end(&mut head)
+        .is_err()
+    {
         return false;
     }
     let text = String::from_utf8_lossy(&head).to_ascii_uppercase();
@@ -467,6 +666,15 @@ pub fn scan(roots: &[PathBuf]) -> Vec<PathBuf> {
     scan_report(roots).files
 }
 
+/// Keeps the first of the paths that name the same file (by URI key).
+pub fn dedupe_paths(files: &mut Vec<PathBuf>) {
+    let mut seen = std::collections::HashSet::new();
+    files.retain(|f| {
+        let absolute = std::path::absolute(f).unwrap_or_else(|_| f.clone());
+        seen.insert(uri::key(&uri::from_path(&absolute)))
+    });
+}
+
 /// `scan`, with a report of the limits that were hit. Past `MAX_FILES` the
 /// files that declare schema objects, then those nearest the root, are kept.
 pub fn scan_report(roots: &[PathBuf]) -> ScanReport {
@@ -478,22 +686,32 @@ fn scan_with_limit(roots: &[PathBuf], max_files: usize) -> ScanReport {
     const MAX_DEPTH: usize = 100;
     /// Paths collected before the walk stops, so that a huge tree cannot exhaust memory.
     const MAX_COLLECTED: usize = 200_000;
-    let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let canonical = |p: &Path| {
+        std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+    };
     let mut report = ScanReport::default();
     // Each file with its folder depth below the root.
     let mut found: Vec<(usize, PathBuf)> = Vec::new();
-    let mut stack: Vec<(PathBuf, usize)> = roots.iter().map(|r| (r.clone(), 0)).collect();
+    let mut stack: Vec<(PathBuf, usize)> = roots
+        .iter()
+        .map(|r| (r.clone(), 0))
+        .collect();
     // Links to directories, scanned after the real ones.
     let mut linked: Vec<(PathBuf, usize)> = Vec::new();
-    let root_paths: Vec<PathBuf> = roots.iter().map(|r| canonical(r)).collect();
-    let mut seen: std::collections::HashSet<PathBuf> = root_paths.iter().cloned().collect();
+    let root_paths: Vec<PathBuf> =
+        roots.iter().map(|r| canonical(r)).collect();
+    let mut seen: std::collections::HashSet<PathBuf> =
+        root_paths.iter().cloned().collect();
     let mut visited = 0;
     'walk: while let Some((dir, depth)) = stack.pop().or_else(|| {
         // Only now, with every real folder known, which links lead somewhere new.
         while let Some((link, depth)) = linked.pop() {
             let target = canonical(&link);
             // A link up to a folder that holds a root would take in the neighbours of the project.
-            if root_paths.iter().any(|root| root.starts_with(&target)) {
+            if root_paths
+                .iter()
+                .any(|root| root.starts_with(&target))
+            {
                 continue;
             }
             if seen.insert(target) {
@@ -512,13 +730,20 @@ fn scan_with_limit(roots: &[PathBuf], max_files: usize) -> ScanReport {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let name = entry.file_name().to_string_lossy().into_owned();
+            let name = entry
+                .file_name()
+                .to_string_lossy()
+                .into_owned();
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
-            let linked_dir = file_type.is_symlink() && std::fs::metadata(&path).is_ok_and(|m| m.is_dir());
+            let linked_dir = file_type.is_symlink()
+                && std::fs::metadata(&path).is_ok_and(|m| m.is_dir());
             if file_type.is_dir() || linked_dir {
-                if name.starts_with('.') || SKIPPED_DIRS.contains(&name.as_str()) || depth >= MAX_DEPTH {
+                if name.starts_with('.')
+                    || SKIPPED_DIRS.contains(&name.as_str())
+                    || depth >= MAX_DEPTH
+                {
                     continue;
                 }
                 if linked_dir {
@@ -527,12 +752,15 @@ fn scan_with_limit(roots: &[PathBuf], max_files: usize) -> ScanReport {
                     stack.push((path, depth + 1));
                 }
             // Symbolic links to files count.
-            } else if (file_type.is_file() || file_type.is_symlink()) && is_gsql_file(&path) {
+            } else if (file_type.is_file() || file_type.is_symlink())
+                && is_gsql_file(&path)
+            {
                 match std::fs::metadata(&path) {
                     Ok(m) if m.is_file() && m.len() <= MAX_FILE_BYTES => {
                         found.push((depth, path));
                         if found.len() >= MAX_COLLECTED {
-                            report.unread_after_path_cap = stack.len() + linked.len();
+                            report.unread_after_path_cap =
+                                stack.len() + linked.len();
                             break 'walk;
                         }
                     }
@@ -544,81 +772,155 @@ fn scan_with_limit(roots: &[PathBuf], max_files: usize) -> ScanReport {
     }
     if found.len() > max_files {
         // Which files survive must not depend on the order of the directory listing.
-        let mut ranked: Vec<(bool, usize, PathBuf)> =
-            found.into_iter().map(|(depth, path)| (!declares_schema(&path), depth, path)).collect();
+        let mut ranked: Vec<(bool, usize, PathBuf)> = found
+            .into_iter()
+            .map(|(depth, path)| (!declares_schema(&path), depth, path))
+            .collect();
         ranked.sort();
         report.dropped_files = ranked.len() - max_files;
         ranked.truncate(max_files);
-        found = ranked.into_iter().map(|(_, depth, path)| (depth, path)).collect();
+        found = ranked
+            .into_iter()
+            .map(|(_, depth, path)| (depth, path))
+            .collect();
     }
-    report.files = found.into_iter().map(|(_, path)| path).collect();
+    report.files = found
+        .into_iter()
+        .map(|(_, path)| path)
+        .collect();
     report.files.sort();
     report
 }
 
 pub fn is_gsql_file(path: &Path) -> bool {
-    path.extension().and_then(|e| e.to_str()).is_some_and(|e| EXTENSIONS.iter().any(|x| x.eq_ignore_ascii_case(e)))
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| {
+            EXTENSIONS
+                .iter()
+                .any(|x| x.eq_ignore_ascii_case(e))
+        })
 }
 
 /// The text of a file, with bytes that are not UTF-8 (a Latin-1 letter in a
 /// comment) replaced by U+FFFD, so that such a file is still indexed.
 pub fn read_text(path: &Path) -> std::io::Result<String> {
     let bytes = std::fs::read(path)?;
-    Ok(String::from_utf8(bytes).unwrap_or_else(|err| String::from_utf8_lossy(err.as_bytes()).into_owned()))
+    Ok(String::from_utf8(bytes).unwrap_or_else(|err| {
+        String::from_utf8_lossy(err.as_bytes()).into_owned()
+    }))
 }
 
 /// Parses and indexes a file from disk.
-pub fn index_file(path: &Path, encoding: PositionEncoding) -> Option<FileIndex> {
+pub fn index_file(
+    path: &Path,
+    encoding: PositionEncoding,
+) -> Option<FileIndex> {
     let text = read_text(path).ok()?;
-    let mut parser = crate::syntax::new_parser();
-    let tree = crate::syntax::parse(&mut parser, &text, None);
-    let analysis = crate::analysis::analyze(&tree, &text);
+    let (tree, analysis) = Analysis::parse(&text);
     let source = SourceText::new(text);
-    Some(FileIndex::of_document(&uri::from_path(path), &tree, &analysis, &source, encoding))
+    Some(FileIndex::of_document(
+        &uri::from_path(path),
+        &tree,
+        &analysis,
+        &source,
+        encoding,
+        None,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::features::test_support::{
+        TYPO_BEFORE_AN_EDGE, acted_in, cursor,
+    };
 
     fn index(uri: &str, text: &str) -> FileIndex {
-        let tree = crate::syntax::parse(&mut crate::syntax::new_parser(), text, None);
-        let analysis = crate::analysis::analyze(&tree, text);
-        FileIndex::build(uri, &analysis, &SourceText::new(text.to_string()), PositionEncoding::Utf16)
+        let (_, analysis) = Analysis::parse(text);
+        FileIndex::build(
+            uri,
+            &analysis,
+            &SourceText::new(text.to_string()),
+            PositionEncoding::Utf16,
+        )
+    }
+
+    #[test]
+    fn indexing_lasts_until_every_scan_has_finished() {
+        let mut workspace = Workspace::default();
+        assert!(!workspace.indexing());
+        workspace.start_indexing();
+        workspace.start_indexing();
+        workspace.finish_indexing();
+        assert!(workspace.indexing(), "one scan is still running");
+        workspace.finish_indexing();
+        assert!(!workspace.indexing());
     }
 
     #[test]
     fn reads_text_that_is_not_utf8_lossily() {
-        let path = std::env::temp_dir().join(format!("gsql-latin1-{}.gsql", std::process::id()));
-        std::fs::write(&path, b"// caf\xe9\nCREATE VERTEX P (PRIMARY_ID id STRING)\n").unwrap();
+        let path = std::env::temp_dir()
+            .join(format!("gsql-latin1-{}.gsql", std::process::id()));
+        std::fs::write(
+            &path,
+            b"// caf\xe9\nCREATE VERTEX P (PRIMARY_ID id STRING)\n",
+        )
+        .unwrap();
         let text = read_text(&path).unwrap();
         let indexed = index_file(&path, PositionEncoding::Utf16).is_some();
         std::fs::remove_file(&path).unwrap();
-        assert_eq!(text, "// caf\u{fffd}\nCREATE VERTEX P (PRIMARY_ID id STRING)\n");
+        assert_eq!(
+            text,
+            "// caf\u{fffd}\nCREATE VERTEX P (PRIMARY_ID id STRING)\n"
+        );
         assert!(indexed);
     }
 
     #[test]
     fn scan_past_the_file_limit_keeps_schema_files_and_reports() {
-        let dir = std::env::temp_dir().join(format!("gsql-limit-{}", std::process::id()));
+        let dir = std::env::temp_dir()
+            .join(format!("gsql-limit-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("a/b/c")).unwrap();
         for i in 0..4 {
-            std::fs::write(dir.join(format!("q{i}.gsql")), "CREATE QUERY q() { }\n").unwrap();
+            std::fs::write(
+                dir.join(format!("q{i}.gsql")),
+                "CREATE QUERY q() { }\n",
+            )
+            .unwrap();
         }
-        std::fs::write(dir.join("a/b/c/zz.gsql"), "-- x\ncreate  undirected edge E (FROM A, TO B)\n").unwrap();
+        std::fs::write(
+            dir.join("a/b/c/zz.gsql"),
+            "-- x\ncreate  undirected edge E (FROM A, TO B)\n",
+        )
+        .unwrap();
         let report = scan_with_limit(std::slice::from_ref(&dir), 3);
-        let names: Vec<String> =
-            report.files.iter().map(|p| p.strip_prefix(&dir).unwrap().to_string_lossy().replace('\\', "/")).collect();
+        let names: Vec<String> = report
+            .files
+            .iter()
+            .map(|p| {
+                p.strip_prefix(&dir)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(names, ["a/b/c/zz.gsql", "q0.gsql", "q1.gsql"]);
         assert_eq!(report.dropped_files, 2);
-        assert!(report.warning().unwrap().contains("incomplete"));
+        assert!(
+            report
+                .warning()
+                .unwrap()
+                .contains("incomplete")
+        );
     }
 
     #[test]
     fn scan_within_the_limits_has_no_warning() {
-        let dir = std::env::temp_dir().join(format!("gsql-nolimit-{}", std::process::id()));
+        let dir = std::env::temp_dir()
+            .join(format!("gsql-nolimit-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("q.gsql"), "").unwrap();
@@ -629,43 +931,91 @@ mod tests {
     }
 
     #[test]
+    fn scan_warning_counts_in_singular_and_plural() {
+        let warning = |count: usize| {
+            ScanReport {
+                unread_after_path_cap: count,
+                oversize_files: count,
+                ..ScanReport::default()
+            }
+            .warning()
+            .unwrap()
+        };
+        let one = warning(1);
+        assert!(one.contains("(1 folder not read)"), "{one}");
+        assert!(one.contains("1 file larger than 8 MB was skipped"), "{one}");
+        let two = warning(2);
+        assert!(two.contains("(2 folders not read)"), "{two}");
+        assert!(
+            two.contains("2 files larger than 8 MB were skipped"),
+            "{two}"
+        );
+    }
+
+    #[test]
     fn attributes_added_by_alter_come_after_those_of_the_create() {
         let mut workspace = Workspace::default();
         workspace.update(index(
             "file:///jobs/a.gsql",
             "CREATE SCHEMA_CHANGE JOB j { ALTER VERTEX P ADD ATTRIBUTE (email STRING); }\n",
         ));
-        workspace.update(index("file:///schema/s.gsql", "CREATE VERTEX P (PRIMARY_ID id STRING, name STRING)\n"));
-        let names: Vec<&str> = workspace.attributes_declared("P").iter().map(|a| a.name.as_str()).collect();
+        workspace.update(index(
+            "file:///schema/s.gsql",
+            "CREATE VERTEX P (PRIMARY_ID id STRING, name STRING)\n",
+        ));
+        let names: Vec<&str> = workspace
+            .attributes_declared("P")
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect();
         assert_eq!(names, ["id", "name", "email"]);
     }
 
     #[test]
     fn marked_root_is_the_nearest_folder_with_the_marker() {
-        let dir = std::env::temp_dir().join(format!("gsql-marker-{}", std::process::id()));
+        let dir = std::env::temp_dir()
+            .join(format!("gsql-marker-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("p/queries")).unwrap();
         std::fs::create_dir_all(dir.join("p/schema")).unwrap();
         std::fs::write(dir.join("p/schema/s.gsql"), "").unwrap();
         assert_eq!(marked_root(&dir.join("p/queries/q.gsql")), None);
         std::fs::write(dir.join("p/.gsqlroot"), "").unwrap();
-        assert_eq!(marked_root(&dir.join("p/queries/q.gsql")), Some(dir.join("p")));
+        assert_eq!(
+            marked_root(&dir.join("p/queries/q.gsql")),
+            Some(dir.join("p"))
+        );
         // A nearer marker wins.
         std::fs::write(dir.join("p/queries/.gsqlroot"), "").unwrap();
-        assert_eq!(marked_root(&dir.join("p/queries/q.gsql")), Some(dir.join("p/queries")));
-        let (root, files) = loose_project(&dir.join("p/schema/s.gsql")).unwrap();
-        assert_eq!((root, files), (dir.join("p"), vec![dir.join("p/schema/s.gsql")]));
+        assert_eq!(
+            marked_root(&dir.join("p/queries/q.gsql")),
+            Some(dir.join("p/queries"))
+        );
+        let (root, files) =
+            loose_project(&dir.join("p/schema/s.gsql")).unwrap();
+        assert_eq!(
+            (root, files),
+            (dir.join("p"), vec![dir.join("p/schema/s.gsql")])
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn scan_directory_reads_one_folder_only() {
-        let dir = std::env::temp_dir().join(format!("gsql-shallow-{}", std::process::id()));
+        let dir = std::env::temp_dir()
+            .join(format!("gsql-shallow-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("a.gsql"), "").unwrap();
         std::fs::write(dir.join("notes.txt"), "").unwrap();
         std::fs::write(dir.join("sub/b.gsql"), "").unwrap();
-        let found: Vec<String> =
-            scan_directory(&dir).iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        let found: Vec<String> = scan_directory(&dir)
+            .iter()
+            .map(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(found, ["a.gsql"]);
     }
@@ -673,14 +1023,28 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn scan_finds_linked_files_and_skips_dangling_links() {
-        let dir = std::env::temp_dir().join(format!("gsql-scan-{}", std::process::id()));
+        let dir = std::env::temp_dir()
+            .join(format!("gsql-scan-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("real")).unwrap();
         std::fs::write(dir.join("real/schema.gsql"), "").unwrap();
-        std::os::unix::fs::symlink(dir.join("real/schema.gsql"), dir.join("linked.gsql")).unwrap();
-        std::os::unix::fs::symlink(dir.join("missing.gsql"), dir.join("dangling.gsql")).unwrap();
+        std::os::unix::fs::symlink(
+            dir.join("real/schema.gsql"),
+            dir.join("linked.gsql"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(
+            dir.join("missing.gsql"),
+            dir.join("dangling.gsql"),
+        )
+        .unwrap();
         let found: Vec<String> = scan(std::slice::from_ref(&dir))
             .iter()
-            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .map(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
             .collect();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(found, ["linked.gsql", "schema.gsql"]);
@@ -689,7 +1053,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn scan_follows_linked_directories_once() {
-        let dir = std::env::temp_dir().join(format!("gsql-dirlink-{}", std::process::id()));
+        let dir = std::env::temp_dir()
+            .join(format!("gsql-dirlink-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("shared/schema")).unwrap();
         std::fs::create_dir_all(dir.join("proj/sub")).unwrap();
@@ -702,18 +1067,33 @@ mod tests {
         link(dir.join("proj"), dir.join("proj/sub/up")).unwrap();
         link(dir.join("nowhere"), dir.join("proj/gone")).unwrap();
         let names = |files: Vec<PathBuf>| -> Vec<String> {
-            files.iter().map(|p| p.strip_prefix(&dir).unwrap().display().to_string()).collect()
+            files
+                .iter()
+                .map(|p| {
+                    p.strip_prefix(&dir)
+                        .unwrap()
+                        .display()
+                        .to_string()
+                })
+                .collect()
         };
-        assert_eq!(names(scan(&[dir.join("proj")])), ["proj/q.gsql", "proj/schema/s.gsql"]);
+        assert_eq!(
+            names(scan(&[dir.join("proj")])),
+            ["proj/q.gsql", "proj/schema/s.gsql"]
+        );
         // The real folder's spelling wins when both are in the scan.
-        assert_eq!(names(scan(std::slice::from_ref(&dir))), ["proj/q.gsql", "shared/schema/s.gsql"]);
+        assert_eq!(
+            names(scan(std::slice::from_ref(&dir))),
+            ["proj/q.gsql", "shared/schema/s.gsql"]
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(unix)]
     #[test]
     fn dot_dot_segments_do_not_change_the_project() {
-        let dir = std::env::temp_dir().join(format!("gsql-dotdot-{}", std::process::id()));
+        let dir = std::env::temp_dir()
+            .join(format!("gsql-dotdot-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("a")).unwrap();
         std::fs::create_dir_all(dir.join("b")).unwrap();
@@ -723,13 +1103,17 @@ mod tests {
         assert_eq!(marked_root(&tricky), None);
         let (folder, files) = loose_project(&tricky).unwrap();
         let base = std::fs::canonicalize(&dir).unwrap();
-        assert_eq!((folder, files), (base.join("b"), vec![base.join("b/q.gsql")]));
+        assert_eq!(
+            (folder, files),
+            (base.join("b"), vec![base.join("b/q.gsql")])
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_link_up_to_a_folder_holding_the_root_adds_no_neighbours() {
-        let dir = std::env::temp_dir().join(format!("gsql-scan-up-{}", std::process::id()));
+        let dir = std::env::temp_dir()
+            .join(format!("gsql-scan-up-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("p/q")).unwrap();
         std::fs::create_dir_all(dir.join("other")).unwrap();
@@ -738,28 +1122,97 @@ mod tests {
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink("../..", dir.join("p/q/up")).unwrap();
-            let names: Vec<String> =
-                scan(&[dir.join("p")]).iter().map(|f| f.file_name().unwrap().to_string_lossy().into_owned()).collect();
+            let names: Vec<String> = scan(&[dir.join("p")])
+                .iter()
+                .map(|f| {
+                    f.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect();
             assert_eq!(names, ["mine.gsql"], "{names:?}");
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
+    fn attribute_candidates_follow_the_type_of_the_object() {
+        use SymbolKind as K;
+        let names =
+            |types: &[&str]| types.iter().map(|t| t.to_string()).collect();
+        let candidates = |ty: Ty| global_candidates(&Role::Attribute(ty));
+        assert_eq!(
+            candidates(Ty::Unknown),
+            Some((vec![K::Attribute], vec![]))
+        );
+        assert_eq!(
+            candidates(Ty::VertexSet(names(&["Person", "Company"]))),
+            Some((vec![K::Attribute], names(&["Person", "Company"])))
+        );
+        assert_eq!(
+            candidates(Ty::Edge(names(&["follows"]))),
+            Some((vec![K::Attribute], names(&["follows"])))
+        );
+        assert_eq!(
+            candidates(Ty::Tuple("Pair".into())),
+            Some((vec![K::TupleField], names(&["Pair"])))
+        );
+        assert_eq!(candidates(Ty::Primitive("STRING".into())), None);
+        assert_eq!(
+            candidates(Ty::Collection("LIST".into(), vec![Ty::Unknown])),
+            None
+        );
+    }
+
+    #[test]
     fn name_index_follows_updates_and_removals() {
         let mut workspace = Workspace::default();
-        workspace.update(index("file:///w/a.gsql", "CREATE VERTEX Person (PRIMARY_ID id STRING)\n"));
-        assert_eq!(workspace.find(SymbolKind::VertexType, "Person").len(), 1);
-        workspace.update(index("file:///w/a.gsql", "CREATE VERTEX Human (PRIMARY_ID id STRING)\n"));
-        assert!(workspace.find(SymbolKind::VertexType, "Person").is_empty());
-        assert_eq!(workspace.find(SymbolKind::VertexType, "Human").len(), 1);
-        workspace.update(index("file:///w/b.gsql", "CREATE VERTEX Human (PRIMARY_ID id STRING)\n"));
-        assert_eq!(workspace.find(SymbolKind::VertexType, "Human").len(), 2);
+        workspace.update(index(
+            "file:///w/a.gsql",
+            "CREATE VERTEX Person (PRIMARY_ID id STRING)\n",
+        ));
+        assert_eq!(
+            workspace
+                .find(SymbolKind::VertexType, "Person")
+                .len(),
+            1
+        );
+        workspace.update(index(
+            "file:///w/a.gsql",
+            "CREATE VERTEX Human (PRIMARY_ID id STRING)\n",
+        ));
+        assert!(
+            workspace
+                .find(SymbolKind::VertexType, "Person")
+                .is_empty()
+        );
+        assert_eq!(
+            workspace
+                .find(SymbolKind::VertexType, "Human")
+                .len(),
+            1
+        );
+        workspace.update(index(
+            "file:///w/b.gsql",
+            "CREATE VERTEX Human (PRIMARY_ID id STRING)\n",
+        ));
+        assert_eq!(
+            workspace
+                .find(SymbolKind::VertexType, "Human")
+                .len(),
+            2
+        );
         workspace.remove("file:///w/a.gsql");
         let remaining = workspace.find(SymbolKind::VertexType, "Human");
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].uri, "file:///w/b.gsql");
-        assert!(workspace.find_any(&[SymbolKind::Attribute], "id").iter().all(|s| s.uri == "file:///w/b.gsql"));
+        assert!(
+            workspace
+                .find_any(&[SymbolKind::Attribute], "id")
+                .iter()
+                .all(|s| s.uri == "file:///w/b.gsql")
+        );
     }
 
     #[test]
@@ -774,13 +1227,111 @@ mod tests {
             "CREATE QUERY q() {\n  S = {Person.*};\n  R = SELECT t FROM S:s -(Knows>:e)- Person:t WHERE t.age > 3;\n}\n",
         ));
         assert!(workspace.has_schema());
-        assert_eq!(workspace.find(SymbolKind::EdgeType, "rev_knows").len(), 1);
+        assert_eq!(
+            workspace
+                .find(SymbolKind::EdgeType, "rev_knows")
+                .len(),
+            1
+        );
         assert_eq!(workspace.attributes(Some("Person")).len(), 2);
-        let person_refs = workspace.references(SymbolKind::VertexType, "Person", None, false);
+        let person_refs = workspace.references(
+            SymbolKind::VertexType,
+            "Person",
+            None,
+            false,
+        );
         // Two in the edge definition, two in the query.
         assert_eq!(person_refs.len(), 4, "{person_refs:?}");
-        let age_refs = workspace.references(SymbolKind::Attribute, "age", Some("Person"), false);
+        let age_refs = workspace.references(
+            SymbolKind::Attribute,
+            "age",
+            Some("Person"),
+            false,
+        );
         assert_eq!(age_refs.len(), 1);
         assert_eq!(age_refs[0].uri, "file:///w/q.gsql");
+    }
+
+    #[test]
+    fn the_edge_generation_follows_the_edge_types_only() {
+        let (a, b) = ("file:///w/a.gsql", "file:///w/b.gsql");
+        let edge = |declaration: &str| {
+            format!(
+                "CREATE VERTEX P (PRIMARY_ID id STRING)\nCREATE {declaration}\n"
+            )
+        };
+        let p_to_p = edge("DIRECTED EDGE E (FROM P, TO P)");
+        let mut workspace = Workspace::default();
+        workspace
+            .update(index(a, "CREATE VERTEX P (PRIMARY_ID id STRING)\n"));
+        assert_eq!(workspace.edge_generation(), 0, "no edge type yet");
+        workspace.update(index(a, &p_to_p));
+        let first = workspace.edge_generation();
+        assert_ne!(first, 0);
+        // Another file, and the same edges elsewhere in their file.
+        workspace.update(index(b, "CREATE QUERY q() { PRINT 1; }\n"));
+        workspace.update(index(a, &format!("\n\n{p_to_p}")));
+        assert_eq!(workspace.edge_generation(), first);
+        // Each of `TO`, `FROM`, direction and name, changed alone.
+        let mut seen = vec![0, first];
+        for changed in [
+            "DIRECTED EDGE E (FROM P, TO Q)",
+            "DIRECTED EDGE E (FROM Q, TO Q)",
+            "UNDIRECTED EDGE E (FROM Q, TO Q)",
+            "UNDIRECTED EDGE F (FROM Q, TO Q)",
+        ] {
+            workspace.update(index(a, &edge(changed)));
+            let generation = workspace.edge_generation();
+            assert!(!seen.contains(&generation), "{changed}");
+            seen.push(generation);
+        }
+        workspace.remove(b);
+        assert_eq!(Some(&workspace.edge_generation()), seen.last());
+        workspace.remove(a);
+        assert!(!seen.contains(&workspace.edge_generation()));
+        seen.push(workspace.edge_generation());
+        let mut other = Workspace::default();
+        other.update(index(b, &p_to_p));
+        assert!(!seen.contains(&other.edge_generation()));
+    }
+
+    #[test]
+    fn a_corrected_document_is_indexed_with_the_edges_of_the_workspace() {
+        // `m` is a Movie only through the schema's edge.
+        let mut workspace = Workspace::default();
+        workspace.update(index("file:///w/schema.gsql", &acted_in("Movie")));
+        let (text, _) = cursor(TYPO_BEFORE_AN_EDGE);
+        let (tree, analysis) = Analysis::parse(&text);
+        let source = SourceText::new(text);
+        let of_document = |workspace| {
+            let uri = "file:///w/q.gsql";
+            let encoding = PositionEncoding::Utf16;
+            FileIndex::of_document(
+                uri, &tree, &analysis, &source, encoding, workspace,
+            )
+        };
+        let owners = |index: &FileIndex| {
+            let name = index
+                .references
+                .iter()
+                .find(|r| r.name == "name");
+            name.expect("m.name").owners.clone()
+        };
+        assert!(owners(&of_document(None)).is_empty());
+        let typed = of_document(Some(&workspace));
+        assert_eq!(owners(&typed), ["Movie"]);
+        workspace.update(typed);
+        let found = workspace.references(
+            SymbolKind::Attribute,
+            "name",
+            Some("Movie"),
+            false,
+        );
+        assert!(
+            found
+                .iter()
+                .any(|l| l.uri == "file:///w/q.gsql"),
+            "{found:?}"
+        );
     }
 }

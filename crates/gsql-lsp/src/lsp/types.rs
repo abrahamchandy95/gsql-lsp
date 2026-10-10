@@ -3,7 +3,19 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+)]
 pub struct Position {
     pub line: u32,
     pub character: u32,
@@ -15,7 +27,9 @@ impl Position {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize,
+)]
 pub struct Range {
     pub start: Position,
     pub end: Position,
@@ -28,6 +42,16 @@ impl Range {
 
     pub fn contains(&self, position: Position) -> bool {
         self.start <= position && position <= self.end
+    }
+
+    /// Whether `inner` lies within this range (both ends inclusive).
+    pub fn contains_range(&self, inner: Range) -> bool {
+        self.start <= inner.start && inner.end <= self.end
+    }
+
+    /// Whether `inner` starts and ends on lines this range covers, whatever the columns.
+    pub fn contains_lines_of(&self, inner: Range) -> bool {
+        self.start.line <= inner.start.line && inner.end.line <= self.end.line
     }
 }
 
@@ -288,7 +312,11 @@ pub struct Diagnostic {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub severity: Option<u8>,
     /// LSP allows numbers too (clients send other tools' diagnostics back).
-    #[serde(skip_serializing_if = "Option::is_none", default, deserialize_with = "string_or_number")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "string_or_number"
+    )]
     pub code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub source: Option<String>,
@@ -308,7 +336,9 @@ pub struct RelatedInformation {
     pub message: String,
 }
 
-fn string_or_number<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+fn string_or_number<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
     Ok(match Option::<Value>::deserialize(deserializer)? {
         Some(Value::String(text)) => Some(text),
         Some(Value::Number(number)) => Some(number.to_string()),
@@ -324,7 +354,10 @@ pub struct MarkupContent {
 
 impl MarkupContent {
     pub fn markdown(value: impl Into<String>) -> MarkupContent {
-        MarkupContent { kind: "markdown", value: value.into() }
+        MarkupContent {
+            kind: "markdown",
+            value: value.into(),
+        }
     }
 }
 
@@ -405,7 +438,10 @@ impl CompletionItem {
         self
     }
 
-    pub fn documentation(mut self, markdown: impl Into<String>) -> CompletionItem {
+    pub fn documentation(
+        mut self,
+        markdown: impl Into<String>,
+    ) -> CompletionItem {
         let markdown = markdown.into();
         if !markdown.is_empty() {
             self.documentation = Some(MarkupContent::markdown(markdown));
@@ -646,12 +682,22 @@ mod tests {
     #[test]
     fn reads_numeric_diagnostic_codes() {
         let range = r#"{"start":{"line":0,"character":0},"end":{"line":0,"character":1}}"#;
-        for (code, expected) in [(r#""unused""#, Some("unused")), ("1234", Some("1234")), ("null", None)] {
-            let json = format!(r#"{{"range":{range},"message":"m","code":{code}}}"#);
+        for (code, expected) in [
+            (r#""unused""#, Some("unused")),
+            ("1234", Some("1234")),
+            ("null", None),
+        ] {
+            let json =
+                format!(r#"{{"range":{range},"message":"m","code":{code}}}"#);
             let diagnostic: Diagnostic = serde_json::from_str(&json).unwrap();
             assert_eq!(diagnostic.code.as_deref(), expected);
         }
         let json = format!(r#"{{"range":{range},"message":"m"}}"#);
-        assert_eq!(serde_json::from_str::<Diagnostic>(&json).unwrap().code, None);
+        assert_eq!(
+            serde_json::from_str::<Diagnostic>(&json)
+                .unwrap()
+                .code,
+            None
+        );
     }
 }

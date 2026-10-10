@@ -5,6 +5,9 @@ use crate::text::Span;
 pub type SymbolId = usize;
 pub type ScopeId = usize;
 
+/// The scope of the whole file.
+pub const FILE_SCOPE: ScopeId = 0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SymbolKind {
     Graph,
@@ -53,6 +56,33 @@ impl SymbolKind {
                 | SymbolKind::Package
                 | SymbolKind::DataSource
         )
+    }
+
+    /// Kinds shared with the workspace when declared at file level.
+    pub fn is_exported(self) -> bool {
+        self.is_global()
+            || matches!(
+                self,
+                SymbolKind::TupleType
+                    | SymbolKind::TupleField
+                    | SymbolKind::AccumulatorType
+            )
+    }
+
+    pub fn is_accumulator(self) -> bool {
+        matches!(
+            self,
+            SymbolKind::GlobalAccumulator | SymbolKind::LocalAccumulator
+        )
+    }
+
+    /// The kind of a global (`@@name`) or vertex-attached (`@name`) accumulator.
+    pub fn accumulator(global: bool) -> SymbolKind {
+        if global {
+            SymbolKind::GlobalAccumulator
+        } else {
+            SymbolKind::LocalAccumulator
+        }
     }
 
     pub fn label(self) -> &'static str {
@@ -114,18 +144,34 @@ impl Ty {
     pub fn element(&self) -> Ty {
         match self {
             Ty::VertexSet(types) => Ty::Vertex(types.clone()),
-            Ty::Collection(_, args) | Ty::Accumulator(_, args) => match args.as_slice() {
-                [single] => single.clone(),
-                _ => Ty::Unknown,
-            },
-            _ => Ty::Unknown,
+            _ => self
+                .element_ref()
+                .cloned()
+                .unwrap_or_default(),
+        }
+    }
+
+    /// The single type argument of a collection or accumulator.
+    fn element_ref(&self) -> Option<&Ty> {
+        match self {
+            Ty::Collection(_, args) | Ty::Accumulator(_, args) => {
+                match args.as_slice() {
+                    [single] => Some(single),
+                    _ => None,
+                }
+            }
+            _ => None,
         }
     }
 
     /// The type of `value.method(..)` for the methods whose result type is tracked.
     pub fn method_result(&self, method: &str) -> Ty {
         match (method.to_ascii_lowercase().as_str(), self) {
-            ("top" | "pop", Ty::Accumulator(kind, _)) if kind == "HeapAccum" => self.element(),
+            ("top" | "pop", Ty::Accumulator(kind, _))
+                if kind == "HeapAccum" =>
+            {
+                self.element()
+            }
             ("get", _) => match self.key_value() {
                 Some((_, value)) => value,
                 None => self.element(),
@@ -158,27 +204,83 @@ impl Ty {
         }
     }
 
-    pub fn display(&self) -> String {
-        fn join(types: &[String]) -> String {
-            types.join(" | ")
-        }
-        fn args(args: &[Ty]) -> String {
-            args.iter().map(Ty::display).collect::<Vec<_>>().join(", ")
-        }
+    /// The vertex or edge types of a vertex, vertex set or edge, with their kind;
+    pub fn schema_owners(&self) -> Option<(SymbolKind, &[String])> {
         match self {
-            Ty::Unknown => "unknown".into(),
-            Ty::Primitive(name) => name.clone(),
-            Ty::Vertex(types) if types.is_empty() => "VERTEX".into(),
-            Ty::Vertex(types) => format!("VERTEX<{}>", join(types)),
-            Ty::Edge(types) if types.is_empty() => "EDGE".into(),
-            Ty::Edge(types) => format!("EDGE<{}>", join(types)),
-            Ty::VertexSet(types) if types.is_empty() => "vertex set".into(),
-            Ty::VertexSet(types) => format!("vertex set of {}", join(types)),
-            Ty::Tuple(name) => name.clone(),
-            Ty::Collection(name, a) | Ty::Accumulator(name, a) if a.is_empty() => name.clone(),
-            Ty::Collection(name, a) | Ty::Accumulator(name, a) => format!("{name}<{}>", args(a)),
-            Ty::File => "FILE".into(),
+            Ty::Vertex(types) | Ty::VertexSet(types) => {
+                Some((SymbolKind::VertexType, types))
+            }
+            Ty::Edge(types) => Some((SymbolKind::EdgeType, types)),
+            _ => None,
         }
+    }
+
+    /// The vertex and edge types whose attributes `x.name` can name when `x` has
+    /// this type; empty means any. `None` for a type without attributes.
+    pub fn attribute_owners(&self) -> Option<&[String]> {
+        match self {
+            Ty::Unknown => Some(&[]),
+            _ => self
+                .schema_owners()
+                .map(|(_, owners)| owners),
+        }
+    }
+
+    /// Vertex types of a vertex, a vertex set, or a collection of vertices.
+    pub fn member_vertex_types(&self) -> Vec<String> {
+        self.vertex_types()
+            .or_else(|| self.element_ref()?.vertex_types())
+            .map(<[String]>::to_vec)
+            .unwrap_or_default()
+    }
+
+    pub fn display(&self) -> String {
+        self.to_string()
+    }
+}
+
+impl std::fmt::Display for Ty {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Ty::Unknown => f.write_str("unknown"),
+            Ty::Primitive(name) | Ty::Tuple(name) => f.write_str(name),
+            Ty::Vertex(types) if types.is_empty() => f.write_str("VERTEX"),
+            Ty::Vertex(types) => {
+                write!(f, "VERTEX<{}>", Joined(types, " | "))
+            }
+            Ty::Edge(types) if types.is_empty() => f.write_str("EDGE"),
+            Ty::Edge(types) => write!(f, "EDGE<{}>", Joined(types, " | ")),
+            Ty::VertexSet(types) if types.is_empty() => {
+                f.write_str("vertex set")
+            }
+            Ty::VertexSet(types) => {
+                write!(f, "vertex set of {}", Joined(types, " | "))
+            }
+            Ty::Collection(name, a) | Ty::Accumulator(name, a)
+                if a.is_empty() =>
+            {
+                f.write_str(name)
+            }
+            Ty::Collection(name, a) | Ty::Accumulator(name, a) => {
+                write!(f, "{name}<{}>", Joined(a, ", "))
+            }
+            Ty::File => f.write_str("FILE"),
+        }
+    }
+}
+
+/// Items written with a separator between them, without building a string.
+struct Joined<'a, T>(&'a [T], &'a str);
+
+impl<T: std::fmt::Display> std::fmt::Display for Joined<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, item) in self.0.iter().enumerate() {
+            if i > 0 {
+                f.write_str(self.1)?;
+            }
+            write!(f, "{item}")?;
+        }
+        Ok(())
     }
 }
 
@@ -189,6 +291,17 @@ pub struct Param {
     pub default: Option<String>,
 }
 
+impl std::fmt::Display for Param {
+    /// `TYPE name`, with ` = default` when there is one.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}", self.ty, self.name)?;
+        if let Some(default) = &self.default {
+            write!(f, " = {default}")?;
+        }
+        Ok(())
+    }
+}
+
 /// Endpoint types of an edge type, kept apart to tell directions.
 #[derive(Debug, Clone, Default)]
 pub struct EdgeEnds {
@@ -196,6 +309,9 @@ pub struct EdgeEnds {
     pub to: Vec<String>,
     pub directed: bool,
 }
+
+/// Start of a reverse edge's detail; the name of the edge that declares it follows.
+pub const REVERSE_EDGE_PREFIX: &str = "reverse edge of ";
 
 #[derive(Debug, Clone)]
 pub struct Symbol {
@@ -242,6 +358,19 @@ pub struct Symbol {
     pub strict_create: bool,
     /// An attribute added by `ALTER ... ADD`: listed after those of the `CREATE`.
     pub altered: bool,
+}
+
+impl Symbol {
+    /// A file variable of a loading job.
+    pub fn is_job_file(&self) -> bool {
+        self.kind == SymbolKind::FilenameVariable && self.owner.is_some()
+    }
+
+    /// Shared with the workspace: a file-level exported kind or a job file variable.
+    pub fn is_exported(&self) -> bool {
+        (self.scope == FILE_SCOPE && self.kind.is_exported())
+            || self.is_job_file()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -297,6 +426,38 @@ pub enum Role {
     Alias,
 }
 
+impl Role {
+    /// The kinds of file-level declaration a name in this role can refer to; the
+    /// order matters. `None` for roles that name locals or owned symbols.
+    pub fn global_kinds(&self) -> Option<&'static [SymbolKind]> {
+        use SymbolKind as K;
+        Some(match self {
+            Role::VertexType | Role::VertexSource => &[K::VertexType],
+            Role::EdgeType | Role::EdgeSource => &[K::EdgeType],
+            Role::SchemaType => &[K::VertexType, K::EdgeType],
+            Role::Graph => &[K::Graph],
+            Role::Query => &[K::Query],
+            Role::Job => &[K::LoadingJob, K::SchemaChangeJob],
+            Role::TupleType => &[K::TupleType, K::AccumulatorType],
+            Role::Function => &[K::Query, K::TupleType],
+            Role::Value => {
+                &[K::VertexType, K::EdgeType, K::Query, K::TupleType]
+            }
+            // Listed one by one so that a new Role forces a decision here.
+            Role::GlobalAccumulator
+            | Role::LocalAccumulator
+            | Role::Exception
+            | Role::JobLocal
+            | Role::Alias
+            | Role::Attribute(_)
+            | Role::Method(_)
+            | Role::TupleField(_)
+            | Role::JobFile(_)
+            | Role::TempColumn(_) => return None,
+        })
+    }
+}
+
 /// The kind of construct an occurrence appears in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Context {
@@ -334,7 +495,8 @@ pub struct Reference {
 pub struct Analysis {
     pub symbols: Vec<Symbol>,
     pub scopes: Vec<Scope>,
-    /// Every identifier-like occurrence, sorted by position.
+    /// Every identifier-like occurrence, sorted by position; they
+    /// never overlap.
     pub references: Vec<Reference>,
     /// What `DROP` statements remove: the kind and the name (`*` for all of them).
     pub drops: Vec<(SymbolKind, String)>,
@@ -347,45 +509,82 @@ pub struct Analysis {
 
 impl Analysis {
     pub fn reference_at(&self, offset: usize) -> Option<&Reference> {
-        let index = self.references.partition_point(|r| r.span.end < offset);
-        self.references[index..].iter().take_while(|r| r.span.start <= offset).find(|r| r.span.contains(offset))
+        let index = self
+            .references
+            .partition_point(|r| r.span.end < offset);
+        self.references[index..]
+            .iter()
+            .take_while(|r| r.span.start <= offset)
+            .find(|r| r.span.contains(offset))
+    }
+
+    /// The symbol in this file that `reference` resolves to.
+    pub fn target_symbol(&self, reference: &Reference) -> Option<&Symbol> {
+        reference.target.map(|id| &self.symbols[id])
     }
 
     /// Indexes the scopes for [`Analysis::scope_at`]; call after adding scopes.
-    pub fn index_scopes(&mut self) {
+    pub(super) fn index_scopes(&mut self) {
         let mut order: Vec<ScopeId> = (0..self.scopes.len()).collect();
-        order.sort_by_key(|&id| (self.scopes[id].span.start, std::cmp::Reverse(self.scopes[id].span.end)));
+        order.sort_by_key(|&id| {
+            (
+                self.scopes[id].span.start,
+                std::cmp::Reverse(self.scopes[id].span.end),
+            )
+        });
         self.scope_order = order;
     }
 
     /// The innermost scope containing `offset`.
     pub fn scope_at(&self, offset: usize) -> ScopeId {
-        if self.scope_order.len() != self.scopes.len() {
-            // Not indexed (only while the model is being built): linear scan.
-            let mut best = 0;
-            for (id, scope) in self.scopes.iter().enumerate() {
-                if scope.span.contains(offset) && scope.span.len() <= self.scopes[best].span.len() {
-                    best = id;
-                }
-            }
-            return best;
-        }
+        debug_assert_eq!(
+            self.scope_order.len(),
+            self.scopes.len(),
+            "scopes not indexed"
+        );
         // Scopes nest properly, so the innermost scope containing `offset` is
         // the last one starting at or before it, or one of its ancestors.
-        let index = self.scope_order.partition_point(|&id| self.scopes[id].span.start <= offset);
-        let Some(&candidate) = index.checked_sub(1).and_then(|i| self.scope_order.get(i)) else {
-            return 0;
+        let index = self
+            .scope_order
+            .partition_point(|&id| self.scopes[id].span.start <= offset);
+        let Some(&candidate) = index
+            .checked_sub(1)
+            .and_then(|i| self.scope_order.get(i))
+        else {
+            return FILE_SCOPE;
         };
-        self.scope_chain(candidate).find(|&id| self.scopes[id].span.contains(offset)).unwrap_or(0)
+        self.scope_chain(candidate)
+            .find(|&id| self.scopes[id].span.contains(offset))
+            .unwrap_or(FILE_SCOPE)
     }
 
-    pub fn scope_chain(&self, scope: ScopeId) -> impl Iterator<Item = ScopeId> + '_ {
+    pub fn scope_chain(
+        &self,
+        scope: ScopeId,
+    ) -> impl Iterator<Item = ScopeId> + '_ {
         std::iter::successors(Some(scope), |&s| self.scopes[s].parent)
+    }
+
+    /// Symbols declared directly in `scope`, in order.
+    pub fn scope_symbols(
+        &self,
+        scope: ScopeId,
+    ) -> impl Iterator<Item = &Symbol> + '_ {
+        self.scopes[scope]
+            .symbols
+            .iter()
+            .map(|&id| &self.symbols[id])
     }
 
     /// The innermost query scope enclosing `scope`.
     pub fn query_scope(&self, scope: ScopeId) -> Option<ScopeId> {
-        self.scope_chain(scope).find(|&s| self.scopes[s].kind == ScopeKind::Query)
+        self.scope_chain(scope)
+            .find(|&s| self.scopes[s].kind == ScopeKind::Query)
+    }
+
+    /// The innermost query scope containing `offset`.
+    pub fn query_scope_at(&self, offset: usize) -> Option<ScopeId> {
+        self.query_scope(self.scope_at(offset))
     }
 
     /// Symbols visible from `offset`, innermost scopes first.
@@ -393,9 +592,8 @@ impl Analysis {
         let mut seen = std::collections::HashSet::new();
         let mut result = Vec::new();
         for scope in self.scope_chain(self.scope_at(offset)) {
-            for &id in &self.scopes[scope].symbols {
-                let symbol = &self.symbols[id];
-                if seen.insert((symbol.name.clone(), symbol.kind)) {
+            for symbol in self.scope_symbols(scope) {
+                if seen.insert((symbol.name.as_str(), symbol.kind)) {
                     result.push(symbol);
                 }
             }
@@ -403,7 +601,44 @@ impl Analysis {
         result
     }
 
-    pub fn references_to(&self, symbol: SymbolId) -> impl Iterator<Item = &Reference> {
-        self.references.iter().filter(move |r| r.target == Some(symbol))
+    /// The innermost symbol named `name` of one of `kinds` visible from `offset`.
+    pub fn visible_symbol(
+        &self,
+        offset: usize,
+        name: &str,
+        kinds: &[SymbolKind],
+    ) -> Option<&Symbol> {
+        self.scope_chain(self.scope_at(offset))
+            .find_map(|scope| {
+                self.scope_symbols(scope)
+                    .find(|s| s.name == name && kinds.contains(&s.kind))
+            })
+    }
+
+    pub fn references_to(
+        &self,
+        symbol: SymbolId,
+    ) -> impl Iterator<Item = &Reference> {
+        self.references
+            .iter()
+            .filter(move |r| r.target == Some(symbol))
+    }
+
+    /// Uses outside syntax errors that resolve to no symbol in this file.
+    pub fn unresolved_uses(&self) -> impl Iterator<Item = &Reference> {
+        self.references
+            .iter()
+            .filter(|r| r.target.is_none() && !r.declaration && !r.in_error)
+    }
+
+    /// Symbols of `kind` owned by `owner`, from every scope, in declaration order.
+    pub fn symbols_owned_by(
+        &self,
+        kind: SymbolKind,
+        owner: &str,
+    ) -> impl Iterator<Item = &Symbol> {
+        self.symbols.iter().filter(move |s| {
+            s.kind == kind && s.owner.as_deref() == Some(owner)
+        })
     }
 }

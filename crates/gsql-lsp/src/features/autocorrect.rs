@@ -9,10 +9,14 @@ use std::sync::OnceLock;
 use tree_sitter::{Node, Tree};
 
 use crate::analysis::Analysis;
-use crate::features::Snapshot;
+use crate::features::{Snapshot, parsed_literals};
 use crate::lsp::types::{Diagnostic, Position, Range};
 use crate::syntax;
-use crate::text::{PositionEncoding, SourceText, Span};
+use crate::text::{
+    PositionEncoding, SourceText, Span, is_word_char,
+    starts_with_ignore_ascii_case,
+};
+use crate::workspace::Workspace;
 
 /// Every keyword of the grammar, in upper case.
 pub fn keywords() -> &'static [String] {
@@ -20,11 +24,19 @@ pub fn keywords() -> &'static [String] {
     KEYWORDS.get_or_init(|| {
         let language = syntax::language();
         let mut words: Vec<String> = (0..language.node_kind_count() as u16)
-            .filter(|&id| !language.node_kind_is_named(id) && language.node_kind_is_visible(id))
+            .filter(|&id| {
+                !language.node_kind_is_named(id)
+                    && language.node_kind_is_visible(id)
+            })
             .filter_map(|id| language.node_kind_for_id(id))
             // `POST-ACCUM` may also be written `POST_ACCUM`.
             .map(|kind| kind.replace('-', "_"))
-            .filter(|kind| kind.len() > 1 && kind.chars().all(|c| c.is_ascii_uppercase() || c == '_'))
+            .filter(|kind| {
+                kind.len() > 1
+                    && kind
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c == '_')
+            })
             .collect();
         words.sort();
         words.dedup();
@@ -46,8 +58,11 @@ pub fn distance(a: &str, b: &str) -> usize {
     for i in 1..=a.len() {
         for j in 1..=b.len() {
             let cost = usize::from(a[i - 1] != b[j - 1]);
-            let mut best = (rows[i - 1][j] + 1).min(rows[i][j - 1] + 1).min(rows[i - 1][j - 1] + cost);
-            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+            let mut best = (rows[i - 1][j] + 1)
+                .min(rows[i][j - 1] + 1)
+                .min(rows[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1]
+            {
                 best = best.min(rows[i - 2][j - 2] + 1);
             }
             rows[i][j] = best;
@@ -67,24 +82,62 @@ fn max_distance(word: &str) -> usize {
 }
 
 /// The candidates closest to `word`, best first.
-pub fn similar<'c>(word: &str, candidates: impl IntoIterator<Item = &'c str>) -> Vec<&'c str> {
+pub fn similar<'c>(
+    word: &str,
+    candidates: impl IntoIterator<Item = &'c str>,
+) -> Vec<&'c str> {
     similar_within(word, candidates, max_distance(word))
 }
 
+/// The candidates [`similar`] finds, only those at the closest distance.
+pub fn closest<'c>(
+    word: &str,
+    candidates: impl IntoIterator<Item = &'c str>,
+) -> Vec<&'c str> {
+    let mut close = similar(word, candidates);
+    if let Some(best) = close.first().map(|b| distance(word, b)) {
+        close.retain(|c| distance(word, c) == best);
+    }
+    close
+}
+
 /// Like [`similar`], with the largest distance given.
-fn similar_within<'c>(word: &str, candidates: impl IntoIterator<Item = &'c str>, limit: usize) -> Vec<&'c str> {
+fn similar_within<'c>(
+    word: &str,
+    candidates: impl IntoIterator<Item = &'c str>,
+    limit: usize,
+) -> Vec<&'c str> {
     let length = word.chars().count();
-    let first = word.chars().next().map(|c| c.to_ascii_lowercase());
-    let mut scored: Vec<(usize, bool, usize, std::cmp::Reverse<usize>, &str)> = candidates
+    let first = word
+        .chars()
+        .next()
+        .map(|c| c.to_ascii_lowercase());
+    let mut scored: Vec<(
+        usize,
+        bool,
+        usize,
+        std::cmp::Reverse<usize>,
+        &str,
+    )> = candidates
         .into_iter()
         // Each edit changes the length by at most one.
         .filter(|c| *c != word && c.chars().count().abs_diff(length) <= limit)
         .map(|c| {
             // On ties, prefer the same first letter, a similar length, and
             // then the longer word (a dropped letter is the likelier typo).
-            let other_first = c.chars().next().map(|c| c.to_ascii_lowercase()) != first;
+            let other_first = c
+                .chars()
+                .next()
+                .map(|c| c.to_ascii_lowercase())
+                != first;
             let count = c.chars().count();
-            (distance(word, c), other_first, count.abs_diff(length), std::cmp::Reverse(count), c)
+            (
+                distance(word, c),
+                other_first,
+                count.abs_diff(length),
+                std::cmp::Reverse(count),
+                c,
+            )
         })
         .filter(|&(d, ..)| d <= limit)
         .collect();
@@ -148,46 +201,24 @@ const JOINED: &[(&str, &str)] = &[
 ];
 
 /// The keyword spelled like `word`: lower case for a lower-case word.
-fn styled(keyword: &str, word: &str) -> String {
-    if word.chars().all(|c| !c.is_ascii_uppercase()) { keyword.to_ascii_lowercase() } else { keyword.to_string() }
-}
-
-/// The byte ranges of string literals and comments of `text`: words in them are
-/// not keywords, whatever shape error recovery gives the tree.
-fn literal_spans(text: &str) -> Vec<(usize, usize)> {
-    let bytes = text.as_bytes();
-    let mut spans = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        let start = i;
-        match bytes[i] {
-            b'"' => {
-                i += 1;
-                while i < bytes.len() && bytes[i] != b'"' && bytes[i] != b'\n' {
-                    i += if bytes[i] == b'\\' { 2 } else { 1 };
-                }
-                i = (i + 1).min(bytes.len());
-                spans.push((start, i));
-            }
-            b'/' if bytes.get(i + 1) == Some(&b'/') => {
-                i = text[i..].find('\n').map_or(bytes.len(), |n| i + n);
-                spans.push((start, i));
-            }
-            b'/' if bytes.get(i + 1) == Some(&b'*') => {
-                i = text[i + 2..].find("*/").map_or(bytes.len(), |n| i + 2 + n + 2);
-                spans.push((start, i));
-            }
-            _ => i += 1,
-        }
+pub(crate) fn styled(keyword: &str, word: &str) -> String {
+    if word.chars().all(|c| !c.is_ascii_uppercase()) {
+        keyword.to_ascii_lowercase()
+    } else {
+        keyword.to_string()
     }
-    spans
 }
 
 fn is_word(node: Node, source: &str) -> bool {
     node.child_count() == 0
         && !node.is_missing()
-        && syntax::text(node, source).chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        && syntax::text(node, source).chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+        && syntax::text(node, source)
+            .chars()
+            .all(is_word_char)
+        && syntax::text(node, source)
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
 }
 
 /// The keywords a word could be a misspelling of, given the text after it,
@@ -195,24 +226,49 @@ fn is_word(node: Node, source: &str) -> bool {
 /// `ELSEIF`).
 fn replacements(word: &str, after: &str) -> (Vec<String>, bool) {
     let upper = word.to_ascii_uppercase();
-    if let Some((_, keyword)) = JOINED.iter().find(|(written, _)| *written == upper) {
+    if let Some((_, keyword)) = JOINED
+        .iter()
+        .find(|(written, _)| *written == upper)
+    {
         return (vec![styled(keyword, word)], true);
     }
     // `POST-ACCUM` is one token, so `POTS-ACCUM` reads as a word and `-ACCUM`.
-    if after.get(..6).is_some_and(|rest| rest.eq_ignore_ascii_case("-accum")) {
-        let fits = upper != "POST" && distance(&upper, "POST") <= max_distance(word).max(1);
-        return (if fits { vec![styled("POST", word)] } else { Vec::new() }, false);
+    if starts_with_ignore_ascii_case(after, "-accum") {
+        let fits = upper != "POST"
+            && distance(&upper, "POST") <= max_distance(word).max(1);
+        return (
+            if fits {
+                vec![styled("POST", word)]
+            } else {
+                Vec::new()
+            },
+            false,
+        );
     }
     // A parse that works out confirms the guess, so even two-letter keywords
     // (`TO`, `IF`, `IN`) may be one edit away.
-    let limit = max_distance(word).max(usize::from(upper.chars().count() <= 2));
-    let keywords = similar_within(&upper, keywords().iter().map(String::as_str), limit);
-    let mut options: Vec<String> = keywords.into_iter().take(4).map(|k| styled(k, word)).collect();
+    let limit =
+        max_distance(word).max(usize::from(upper.chars().count() <= 2));
+    let keywords =
+        similar_within(&upper, keywords().iter().map(String::as_str), limit);
+    let mut options: Vec<String> = keywords
+        .into_iter()
+        .take(4)
+        .map(|k| styled(k, word))
+        .collect();
     // `SumAcum<INT>`: a word before `<` may be a misspelled accumulator type
     // (their names are case-sensitive, so they keep their spelling).
     if after.trim_start().starts_with('<') {
-        let names = crate::builtins::ACCUMULATORS.iter().map(|a| a.name);
-        options.splice(0..0, similar(word, names).into_iter().take(2).map(String::from));
+        let names = crate::builtins::ACCUMULATORS
+            .iter()
+            .map(|a| a.name);
+        options.splice(
+            0..0,
+            similar(word, names)
+                .into_iter()
+                .take(2)
+                .map(String::from),
+        );
     }
     (options, false)
 }
@@ -228,27 +284,38 @@ pub(crate) fn statements(root: Node) -> Vec<(usize, usize, bool)> {
     let mut statements: Vec<(usize, usize, usize, bool)> = Vec::new();
     let mut cursor = root.walk();
     // Comments are extras; so are tokens the parser skipped, which matter.
-    for child in root.children(&mut cursor).filter(|n| !n.is_extra() || n.has_error()) {
-        let mut first = child;
-        while let Some(leaf) = first.child(0) {
-            first = leaf;
-        }
+    for child in root
+        .children(&mut cursor)
+        .filter(|n| !n.is_extra() || n.has_error())
+    {
+        let first = syntax::first_leaf(child);
         let position = child.start_position();
         let continues = position.column > 0
             || matches!(first.kind(), ";" | "}" | ")" | "]")
-            || statements.last().is_some_and(|s| s.2 == position.row);
+            || statements
+                .last()
+                .is_some_and(|s| s.2 == position.row);
         // Only a piece of a statement is an unnamed node at the top level.
-        let broken = child.has_error() || (!child.is_named() && child.kind() != ";");
+        let broken =
+            child.has_error() || (!child.is_named() && child.kind() != ";");
         match statements.last_mut() {
             Some(statement) if continues => {
                 statement.1 = child.end_byte();
                 statement.2 = child.end_position().row;
                 statement.3 |= broken;
             }
-            _ => statements.push((child.start_byte(), child.end_byte(), child.end_position().row, broken)),
+            _ => statements.push((
+                child.start_byte(),
+                child.end_byte(),
+                child.end_position().row,
+                broken,
+            )),
         }
     }
-    statements.into_iter().map(|(start, end, _, broken)| (start, end, broken)).collect()
+    statements
+        .into_iter()
+        .map(|(start, end, _, broken)| (start, end, broken))
+        .collect()
 }
 
 /// Limits that keep large broken files fast: trial parses per document and
@@ -259,7 +326,9 @@ const MAX_TRIAL_BYTES: usize = 4 << 20;
 const MAX_STATEMENT_BYTES: usize = 256 << 10;
 
 /// Tokens that [`Search::token_fix`] tries to insert, likeliest first.
-const INSERTABLE: &[&str] = &[")", "]", "}", ";", ",", "END", "THEN", "DO", "=", "(", "[", "{"];
+const INSERTABLE: &[&str] = &[
+    ")", "]", "}", ";", ",", "END", "THEN", "DO", "=", "(", "[", "{",
+];
 /// How many tokens before and after the first error an edit may be at, and
 /// how many other repairs are kept besides the best.
 const TOKENS_BEFORE: usize = 3;
@@ -293,15 +362,23 @@ impl Outcome {
                 stack.extend(node.children(&mut cursor));
             }
         }
-        let mut error_rows: Vec<usize> = errors.iter().map(|n| n.start_position().row).collect();
+        let mut error_rows: Vec<usize> = errors
+            .iter()
+            .map(|n| n.start_position().row)
+            .collect();
         error_rows.sort_unstable();
         error_rows.dedup();
         // Nested errors lie inside their ancestors' ranges: count each byte once.
-        errors.sort_by_key(|n| (n.start_byte(), std::cmp::Reverse(n.end_byte())));
+        errors.sort_by_key(|n| {
+            (n.start_byte(), std::cmp::Reverse(n.end_byte()))
+        });
         let mut error_bytes = 0;
         let mut covered = 0;
         for n in &errors {
-            error_bytes += n.end_byte().saturating_sub(covered.max(n.start_byte())).max(usize::from(n.is_missing()));
+            error_bytes += n
+                .end_byte()
+                .saturating_sub(covered.max(n.start_byte()))
+                .max(usize::from(n.is_missing()));
             covered = covered.max(n.end_byte());
         }
         Outcome {
@@ -309,7 +386,9 @@ impl Outcome {
             error_rows,
             first_error: errors.iter().map(|n| n.start_byte()).min(),
             error_bytes,
-            missing_value: errors.iter().any(|n| n.is_missing() && n.is_named()),
+            missing_value: errors
+                .iter()
+                .any(|n| n.is_missing() && n.is_named()),
         }
     }
 }
@@ -359,7 +438,10 @@ fn parse_edited(
             new_end_byte: word.start_byte() + replacement.len(),
             start_position: start,
             old_end_position: word.end_position(),
-            new_end_position: tree_sitter::Point { row: start.row, column: start.column + replacement.len() },
+            new_end_position: tree_sitter::Point {
+                row: start.row,
+                column: start.column + replacement.len(),
+            },
         });
     }
     parser.parse(edited, Some(&old))
@@ -385,7 +467,10 @@ fn parse_spliced(
     let point = |offset: usize| {
         let before = &text[..offset];
         let row = before.matches('\n').count();
-        tree_sitter::Point { row, column: offset - before.rfind('\n').map_or(0, |i| i + 1) }
+        tree_sitter::Point {
+            row,
+            column: offset - before.rfind('\n').map_or(0, |i| i + 1),
+        }
     };
     let start = point(at);
     let mut old = base.clone();
@@ -395,7 +480,10 @@ fn parse_spliced(
         new_end_byte: at + insert.len(),
         start_position: start,
         old_end_position: point(at + remove),
-        new_end_position: tree_sitter::Point { row: start.row, column: start.column + insert.len() },
+        new_end_position: tree_sitter::Point {
+            row: start.row,
+            column: start.column + insert.len(),
+        },
     });
     parser.parse(edited, Some(&old))
 }
@@ -408,7 +496,9 @@ fn leaves(root: Node) -> Vec<(usize, usize, u64)> {
     let mut cursor = root.walk();
     loop {
         let node = cursor.node();
-        let path = (paths[paths.len() - 1] ^ u64::from(node.kind_id())).wrapping_mul(0x0100_0000_01b3).rotate_left(5);
+        let path = (paths[paths.len() - 1] ^ u64::from(node.kind_id()))
+            .wrapping_mul(0x0100_0000_01b3)
+            .rotate_left(5);
         if cursor.goto_first_child() {
             paths.push(path);
             continue;
@@ -426,14 +516,34 @@ fn leaves(root: Node) -> Vec<(usize, usize, u64)> {
 /// The part of a tree that reads differently in `corrected`, from the first
 /// token whose place in the tree changes to the last, given where the edits
 /// are (`first..last` of the original text).
-fn changed_between(original: Node, corrected: Node, first: usize, last: usize) -> Span {
+fn changed_between(
+    original: Node,
+    corrected: Node,
+    first: usize,
+    last: usize,
+) -> Span {
     let before = leaves(original);
     let after = leaves(corrected);
     let same = |a: &(usize, usize, u64), b: &(usize, usize, u64)| a.2 == b.2;
-    let front = before.iter().zip(&after).take_while(|(a, b)| same(a, b)).count();
-    let back = before.iter().rev().zip(after.iter().rev()).take_while(|(a, b)| same(a, b)).count();
-    let start = before.get(front).map_or(first, |leaf| leaf.0.min(first));
-    let end = before.len().checked_sub(back + 1).and_then(|i| before.get(i)).map_or(last, |leaf| leaf.1.max(last));
+    let front = before
+        .iter()
+        .zip(&after)
+        .take_while(|(a, b)| same(a, b))
+        .count();
+    let back = before
+        .iter()
+        .rev()
+        .zip(after.iter().rev())
+        .take_while(|(a, b)| same(a, b))
+        .count();
+    let start = before
+        .get(front)
+        .map_or(first, |leaf| leaf.0.min(first));
+    let end = before
+        .len()
+        .checked_sub(back + 1)
+        .and_then(|i| before.get(i))
+        .map_or(last, |leaf| leaf.1.max(last));
     Span::new(start, end.max(start))
 }
 
@@ -453,7 +563,11 @@ struct Search<'s> {
 /// How long the search for misspelled keywords may take (unoptimized builds,
 /// which the tests use, are an order of magnitude slower).
 const SEARCH_TIME: std::time::Duration =
-    std::time::Duration::from_millis(if cfg!(debug_assertions) { 2000 } else { 60 });
+    std::time::Duration::from_millis(if cfg!(debug_assertions) {
+        2000
+    } else {
+        60
+    });
 
 impl<'s> Search<'s> {
     fn new(source: &'s str) -> Search<'s> {
@@ -468,67 +582,109 @@ impl<'s> Search<'s> {
     }
 
     fn exhausted(&self) -> bool {
-        self.trials >= MAX_TRIALS || self.bytes >= MAX_TRIAL_BYTES || std::time::Instant::now() >= self.deadline
+        self.trials >= MAX_TRIALS
+            || self.bytes >= MAX_TRIAL_BYTES
+            || std::time::Instant::now() >= self.deadline
     }
 
     /// Parses `text` with words replaced. `None` when the budget is spent or
     /// the first replacement ends up inside an ERROR node (it does not fit
     /// there either).
-    fn trial(&mut self, text: &str, edits: &[(Node, &str)]) -> Option<Outcome> {
+    fn trial(
+        &mut self,
+        text: &str,
+        edits: &[(Node, &str)],
+    ) -> Option<Outcome> {
         if self.exhausted() {
             return None;
         }
         self.trials += 1;
         self.bytes += text.len();
-        let tree = parse_edited(&mut self.parser, self.base.as_ref(), text, edits)?;
+        let tree =
+            parse_edited(&mut self.parser, self.base.as_ref(), text, edits)?;
         let root = tree.root_node();
         let (word, replacement) = edits[0];
         let start = word.start_byte();
         let misplaced = root
             .descendant_for_byte_range(start, start + replacement.len())
-            .is_some_and(|n| syntax::self_and_ancestors(n).any(|a| a.is_error()));
+            .is_some_and(|n| {
+                syntax::self_and_ancestors(n).any(|a| a.is_error())
+            });
         (!misplaced).then(|| Outcome::of(root))
     }
 
     /// The part of `text` that the parser reads differently once `edits` are
     /// applied, from the first token whose place in the tree changes to the
     /// last. What the original tree says about it cannot be trusted.
-    fn changed(&mut self, text: &str, original: Node, edits: &[(Node, &str)]) -> Option<Span> {
-        let corrected = parse_edited(&mut self.parser, self.base.as_ref(), text, edits)?;
-        let first = edits.iter().map(|(word, _)| word.start_byte()).min()?;
-        let last = edits.iter().map(|(word, _)| word.end_byte()).max()?;
-        Some(changed_between(original, corrected.root_node(), first, last))
+    fn changed(
+        &mut self,
+        text: &str,
+        original: Node,
+        edits: &[(Node, &str)],
+    ) -> Option<Span> {
+        let corrected =
+            parse_edited(&mut self.parser, self.base.as_ref(), text, edits)?;
+        let first = edits
+            .iter()
+            .map(|(word, _)| word.start_byte())
+            .min()?;
+        let last = edits
+            .iter()
+            .map(|(word, _)| word.end_byte())
+            .max()?;
+        Some(changed_between(
+            original,
+            corrected.root_node(),
+            first,
+            last,
+        ))
     }
 
     /// A missing `,` between items that explains every error of the statement:
     /// reported as a "typo" with no word, whose correction is `, `.
-    fn comma_fix(&mut self, root: Node, text: &str, anchor: usize, start: usize, end: usize) -> Option<KeywordTypo> {
+    fn comma_fix(
+        &mut self,
+        root: Node,
+        text: &str,
+        anchor: usize,
+        start: usize,
+        end: usize,
+    ) -> Option<KeywordTypo> {
         // Only inside lists of items (ACCUM statements have their own messages).
         let in_list = |at: usize| {
-            root.descendant_for_byte_range(at, at).is_some_and(|node| {
-                syntax::self_and_ancestors(node).any(|a| {
-                    matches!(
-                        a.kind(),
-                        "parameter_list"
-                            | "argument_list"
-                            | "vertex_attribute_list"
-                            | "edge_attribute_list"
-                            | "value_list"
-                            | "insert_columns"
-                            | "column_list"
-                            | "list_literal"
+            root.descendant_for_byte_range(at, at)
+                .is_some_and(|node| {
+                    syntax::find_ancestor(
+                        node,
+                        &[
+                            "parameter_list",
+                            "argument_list",
+                            "vertex_attribute_list",
+                            "edge_attribute_list",
+                            "value_list",
+                            "insert_columns",
+                            "column_list",
+                            "list_literal",
+                        ],
                     )
+                    .is_some()
                 })
-            })
         };
-        for at in comma_offsets(root, anchor).into_iter().filter(|at| in_list(*at)) {
+        for at in comma_offsets(root, anchor)
+            .into_iter()
+            .filter(|at| in_list(*at))
+        {
             if self.exhausted() {
                 return None;
             }
             self.trials += 1;
             let candidate = format!("{}, {}", &text[..at], &text[at..]);
-            let fixes_all =
-                self.parser.parse(&candidate, None).is_some_and(|tree| Outcome::of(tree.root_node()).errors == 0);
+            let fixes_all = self
+                .parser
+                .parse(&candidate, None)
+                .is_some_and(|tree| {
+                    Outcome::of(tree.root_node()).errors == 0
+                });
             if fixes_all {
                 return Some(KeywordTypo {
                     span: Span::new(start + at, start + at),
@@ -551,28 +707,35 @@ impl<'s> Search<'s> {
     /// "typos" with no word, like a missing `,`. All candidates together are
     /// tried first (one mistake among the others hides which insertion
     /// helps), then the insertion that leaves the least behind, repeatedly.
-    fn block_keyword_fix(&mut self, root: Node, text: &str, start: usize, end: usize) -> Vec<KeywordTypo> {
+    fn block_keyword_fix(
+        &mut self,
+        root: Node,
+        text: &str,
+        start: usize,
+        end: usize,
+    ) -> Vec<KeywordTypo> {
         const ROUNDS: usize = 4;
         let mut candidates = block_keyword_candidates(root);
         if candidates.is_empty() {
             return Vec::new();
         }
-        let typos = |inserted: Vec<(usize, &'static str)>| -> Vec<KeywordTypo> {
-            inserted
-                .into_iter()
-                .map(|(at, keyword)| KeywordTypo {
-                    span: Span::new(start + at, start + at),
-                    word: String::new(),
-                    keyword: keyword.to_string(),
-                    alternatives: Vec::new(),
-                    certain: false,
-                    statement: Span::new(start, end),
-                    resolves: Some(Span::new(start, end)),
-                    misparsed: None,
-                    token_edits: Vec::new(),
-                })
-                .collect()
-        };
+        let typos =
+            |inserted: Vec<(usize, &'static str)>| -> Vec<KeywordTypo> {
+                inserted
+                    .into_iter()
+                    .map(|(at, keyword)| KeywordTypo {
+                        span: Span::new(start + at, start + at),
+                        word: String::new(),
+                        keyword: keyword.to_string(),
+                        alternatives: Vec::new(),
+                        certain: false,
+                        statement: Span::new(start, end),
+                        resolves: Some(Span::new(start, end)),
+                        misparsed: None,
+                        token_edits: Vec::new(),
+                    })
+                    .collect()
+            };
         if candidates.len() > 1 && !self.exhausted() {
             self.trials += 1;
             let mut all = text.to_string();
@@ -580,7 +743,11 @@ impl<'s> Search<'s> {
                 all.insert_str(at, keyword);
             }
             self.bytes += all.len();
-            if self.parser.parse(&all, None).is_some_and(|tree| Outcome::of(tree.root_node()).errors == 0) {
+            if self
+                .parser
+                .parse(&all, None)
+                .is_some_and(|tree| Outcome::of(tree.root_node()).errors == 0)
+            {
                 return typos(candidates);
             }
         }
@@ -590,7 +757,12 @@ impl<'s> Search<'s> {
         let original = Outcome::of(root);
         let mut score = (original.errors, original.error_bytes);
         for _ in 0..ROUNDS {
-            let mut best: Option<((usize, usize), usize, &'static str, String)> = None;
+            let mut best: Option<(
+                (usize, usize),
+                usize,
+                &'static str,
+                String,
+            )> = None;
             for &(at, keyword) in &candidates {
                 if self.exhausted() {
                     return Vec::new();
@@ -599,14 +771,18 @@ impl<'s> Search<'s> {
                 let mut candidate = current.clone();
                 candidate.insert_str(at, keyword);
                 self.bytes += candidate.len();
-                let Some(tree) = self.parser.parse(&candidate, None) else { continue };
+                let Some(tree) = self.parser.parse(&candidate, None) else {
+                    continue;
+                };
                 let outcome = Outcome::of(tree.root_node());
                 let found = (outcome.errors, outcome.error_bytes);
                 if found < best.as_ref().map_or(score, |b| b.0) {
                     best = Some((found, at, keyword, candidate));
                 }
             }
-            let Some((found, at, keyword, candidate)) = best else { return Vec::new() };
+            let Some((found, at, keyword, candidate)) = best else {
+                return Vec::new();
+            };
             // The place in the original text: earlier insertions shifted it.
             let mut shift = 0;
             for &(o, k) in &inserted {
@@ -621,7 +797,9 @@ impl<'s> Search<'s> {
                 return typos(inserted);
             }
             score = found;
-            let Some(tree) = self.parser.parse(&current, None) else { return Vec::new() };
+            let Some(tree) = self.parser.parse(&current, None) else {
+                return Vec::new();
+            };
             candidates = block_keyword_candidates(tree.root_node());
             if candidates.is_empty() {
                 break;
@@ -637,14 +815,24 @@ impl<'s> Search<'s> {
     /// Edits nearest to the first error come first, removals before
     /// insertions; the first that works is reported, with up to
     /// [`MAX_TOKEN_REPAIRS`] others.
-    fn token_fix(&mut self, text: &str, start: usize, end: usize, original: &Outcome) -> Vec<KeywordTypo> {
-        let Some(anchor) = original.first_error else { return Vec::new() };
-        let Some(base) = self.base.clone() else { return Vec::new() };
+    fn token_fix(
+        &mut self,
+        text: &str,
+        start: usize,
+        end: usize,
+        original: &Outcome,
+    ) -> Vec<KeywordTypo> {
+        let Some(anchor) = original.first_error else {
+            return Vec::new();
+        };
+        let Some(base) = self.base.clone() else {
+            return Vec::new();
+        };
         // (start, end) of each token, and the parser state after it unless it lies in an error
         let mut states: Vec<Option<u16>> = Vec::new();
         let mut leaves: Vec<(usize, usize)> = Vec::new();
         syntax::walk_with_errors(base.root_node(), |n, in_error| {
-            if n.child_count() == 0 && !n.is_extra() && !n.is_missing() && n.end_byte() > n.start_byte() {
+            if syntax::is_code_token(n) {
                 leaves.push((n.start_byte(), n.end_byte()));
                 states.push((!in_error).then(|| n.next_parse_state()));
             }
@@ -653,35 +841,69 @@ impl<'s> Search<'s> {
         // (a superset of what parses: the parser merges states). True when unknown.
         let language = syntax::language();
         let follows = |k: usize, token: &str| -> bool {
-            let Some(state) = k.checked_sub(1).and_then(|i| states[i]) else { return true };
+            let Some(state) = k.checked_sub(1).and_then(|i| states[i]) else {
+                return true;
+            };
             let symbol = language.id_for_node_kind(token, false);
-            let Some(mut lookahead) = language.lookahead_iterator(state) else { return true };
+            let Some(mut lookahead) = language.lookahead_iterator(state)
+            else {
+                return true;
+            };
             lookahead.any(|candidate| candidate == symbol)
         };
-        let first = leaves.iter().position(|l| l.1 > anchor).unwrap_or(leaves.len());
+        let first = leaves
+            .iter()
+            .position(|l| l.1 > anchor)
+            .unwrap_or(leaves.len());
         let from = first.saturating_sub(TOKENS_BEFORE);
         // The parser may have taken back several tokens into one ERROR node
         // (it noticed the problem at the end of it).
         let mut error_end = anchor;
         syntax::walk(base.root_node(), |n| {
-            if n.is_error() && n.start_byte() == anchor && n.end_byte() > error_end {
+            if n.is_error()
+                && n.start_byte() == anchor
+                && n.end_byte() > error_end
+            {
                 error_end = n.end_byte();
             }
         });
-        let reaches = leaves.iter().rposition(|l| l.0 < error_end).unwrap_or(first);
-        let to = (reaches.clamp(first, first + TOKENS_IN_ERROR) + TOKENS_AFTER).min(leaves.len());
+        let reaches = leaves
+            .iter()
+            .rposition(|l| l.0 < error_end)
+            .unwrap_or(first);
+        let to = (reaches.clamp(first, first + TOKENS_IN_ERROR)
+            + TOKENS_AFTER)
+            .min(leaves.len());
         // (distance from the first error, removal before insertion, rank of
         // the token, offset, bytes removed, text put in place, the token)
-        let mut edits: Vec<(usize, usize, usize, usize, usize, String, String)> = Vec::new();
+        let mut edits: Vec<(
+            usize,
+            usize,
+            usize,
+            usize,
+            usize,
+            String,
+            String,
+        )> = Vec::new();
         let blank = |c: u8| c == b' ' || c == b'\t';
         for k in from..=to {
             let distance = k.abs_diff(first);
             // (When the parser lacks a name or an expression, a token before it is not stray.)
-            if let Some(&(a, b)) = leaves.get(k).filter(|_| !original.missing_value) {
+            if let Some(&(a, b)) = leaves
+                .get(k)
+                .filter(|_| !original.missing_value)
+            {
                 // A removed token takes the blanks after it along, or else those before it.
                 let bytes = text.as_bytes();
-                let after = bytes[b..].iter().take_while(|&&c| blank(c)).count();
-                let before = bytes[..a].iter().rev().take_while(|&&c| blank(c)).count();
+                let after = bytes[b..]
+                    .iter()
+                    .take_while(|&&c| blank(c))
+                    .count();
+                let before = bytes[..a]
+                    .iter()
+                    .rev()
+                    .take_while(|&&c| blank(c))
+                    .count();
                 let line_start = text[..a].rfind('\n').map_or(0, |i| i + 1);
                 let (from_byte, to_byte) = if after > 0 {
                     (a, b + after)
@@ -690,66 +912,137 @@ impl<'s> Search<'s> {
                 } else {
                     (a, b)
                 };
-                edits.push((distance, 0, 0, from_byte, to_byte - from_byte, String::new(), text[a..b].to_string()));
+                edits.push((
+                    distance,
+                    0,
+                    0,
+                    from_byte,
+                    to_byte - from_byte,
+                    String::new(),
+                    text[a..b].to_string(),
+                ));
             }
             // An inserted token goes right after the token before it.
-            let Some(&(_, at)) = k.checked_sub(1).and_then(|i| leaves.get(i)) else { continue };
-            for (rank, token) in INSERTABLE.iter().enumerate().filter(|(_, t)| follows(k, t)) {
-                let with = if matches!(*token, ")" | "]" | "}" | ";" | "," | "(" | "[") {
+            let Some(&(_, at)) = k.checked_sub(1).and_then(|i| leaves.get(i))
+            else {
+                continue;
+            };
+            for (rank, token) in INSERTABLE
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| follows(k, t))
+            {
+                let with = if matches!(
+                    *token,
+                    ")" | "]" | "}" | ";" | "," | "(" | "["
+                ) {
                     token.to_string()
                 } else {
                     format!(" {token}")
                 };
-                edits.push((distance, 1, rank, at, 0, with, token.to_string()));
+                edits.push((
+                    distance,
+                    1,
+                    rank,
+                    at,
+                    0,
+                    with,
+                    token.to_string(),
+                ));
             }
         }
         edits.sort();
-        let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let mut seen: std::collections::HashSet<u64> =
+            std::collections::HashSet::new();
         let mut found: Vec<TokenEdit> = Vec::new();
         for (_, kind, _, at, removed, with, token) in edits {
             if found.len() > MAX_TOKEN_REPAIRS || self.exhausted() {
                 break;
             }
             // A removal must not join the words on both sides into one name (`abs(1;` without `(`).
-            let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
-            if removed > 0 && text[..at].ends_with(word) && text[at + removed..].starts_with(word) {
+            if removed > 0
+                && text[..at].ends_with(is_word_char)
+                && text[at + removed..].starts_with(is_word_char)
+            {
                 continue;
             }
             // The same text can come from several edits (a token removed from a run of equal ones,
             // or an insertion and a removal that end up in the same place).
             let mut hasher = std::hash::DefaultHasher::new();
-            format!("{}{}{}", &text[..at], with, &text[at + removed..]).hash(&mut hasher);
+            format!("{}{}{}", &text[..at], with, &text[at + removed..])
+                .hash(&mut hasher);
             if !seen.insert(hasher.finish()) {
                 continue;
             }
             self.trials += 1;
             self.bytes += text.len();
-            let works = parse_spliced(&mut self.parser, Some(&base), text, at, removed, &with).is_some_and(|tree| {
+            let works = parse_spliced(
+                &mut self.parser,
+                Some(&base),
+                text,
+                at,
+                removed,
+                &with,
+            )
+            .is_some_and(|tree| {
                 let root = tree.root_node();
                 // (An inserted keyword must be read as one: `END` and others may also be names.)
                 let at_keyword = at + with.find(&token).unwrap_or(0);
                 let keyword = kind == 0
                     || !token.starts_with(|c: char| c.is_ascii_uppercase())
                     || root
-                        .descendant_for_byte_range(at_keyword, at_keyword + token.len())
+                        .descendant_for_byte_range(
+                            at_keyword,
+                            at_keyword + token.len(),
+                        )
                         .is_some_and(|n| n.kind() == token);
                 keyword && Outcome::of(root).errors == 0
             });
             if works {
                 let span = Span::new(start + at, start + at + removed);
-                found.push(TokenEdit { span, with, token, inserted: kind == 1 });
+                found.push(TokenEdit {
+                    span,
+                    with,
+                    token,
+                    inserted: kind == 1,
+                });
             }
         }
-        let Some(best) = found.first().cloned() else { return Vec::new() };
+        let Some(best) = found.first().cloned() else {
+            return Vec::new();
+        };
         // What the parser misread because of the token (nothing derived from the tree there can be trusted).
-        let (at, removed) = (best.span.start - start, best.span.end - best.span.start);
-        let misparsed = parse_spliced(&mut self.parser, Some(&base), text, at, removed, &best.with)
-            .map(|tree| changed_between(base.root_node(), tree.root_node(), at, at + removed))
-            .map(|span| Span::new(start + span.start, start + span.end));
+        let (at, removed) =
+            (best.span.start - start, best.span.end - best.span.start);
+        let misparsed = parse_spliced(
+            &mut self.parser,
+            Some(&base),
+            text,
+            at,
+            removed,
+            &best.with,
+        )
+        .map(|tree| {
+            changed_between(
+                base.root_node(),
+                tree.root_node(),
+                at,
+                at + removed,
+            )
+        })
+        .map(|span| Span::new(start + span.start, start + span.end));
         vec![KeywordTypo {
             span: best.span,
-            word: if best.inserted { String::new() } else { best.token.clone() },
-            keyword: if best.inserted { best.token.clone() } else { String::new() },
+            word: if best.inserted {
+                String::new()
+            } else {
+                best.token.clone()
+            },
+            keyword: if best.inserted {
+                best.token.clone()
+            } else {
+                String::new()
+            },
             alternatives: Vec::new(),
             certain: false,
             statement: Span::new(start, end),
@@ -763,7 +1056,12 @@ impl<'s> Search<'s> {
     /// parse by itself. The simplest explanation wins: one replacement that
     /// removes every error, then two that do together, and (if `partial`) only
     /// then one that removes the errors of its own line and leaves the rest.
-    fn statement(&mut self, start: usize, end: usize, partial: bool) -> Vec<KeywordTypo> {
+    fn statement(
+        &mut self,
+        start: usize,
+        end: usize,
+        partial: bool,
+    ) -> Vec<KeywordTypo> {
         let source = self.source;
         let text = &source[start..end];
         if text.len() > MAX_STATEMENT_BYTES || self.exhausted() {
@@ -779,7 +1077,8 @@ impl<'s> Search<'s> {
         let Some(anchor) = original.first_error else {
             return Vec::new();
         };
-        let absolute = |span: Span| Span::new(start + span.start, start + span.end);
+        let absolute =
+            |span: Span| Span::new(start + span.start, start + span.end);
         let typo = |word: Node,
                     keyword: &str,
                     alternatives: Vec<String>,
@@ -804,48 +1103,88 @@ impl<'s> Search<'s> {
         // 0. Several known joined keywords (a chain of `ELSEIF`, even on one line): one trial for all.
         let mut joined: Vec<(Node, String)> = suspects
             .iter()
-            .filter_map(|&w| match replacements(syntax::text(w, text), &text[w.end_byte()..]) {
-                (options, true) if options.len() == 1 => options.into_iter().next().map(|r| (w, r)),
-                _ => None,
+            .filter_map(|&w| {
+                match replacements(
+                    syntax::text(w, text),
+                    &text[w.end_byte()..],
+                ) {
+                    (options, true) if options.len() == 1 => {
+                        options.into_iter().next().map(|r| (w, r))
+                    }
+                    _ => None,
+                }
             })
             .collect();
         if joined.len() >= 2 {
             joined.sort_by_key(|(w, _)| w.start_byte());
-            let edits: Vec<(Node, &str)> = joined.iter().map(|(w, r)| (*w, r.as_str())).collect();
+            let edits: Vec<(Node, &str)> = joined
+                .iter()
+                .map(|(w, r)| (*w, r.as_str()))
+                .collect();
             budget = budget.saturating_sub(1);
-            if self.trial(text, &edits).is_some_and(|o| o.errors == 0) {
+            if self
+                .trial(text, &edits)
+                .is_some_and(|o| o.errors == 0)
+            {
                 let changed = self.changed(text, root, &edits);
-                return joined.iter().map(|(w, r)| typo(*w, r, Vec::new(), true, true, changed)).collect();
+                return joined
+                    .iter()
+                    .map(|(w, r)| {
+                        typo(*w, r, Vec::new(), true, true, changed)
+                    })
+                    .collect();
             }
         }
         // 1. One replacement that removes every error. Suspects come nearest
         //    to the first error first, so the first word that works is the best.
         for &word in &suspects {
-            let (options, certain) = replacements(syntax::text(word, text), &text[word.end_byte()..]);
+            let (options, certain) = replacements(
+                syntax::text(word, text),
+                &text[word.end_byte()..],
+            );
             let mut complete: Vec<String> = Vec::new();
             for replacement in options {
                 if budget == 0 {
                     break;
                 }
                 budget -= 1;
-                let Some(outcome) = self.trial(text, &[(word, &replacement)]) else { continue };
+                let Some(outcome) = self.trial(text, &[(word, &replacement)])
+                else {
+                    continue;
+                };
                 if outcome.errors == 0 {
                     complete.push(replacement);
                 } else {
-                    tried.push(Trial { word, replacement, certain, outcome });
+                    tried.push(Trial {
+                        word,
+                        replacement,
+                        certain,
+                        outcome,
+                    });
                 }
             }
-            let is_keyword = keywords().iter().any(|k| k.eq_ignore_ascii_case(syntax::text(word, text)));
+            let is_keyword = keywords()
+                .iter()
+                .any(|k| k.eq_ignore_ascii_case(syntax::text(word, text)));
             if !complete.is_empty() && is_keyword {
                 // A keyword replaced by another keyword (`INT` for `IN`) is a weak
                 // explanation: a missing `,` is better, when it explains everything.
-                if let Some(fix) = self.comma_fix(root, text, anchor, start, end) {
+                if let Some(fix) =
+                    self.comma_fix(root, text, anchor, start, end)
+                {
                     return vec![fix];
                 }
             }
             if let Some((keyword, others)) = complete.split_first() {
                 let changed = self.changed(text, root, &[(word, keyword)]);
-                return vec![typo(word, keyword, others.to_vec(), certain, true, changed)];
+                return vec![typo(
+                    word,
+                    keyword,
+                    others.to_vec(),
+                    certain,
+                    true,
+                    changed,
+                )];
             }
         }
         let inserted = self.block_keyword_fix(root, text, start, end);
@@ -858,25 +1197,56 @@ impl<'s> Search<'s> {
         // 2. Two misspelled words: a replacement that moves the first error
         //    past its own line, and a later one that removes every error.
         let pushed = tried.iter().filter(|t| {
-            let line_end = text[t.word.end_byte()..].find('\n').map_or(text.len(), |i| t.word.end_byte() + i);
-            t.outcome.errors <= original.errors && t.outcome.first_error.is_some_and(|e| e > line_end)
+            let line_end = text[t.word.end_byte()..]
+                .find('\n')
+                .map_or(text.len(), |i| t.word.end_byte() + i);
+            t.outcome.errors <= original.errors
+                && t.outcome
+                    .first_error
+                    .is_some_and(|e| e > line_end)
         });
         for first in pushed.take(3) {
-            for &second in suspects.iter().filter(|s| s.start_byte() > first.word.end_byte()) {
-                let (options, second_certain) = replacements(syntax::text(second, text), &text[second.end_byte()..]);
+            for &second in suspects
+                .iter()
+                .filter(|s| s.start_byte() > first.word.end_byte())
+            {
+                let (options, second_certain) = replacements(
+                    syntax::text(second, text),
+                    &text[second.end_byte()..],
+                );
                 for replacement in options {
                     if budget == 0 {
                         break;
                     }
                     budget -= 1;
-                    let edits = [(first.word, first.replacement.as_str()), (second, replacement.as_str())];
-                    if self.trial(text, &edits).is_some_and(|o| o.errors == 0) {
+                    let edits = [
+                        (first.word, first.replacement.as_str()),
+                        (second, replacement.as_str()),
+                    ];
+                    if self
+                        .trial(text, &edits)
+                        .is_some_and(|o| o.errors == 0)
+                    {
                         let changed = self.changed(text, root, &edits);
                         // Two known joined keywords (`ELSEIF` twice) are as certain as one.
                         let certain = first.certain && second_certain;
                         return vec![
-                            typo(first.word, &first.replacement, Vec::new(), certain, true, changed),
-                            typo(second, &replacement, Vec::new(), certain, true, changed),
+                            typo(
+                                first.word,
+                                &first.replacement,
+                                Vec::new(),
+                                certain,
+                                true,
+                                changed,
+                            ),
+                            typo(
+                                second,
+                                &replacement,
+                                Vec::new(),
+                                certain,
+                                true,
+                                changed,
+                            ),
                         ];
                     }
                 }
@@ -897,14 +1267,19 @@ impl<'s> Search<'s> {
             let row = t.word.start_position().row;
             // The replacement makes the parse get past the word's line; what
             // errors remain (e.g. a missing `;` further on) are other mistakes.
-            let local =
-                original.error_rows.contains(&row) && t.outcome.error_rows.first().is_none_or(|first| *first > row);
+            let local = original.error_rows.contains(&row)
+                && t.outcome
+                    .error_rows
+                    .first()
+                    .is_none_or(|first| *first > row);
             if !local || t.outcome.errors >= original.errors {
                 continue;
             }
             match found.iter_mut().find(|(r, ..)| *r == row) {
                 // One word per line: the one nearest to the first error.
-                Some((_, best, alternatives)) if best.word == t.word => alternatives.push(t.replacement.clone()),
+                Some((_, best, alternatives)) if best.word == t.word => {
+                    alternatives.push(t.replacement.clone())
+                }
                 Some(_) => {}
                 None => found.push((row, t, Vec::new())),
             }
@@ -912,8 +1287,16 @@ impl<'s> Search<'s> {
         found
             .into_iter()
             .map(|(_, t, alternatives)| {
-                let changed = self.changed(text, root, &[(t.word, &t.replacement)]);
-                typo(t.word, &t.replacement, alternatives, t.certain, false, changed)
+                let changed =
+                    self.changed(text, root, &[(t.word, &t.replacement)]);
+                typo(
+                    t.word,
+                    &t.replacement,
+                    alternatives,
+                    t.certain,
+                    false,
+                    changed,
+                )
             })
             .collect()
     }
@@ -930,7 +1313,10 @@ fn block_keyword_candidates(root: Node) -> Vec<(usize, &'static str)> {
             return;
         }
         let mut cursor = node.walk();
-        let children: Vec<Node> = node.children(&mut cursor).filter(|c| !c.is_extra()).collect();
+        let children: Vec<Node> = node
+            .children(&mut cursor)
+            .filter(|c| !c.is_extra())
+            .collect();
         for (i, child) in children.iter().enumerate() {
             if child.child_count() > 0 {
                 continue;
@@ -939,18 +1325,28 @@ fn block_keyword_candidates(root: Node) -> Vec<(usize, &'static str)> {
                 "IF" | "ELSE IF" => (" THEN ", i + 1, ["THEN", ""]),
                 "WHILE" => (" DO ", i + 1, ["DO", "LIMIT"]),
                 "FOREACH" => {
-                    let Some(position) = children[i + 1..].iter().take(8).position(|c| c.kind() == "IN") else {
+                    let Some(position) = children[i + 1..]
+                        .iter()
+                        .take(8)
+                        .position(|c| c.kind() == "IN")
+                    else {
                         continue;
                     };
                     (" DO ", i + position + 2, ["DO", ""])
                 }
                 _ => continue,
             };
-            let [Some(condition), after] = [children.get(from), children.get(from + 1)] else { continue };
+            let [Some(condition), after] =
+                [children.get(from), children.get(from + 1)]
+            else {
+                continue;
+            };
             if !condition.is_named() || condition.has_error() {
                 continue;
             }
-            if after.is_some_and(|a| a.kind() == until[0] || a.kind() == until[1]) {
+            if after
+                .is_some_and(|a| a.kind() == until[0] || a.kind() == until[1])
+            {
                 continue;
             }
             found.push((condition.end_byte(), keyword));
@@ -960,7 +1356,7 @@ fn block_keyword_candidates(root: Node) -> Vec<(usize, &'static str)> {
     // a mess of: then the keyword goes at the end of the line.
     let mut leaves: Vec<Node> = Vec::new();
     syntax::walk(root, |n| {
-        if n.child_count() == 0 && !n.is_extra() && n.end_byte() > n.start_byte() {
+        if syntax::is_code_token(n) {
             leaves.push(n);
         }
     });
@@ -971,9 +1367,14 @@ fn block_keyword_candidates(root: Node) -> Vec<(usize, &'static str)> {
             _ => continue,
         };
         let row = leaf.start_position().row;
-        let line: Vec<&Node> = leaves[i + 1..].iter().take_while(|n| n.start_position().row == row).collect();
+        let line: Vec<&Node> = leaves[i + 1..]
+            .iter()
+            .take_while(|n| n.start_position().row == row)
+            .collect();
         if let Some(last) = line.last()
-            && !line.iter().any(|n| closers.contains(&n.kind()) || n.is_error() || n.is_missing())
+            && !line.iter().any(|n| {
+                closers.contains(&n.kind()) || n.is_error() || n.is_missing()
+            })
             && last.kind() != ";"
         {
             found.push((last.end_byte(), keyword));
@@ -988,13 +1389,21 @@ fn block_keyword_candidates(root: Node) -> Vec<(usize, &'static str)> {
 /// words the parser could not place before keywords it did, each nearest to
 /// the first syntax error (at `anchor`) first.
 fn suspects<'t>(root: Node<'t>, text: &str, anchor: usize) -> Vec<Node<'t>> {
-    let literals = literal_spans(text);
+    // Words in strings and comments are not keywords.
+    let literals = parsed_literals(root, text);
     let mut words = Vec::new();
-    let mut occurrences: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut occurrences: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     syntax::walk_with_errors(root, |n, in_error| {
-        if is_word(n, text) && !literals.iter().any(|&(from, to)| from <= n.start_byte() && n.start_byte() < to) {
+        if is_word(n, text)
+            && !literals
+                .iter()
+                .any(|s| s.start <= n.start_byte() && n.start_byte() < s.end)
+        {
             let placed = !n.is_named() && !in_error;
-            *occurrences.entry(syntax::text(n, text).to_ascii_lowercase()).or_default() += 1;
+            *occurrences
+                .entry(syntax::text(n, text).to_ascii_lowercase())
+                .or_default() += 1;
             words.push((placed, n.start_byte().abs_diff(anchor), n));
         }
     });
@@ -1004,14 +1413,19 @@ fn suspects<'t>(root: Node<'t>, text: &str, anchor: usize) -> Vec<Node<'t>> {
     // `d` may be a vertex alias elsewhere and a misspelled `DO` here).
     const NEAR: usize = 120;
     words.sort_by_key(|&(placed, distance, n)| {
-        let repeated = distance > NEAR && occurrences[&syntax::text(n, text).to_ascii_lowercase()] > 1;
+        let repeated = distance > NEAR
+            && occurrences[&syntax::text(n, text).to_ascii_lowercase()] > 1;
         (placed, repeated, distance)
     });
     words
         .into_iter()
         .map(|(.., n)| n)
         .take(600)
-        .filter(|n| !replacements(syntax::text(*n, text), &text[n.end_byte()..]).0.is_empty())
+        .filter(|n| {
+            !replacements(syntax::text(*n, text), &text[n.end_byte()..])
+                .0
+                .is_empty()
+        })
         .take(40)
         .collect()
 }
@@ -1039,11 +1453,7 @@ fn next_leaf(node: Node) -> Option<Node> {
     let mut current = node;
     loop {
         if let Some(next) = current.next_sibling() {
-            let mut leaf = next;
-            while let Some(first) = leaf.child(0) {
-                leaf = first;
-            }
-            return Some(leaf);
+            return Some(syntax::first_leaf(next));
         }
         current = current.parent()?;
     }
@@ -1055,11 +1465,10 @@ fn next_leaf(node: Node) -> Option<Node> {
 pub fn comma_offsets(root: Node, anchor: usize) -> Vec<usize> {
     let mut offsets = Vec::new();
     let mut leaf = root.descendant_for_byte_range(anchor, anchor);
-    while let Some(mut current) = leaf {
-        while let Some(first) = current.child(0) {
-            current = first;
-        }
-        if current.start_byte() >= anchor && current.end_byte() > current.start_byte() {
+    while let Some(current) = leaf.map(syntax::first_leaf) {
+        if current.start_byte() >= anchor
+            && current.end_byte() > current.start_byte()
+        {
             offsets.push(current.start_byte());
         }
         if offsets.len() >= 6 {
@@ -1076,27 +1485,43 @@ const MAX_ERRORS_FOR_COMMA: usize = 4;
 
 /// The first place among the tokens from `anchor` where inserting a `,`
 /// leaves fewer syntax errors in the statement (which has only a few).
-pub fn missing_comma_at(root: Node, source: &str, anchor: usize) -> Option<usize> {
-    let (start, end, _) = statements(root).into_iter().find(|(s, e, _)| *s <= anchor && anchor <= *e)?;
+pub fn missing_comma_at(
+    root: Node,
+    source: &str,
+    anchor: usize,
+) -> Option<usize> {
+    let (start, end, _) = statements(root)
+        .into_iter()
+        .find(|(s, e, _)| *s <= anchor && anchor <= *e)?;
     if end - start > MAX_STATEMENT_BYTES {
         return None;
     }
     let text = &source[start..end];
     let mut parser = syntax::new_parser();
-    let mut count = |text: &str| parser.parse(text, None).map(|tree| Outcome::of(tree.root_node()).errors);
+    let mut count = |text: &str| {
+        parser
+            .parse(text, None)
+            .map(|tree| Outcome::of(tree.root_node()).errors)
+    };
     let before = count(text)?;
     if before > MAX_ERRORS_FOR_COMMA {
         return None;
     }
-    comma_offsets(root, anchor).into_iter().find(|&at| {
-        // (An offset may lie outside the statement, or inside a character.)
-        if at < start || at > end || !source.is_char_boundary(at) {
-            return false;
-        }
-        let at_in_statement = at - start;
-        count(&format!("{}, {}", &text[..at_in_statement], &text[at_in_statement..]))
+    comma_offsets(root, anchor)
+        .into_iter()
+        .find(|&at| {
+            // (An offset may lie outside the statement, or inside a character.)
+            if at < start || at > end || !source.is_char_boundary(at) {
+                return false;
+            }
+            let at_in_statement = at - start;
+            count(&format!(
+                "{}, {}",
+                &text[..at_in_statement],
+                &text[at_in_statement..]
+            ))
             .is_some_and(|after| after < before)
-    })
+        })
 }
 
 /// Whether the statement around the `,` at `at` has fewer syntax errors
@@ -1107,23 +1532,44 @@ pub fn removing_comma_helps(root: Node, source: &str, at: usize) -> bool {
 
 /// The statement around the `,` at `at` when it has no syntax error left
 /// without the comma: the errors in it are consequences of the comma.
-pub fn removing_comma_resolves(root: Node, source: &str, at: usize) -> Option<Span> {
-    comma_removal(root, source, at).filter(|(_, after)| *after == 0).map(|(span, _)| span)
+pub fn removing_comma_resolves(
+    root: Node,
+    source: &str,
+    at: usize,
+) -> Option<Span> {
+    comma_removal(root, source, at)
+        .filter(|(_, after)| *after == 0)
+        .map(|(span, _)| span)
 }
 
 /// The statement around the `,` at `at` and its number of syntax errors
 /// without the comma, when that is fewer than with it.
-fn comma_removal(root: Node, source: &str, at: usize) -> Option<(Span, usize)> {
-    let (start, end, _) = statements(root).into_iter().find(|(s, e, _)| *s <= at && at < *e)?;
-    if end - start > MAX_STATEMENT_BYTES || source.as_bytes().get(at) != Some(&b',') {
+fn comma_removal(
+    root: Node,
+    source: &str,
+    at: usize,
+) -> Option<(Span, usize)> {
+    let (start, end, _) = statements(root)
+        .into_iter()
+        .find(|(s, e, _)| *s <= at && at < *e)?;
+    if end - start > MAX_STATEMENT_BYTES
+        || source.as_bytes().get(at) != Some(&b',')
+    {
         return None;
     }
     let text = &source[start..end];
     let mut parser = syntax::new_parser();
-    let mut count = |text: &str| parser.parse(text, None).map(|tree| Outcome::of(tree.root_node()).errors);
-    let without = format!("{}{}", &text[..at - start], &text[at - start + 1..]);
+    let mut count = |text: &str| {
+        parser
+            .parse(text, None)
+            .map(|tree| Outcome::of(tree.root_node()).errors)
+    };
+    let without =
+        format!("{}{}", &text[..at - start], &text[at - start + 1..]);
     match (count(text), count(&without)) {
-        (Some(before), Some(after)) if after < before => Some((Span::new(start, end), after)),
+        (Some(before), Some(after)) if after < before => {
+            Some((Span::new(start, end), after))
+        }
         _ => None,
     }
 }
@@ -1132,7 +1578,10 @@ fn comma_removal(root: Node, source: &str, at: usize) -> Option<(Span, usize)> {
 /// command span lines), but commands with free-form arguments such as SHOW or
 /// GRANT read the next line as more arguments. The commands that absorbed a
 /// later line that is not indented past them, with the first token of it.
-pub fn absorbing_commands<'t>(root: Node<'t>, source: &str) -> Vec<(Node<'t>, Node<'t>)> {
+pub fn absorbing_commands<'t>(
+    root: Node<'t>,
+    source: &str,
+) -> Vec<(Node<'t>, Node<'t>)> {
     let mut cursor = root.walk();
     let statements: Vec<Node> = root.children(&mut cursor).collect();
     let mut inside_begin = false;
@@ -1140,7 +1589,11 @@ pub fn absorbing_commands<'t>(root: Node<'t>, source: &str) -> Vec<(Node<'t>, No
     for statement in statements {
         if statement.kind() == "shell_command" {
             // `BEGIN` ... `END` blocks may span lines.
-            match syntax::text(statement, source).trim().to_ascii_uppercase().as_str() {
+            match syntax::text(statement, source)
+                .trim()
+                .to_ascii_uppercase()
+                .as_str()
+            {
                 "BEGIN" => inside_begin = true,
                 "END" | "ABORT" => inside_begin = false,
                 _ => {}
@@ -1148,16 +1601,28 @@ pub fn absorbing_commands<'t>(root: Node<'t>, source: &str) -> Vec<(Node<'t>, No
         }
         let free_form = matches!(
             statement.kind(),
-            "show_statement" | "security_statement" | "shell_command" | "grant_statement" | "revoke_statement"
+            "show_statement"
+                | "security_statement"
+                | "shell_command"
+                | "grant_statement"
+                | "revoke_statement"
         );
         let first_row = statement.start_position().row;
-        if !free_form || statement.end_position().row == first_row || inside_begin {
+        if !free_form
+            || statement.end_position().row == first_row
+            || inside_begin
+        {
             continue;
         }
         let indent = statement.start_position().column;
         let mut absorbed = None;
         syntax::walk(statement, |n| {
-            let starts_line = || source[..n.start_byte()].rsplit('\n').next().is_some_and(|s| s.trim().is_empty());
+            let starts_line = || {
+                source[..n.start_byte()]
+                    .rsplit('\n')
+                    .next()
+                    .is_some_and(|s| s.trim().is_empty())
+            };
             if absorbed.is_none()
                 && n.child_count() == 0
                 && n.kind() != "comment"
@@ -1181,18 +1646,31 @@ pub fn typos_in(root: Node, source: &str) -> Vec<KeywordTypo> {
     let mut typos = Vec::new();
     let groups = statements(root);
     for (command, _) in absorbing_commands(root, source) {
-        let line_end = source[command.start_byte()..].find('\n').map_or(source.len(), |i| command.start_byte() + i);
-        let found = Search::new(source).statement(command.start_byte(), line_end, false);
+        let line_end = source[command.start_byte()..]
+            .find('\n')
+            .map_or(source.len(), |i| command.start_byte() + i);
+        let found = Search::new(source).statement(
+            command.start_byte(),
+            line_end,
+            false,
+        );
         if found.is_empty() {
             continue;
         }
         // The pieces after the command are usually consequences too.
         let (start, end) = groups
             .iter()
-            .find(|g| g.0 <= command.start_byte() && command.end_byte() <= g.1)
-            .map_or((command.start_byte(), command.end_byte()), |g| (g.0, g.1));
-        let explained =
-            if parses_corrected(source, start, end, &found) { Span::new(start, end) } else { Span::of(command) };
+            .find(|g| {
+                g.0 <= command.start_byte() && command.end_byte() <= g.1
+            })
+            .map_or((command.start_byte(), command.end_byte()), |g| {
+                (g.0, g.1)
+            });
+        let explained = if parses_corrected(source, start, end, &found) {
+            Span::new(start, end)
+        } else {
+            Span::of(command)
+        };
         typos.extend(found.into_iter().map(|typo| KeywordTypo {
             statement: explained,
             resolves: Some(explained),
@@ -1200,15 +1678,27 @@ pub fn typos_in(root: Node, source: &str) -> Vec<KeywordTypo> {
             ..typo
         }));
     }
-    let explained: Vec<Span> = typos.iter().filter_map(|t| t.resolves).collect();
+    let explained: Vec<Span> = typos
+        .iter()
+        .filter_map(|t| t.resolves)
+        .collect();
     let found = keyword_typos(root, source);
-    typos.extend(found.into_iter().filter(|t| !explained.iter().any(|s| s.contains_span(t.span))));
+    typos.extend(found.into_iter().filter(|t| {
+        !explained
+            .iter()
+            .any(|s| s.contains_span(t.span))
+    }));
     typos
 }
 
 /// Whether `start..end` of `source` parses without errors once `typos` are
 /// corrected.
-fn parses_corrected(source: &str, start: usize, end: usize, typos: &[KeywordTypo]) -> bool {
+fn parses_corrected(
+    source: &str,
+    start: usize,
+    end: usize,
+    typos: &[KeywordTypo],
+) -> bool {
     let mut text = String::with_capacity(end - start + 16);
     let mut last = start;
     for typo in typos {
@@ -1220,7 +1710,9 @@ fn parses_corrected(source: &str, start: usize, end: usize, typos: &[KeywordTypo
         last = typo.span.end;
     }
     text.push_str(&source[last..end]);
-    syntax::new_parser().parse(&text, None).is_some_and(|tree| !tree.root_node().has_error())
+    syntax::new_parser()
+        .parse(&text, None)
+        .is_some_and(|tree| !tree.root_node().has_error())
 }
 
 /// The misspelled keywords of a document and its repair, remembered for the
@@ -1238,7 +1730,9 @@ pub fn typos_and_repair(
     let mut hasher = std::hash::DefaultHasher::new();
     (&source.text, encoding as u8).hash(&mut hasher);
     let key = hasher.finish();
-    if let Some((_, typos, repair)) = LAST.with_borrow(|last| last.as_ref().filter(|e| e.0 == key).cloned()) {
+    if let Some((_, typos, repair)) =
+        LAST.with_borrow(|last| last.as_ref().filter(|e| e.0 == key).cloned())
+    {
         return (typos, repair);
     }
     let typos = Rc::new(typos_in(root, &source.text));
@@ -1265,7 +1759,10 @@ const MAX_REPAIR_BYTES: usize = 512 << 10;
 pub struct Repair {
     pub source: SourceText,
     pub tree: Tree,
-    pub analysis: Analysis,
+    /// The analysis made without a workspace.
+    pub analysis: Rc<Analysis>,
+    /// The analysis made with a workspace, and that workspace's edge generation.
+    typed: RefCell<Option<(u64, Rc<Analysis>)>>,
     /// (line, character, written length, keyword length) of each correction,
     /// in document order, in the original's coordinates.
     corrections: Vec<(u32, u32, u32, u32)>,
@@ -1273,9 +1770,16 @@ pub struct Repair {
 
 impl Repair {
     /// `None` when no typo explains a whole statement.
-    pub fn new(original: &SourceText, typos: &[KeywordTypo], encoding: PositionEncoding) -> Option<Repair> {
+    pub fn new(
+        original: &SourceText,
+        typos: &[KeywordTypo],
+        encoding: PositionEncoding,
+    ) -> Option<Repair> {
         // (Removing or inserting a token is a guess too uncertain to analyze the document as if it was made.)
-        let mut fixes: Vec<&KeywordTypo> = typos.iter().filter(|t| t.token_edits.is_empty()).collect();
+        let mut fixes: Vec<&KeywordTypo> = typos
+            .iter()
+            .filter(|t| t.token_edits.is_empty())
+            .collect();
         if fixes.is_empty() || original.text.len() > MAX_REPAIR_BYTES {
             return None;
         }
@@ -1293,68 +1797,132 @@ impl Repair {
             last = typo.span.end;
             let at = original.range(typo.span, encoding).start;
             // Keywords are ASCII: their length is the same in every encoding.
-            corrections.push((at.line, at.character, typo.word.len() as u32, typo.keyword.len() as u32));
+            corrections.push((
+                at.line,
+                at.character,
+                typo.word.len() as u32,
+                typo.keyword.len() as u32,
+            ));
         }
         text.push_str(&original.text[last..]);
-        let tree = syntax::parse(&mut syntax::new_parser(), &text, None);
-        let analysis = crate::analysis::analyze(&tree, &text);
-        Some(Repair { source: SourceText::new(text), tree, analysis, corrections })
+        let (tree, analysis) = Analysis::parse(&text);
+        Some(Repair {
+            source: SourceText::new(text),
+            tree,
+            analysis: Rc::new(analysis),
+            typed: RefCell::default(),
+            corrections,
+        })
     }
 
     /// Where a position of the repaired document is in the original.
     pub fn position(&self, position: Position) -> Position {
         let mut shift: i64 = 0;
         let character = i64::from(position.character);
-        for &(_, column, written, keyword) in self.corrections.iter().filter(|c| c.0 == position.line) {
+        for &(_, column, written, keyword) in self
+            .corrections
+            .iter()
+            .filter(|c| c.0 == position.line)
+        {
             let start = i64::from(column) + shift;
             if character < start {
                 break;
             }
             if character < start + i64::from(keyword) {
                 let inside = (character - start).min(i64::from(written));
-                return Position { line: position.line, character: (i64::from(column) + inside) as u32 };
+                return Position {
+                    line: position.line,
+                    character: (i64::from(column) + inside) as u32,
+                };
             }
             shift += i64::from(keyword) - i64::from(written);
         }
-        Position { line: position.line, character: (character - shift).max(0) as u32 }
+        Position {
+            line: position.line,
+            character: (character - shift).max(0) as u32,
+        }
     }
 
     pub fn range(&self, range: Range) -> Range {
-        Range { start: self.position(range.start), end: self.position(range.end) }
+        Range {
+            start: self.position(range.start),
+            end: self.position(range.end),
+        }
     }
 
     /// Where a position of the original document is in the repaired one.
     pub fn to_repaired(&self, position: Position) -> Position {
         let mut shift: i64 = 0;
         let character = i64::from(position.character);
-        for &(_, column, written, keyword) in self.corrections.iter().filter(|c| c.0 == position.line) {
+        for &(_, column, written, keyword) in self
+            .corrections
+            .iter()
+            .filter(|c| c.0 == position.line)
+        {
             let column = i64::from(column);
             if character < column {
                 break;
             }
             if character < column + i64::from(written) {
                 let inside = (character - column).min(i64::from(keyword));
-                return Position { line: position.line, character: (column + shift + inside) as u32 };
+                return Position {
+                    line: position.line,
+                    character: (column + shift + inside) as u32,
+                };
             }
             shift += i64::from(keyword) - i64::from(written);
         }
-        Position { line: position.line, character: (character + shift).max(0) as u32 }
+        Position {
+            line: position.line,
+            character: (character + shift).max(0) as u32,
+        }
     }
 
-    /// The same snapshot, of the corrected document.
+    /// The same snapshot of the corrected document, analyzed without a workspace:
+    /// enough for its syntax, not its types.
     pub fn snapshot<'a>(&'a self, snapshot: &Snapshot<'a>) -> Snapshot<'a> {
-        Snapshot { source: &self.source, tree: &self.tree, analysis: &self.analysis, ..*snapshot }
+        snapshot.with_document(&self.source, &self.tree, &self.analysis)
+    }
+
+    /// The analysis of the corrected document with `workspace`.
+    pub fn analysis(&self, workspace: &Workspace) -> Rc<Analysis> {
+        if !self.analysis.uses_schema_edges {
+            return self.analysis.clone();
+        }
+        let generation = workspace.edge_generation();
+        if let Some((made, typed)) = &*self.typed.borrow()
+            && *made == generation
+        {
+            return typed.clone();
+        }
+        let typed = Rc::new(Analysis::from_tree(
+            &self.tree,
+            &self.source.text,
+            Some(workspace),
+        ));
+        self.typed
+            .replace(Some((generation, typed.clone())));
+        typed
     }
 
     /// A diagnostic of the repaired document, placed in the original.
     pub fn diagnostic(&self, mut diagnostic: Diagnostic) -> Diagnostic {
         diagnostic.range = self.range(diagnostic.range);
-        let fixes = diagnostic.data.as_mut().and_then(|d| d.get_mut("fixes")).and_then(|f| f.as_array_mut());
+        let fixes = diagnostic
+            .data
+            .as_mut()
+            .and_then(|d| d.get_mut("fixes"))
+            .and_then(|f| f.as_array_mut());
         for fix in fixes.into_iter().flatten() {
-            let edits = fix.get_mut("edits").and_then(|e| e.as_array_mut());
+            let edits = fix
+                .get_mut("edits")
+                .and_then(|e| e.as_array_mut());
             for edit in edits.into_iter().flatten() {
-                if let Some(range) = edit.get("range").and_then(|r| serde_json::from_value::<Range>(r.clone()).ok()) {
-                    edit["range"] = serde_json::to_value(self.range(range)).unwrap_or_default();
+                if let Some(range) = edit.get("range").and_then(|r| {
+                    serde_json::from_value::<Range>(r.clone()).ok()
+                }) {
+                    edit["range"] = serde_json::to_value(self.range(range))
+                        .unwrap_or_default();
                 }
             }
         }
@@ -1365,12 +1933,17 @@ impl Repair {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::features::test_support::Fixture;
+    use crate::features::test_support::{
+        Fixture, messages_with, syntax_messages,
+    };
 
     fn typos(text: &str) -> Vec<(String, String)> {
         let fixture = Fixture::new(text);
         let snapshot = fixture.snapshot();
-        typos_in(snapshot.root(), snapshot.text()).into_iter().map(|t| (t.word, t.keyword)).collect()
+        typos_in(snapshot.root(), snapshot.text())
+            .into_iter()
+            .map(|t| (t.word, t.keyword))
+            .collect()
     }
 
     #[test]
@@ -1379,10 +1952,19 @@ mod tests {
         let fixture = Fixture::new(text);
         let snapshot = fixture.snapshot();
         let found = typos_in(snapshot.root(), snapshot.text());
-        let edits: Vec<String> =
-            found.iter().flat_map(|t| t.token_edits.iter().map(|e| format!("{}{}", e.inserted, e.token))).collect();
+        let edits: Vec<String> = found
+            .iter()
+            .flat_map(|t| {
+                t.token_edits
+                    .iter()
+                    .map(|e| format!("{}{}", e.inserted, e.token))
+            })
+            .collect();
         assert!(edits.contains(&"true)".to_string()), "{edits:?}");
-        assert!(!edits.contains(&"false(".to_string()), "removing `(` would make `abs1`: {edits:?}");
+        assert!(
+            !edits.contains(&"false(".to_string()),
+            "removing `(` would make `abs1`: {edits:?}"
+        );
         // The same text is offered once.
         let mut unique = edits.clone();
         unique.sort();
@@ -1398,9 +1980,54 @@ mod tests {
         let found = typos_in(snapshot.root(), snapshot.text());
         assert!(!found.is_empty(), "the real chain is found");
         for typo in &found {
-            let line = snapshot.text()[..typo.span.start].matches('\n').count();
-            assert_eq!(line, 3, "only the ELSEIFs of the chain: {:?}", typo.word);
+            let line = snapshot.text()[..typo.span.start]
+                .matches('\n')
+                .count();
+            assert_eq!(
+                line, 3,
+                "only the ELSEIFs of the chain: {:?}",
+                typo.word
+            );
         }
+    }
+
+    #[test]
+    fn a_string_over_lines_hides_no_words_after_it() {
+        // A `#` that starts the string's second line is not a comment.
+        for second in ["second", "# second"] {
+            let text = format!(
+                "CREATE QUERY q() {{\n  \
+                 S = SELECT v FROM Person:v WHERE v.bio == \"first\n\
+                 {second}\" ORDR BY v.age;\n  PRINT S;\n}}\n"
+            );
+            let found = typos(&text);
+            assert_eq!(
+                found,
+                [("ORDR".to_string(), "ORDER".to_string())],
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_string_read_as_names_holds_no_keywords() {
+        // Error recovery parses this string as a name.
+        let text = "\"FORM\" x\n";
+        let tree = syntax::parse(&mut syntax::new_parser(), text, None);
+        let root = tree.root_node();
+        let shape = root.to_sexp();
+        assert!(!shape.contains("string"), "{shape}");
+        let words: Vec<&str> = suspects(root, text, 0)
+            .into_iter()
+            .map(|n| syntax::text(n, text))
+            .collect();
+        assert!(!words.contains(&"FORM"), "{words:?}");
+    }
+
+    #[test]
+    fn a_comment_opener_inside_a_hash_comment_hides_no_words() {
+        let text = "CREATE QUERY q() {\n  SumAccum<INT> @@a;\n  # /* open\n  IF 1 == 1 THN\n    @@a += 1;\n  END;\n}\n";
+        assert_eq!(typos(text), [("THN".to_string(), "THEN".to_string())]);
     }
 
     #[test]
@@ -1414,31 +2041,46 @@ mod tests {
     #[test]
     fn finds_misspelled_keywords() {
         let cases = [
-            ("CREATE QUERY q() {\n  R = SELECT s FORM P:s;\n  PRINT R;\n}\n", ("FORM", "FROM")),
-            ("CREATE QUERY q() {\n  R = SELCT s FROM P:s;\n  PRINT R;\n}\n", ("SELCT", "SELECT")),
-            ("CREATE QUERY q() {\n  R = SELECT s FROM P:s WHER s.x > 1;\n  PRINT R;\n}\n", ("WHER", "WHERE")),
-            ("CREATE QUERY q(INT x) {\n  IF x > 1 THN PRINT x; END;\n}\n", ("THN", "THEN")),
-            ("CREATE QUERY q() {\n  FOREACH x IN RANGE[1, 2] DO PRINT x; edn;\n}\n", ("edn", "end")),
+            (
+                "CREATE QUERY q() {\n  R = SELECT s FORM P:s;\n  PRINT R;\n}\n",
+                ("FORM", "FROM"),
+            ),
+            (
+                "CREATE QUERY q() {\n  R = SELCT s FROM P:s;\n  PRINT R;\n}\n",
+                ("SELCT", "SELECT"),
+            ),
+            (
+                "CREATE QUERY q() {\n  R = SELECT s FROM P:s WHER s.x > 1;\n  PRINT R;\n}\n",
+                ("WHER", "WHERE"),
+            ),
+            (
+                "CREATE QUERY q(INT x) {\n  IF x > 1 THN PRINT x; END;\n}\n",
+                ("THN", "THEN"),
+            ),
+            (
+                "CREATE QUERY q() {\n  FOREACH x IN RANGE[1, 2] DO PRINT x; edn;\n}\n",
+                ("edn", "end"),
+            ),
             ("CRATE QUERY q() { PRINT 1; }\n", ("CRATE", "CREATE")),
         ];
         for (text, (word, keyword)) in cases {
-            assert_eq!(typos(text), [(word.to_string(), keyword.to_string())], "{text}");
+            assert_eq!(
+                typos(text),
+                [(word.to_string(), keyword.to_string())],
+                "{text}"
+            );
         }
     }
 
     #[test]
     fn a_typo_in_a_query_header_is_the_only_finding() {
-        let example = include_str!("../../../../examples/algorithms/k_hop.gsql");
+        let example =
+            include_str!("../../../../examples/algorithms/k_hop.gsql");
         let broken = example.replacen("CREATE QUERY", "CREATE QUEERY", 1);
-        let fixture = Fixture::new(&broken);
-        let found: Vec<String> =
-            crate::features::diagnostics::diagnostics(&fixture.snapshot()).into_iter().map(|d| d.message).collect();
-        assert_eq!(found, ["Syntax error: did you mean `QUERY` instead of `QUEERY`?"]);
-    }
-
-    fn syntax_messages(text: &str) -> Vec<String> {
-        let fixture = Fixture::new(text);
-        crate::features::diagnostics::syntax_errors(&fixture.snapshot()).into_iter().map(|d| d.message).collect()
+        assert_eq!(
+            messages_with(&broken, &[]),
+            ["Syntax error: did you mean `QUERY` instead of `QUEERY`?"]
+        );
     }
 
     #[test]
@@ -1446,23 +2088,36 @@ mod tests {
         // The misspelled END of a CASE in POST-ACCUM turns the whole file into
         // one ERROR node that starts at the first line.
         let example = include_str!("../../../../examples/finance/fraud.gsql");
-        let broken = example.replacen("               END;", "               TND;", 1);
-        assert_eq!(syntax_messages(&broken), ["Syntax error: did you mean `END` instead of `TND`?"]);
+        let broken =
+            example.replacen("               END;", "               TND;", 1);
+        assert_eq!(
+            syntax_messages(&broken),
+            ["Syntax error: did you mean `END` instead of `TND`?"]
+        );
     }
 
     #[test]
     fn finds_a_typo_that_makes_a_command_absorb_the_next_lines() {
         let text = "REVOKE ROLE analyst ON GRAPH Social FORM bob\nSHOW ROLE\nINSTALL QUERY -OPTIMIZE q\n";
-        assert_eq!(syntax_messages(text), ["Syntax error: did you mean `FROM` instead of `FORM`?"]);
+        assert_eq!(
+            syntax_messages(text),
+            ["Syntax error: did you mean `FROM` instead of `FORM`?"]
+        );
     }
 
     #[test]
     fn leaves_correct_statements_next_to_a_typo_alone() {
         // `note` could become `NOT`, and the `CREATE VERTEX` line parses either way.
         let text = "BEGIN\nCREATE VERTEX Scratch (PRIMARY_ID id INT, note STRING)\nENE\n";
-        assert_eq!(syntax_messages(text), ["Syntax error: did you mean `END` instead of `ENE`?"]);
+        assert_eq!(
+            syntax_messages(text),
+            ["Syntax error: did you mean `END` instead of `ENE`?"]
+        );
         let text = "CRETE SCHEMA_CHANGE JOB j FOR GRAPH g {\n  DROP EDGE Tagged;\n  DROP VERTEX Tag;\n}\n";
-        assert_eq!(syntax_messages(text), ["Syntax error: did you mean `CREATE` instead of `CRETE`?"]);
+        assert_eq!(
+            syntax_messages(text),
+            ["Syntax error: did you mean `CREATE` instead of `CRETE`?"]
+        );
     }
 
     #[test]
@@ -1486,30 +2141,96 @@ mod tests {
             }
         };
         let corrected = [typo("SELCT", "SELECT"), typo("FORM", "FROM")];
-        let repair = Repair::new(&source, &corrected, PositionEncoding::Utf16).expect("repaired");
-        assert!(repair.source.text.contains("R = SELECT s FROM P:s"), "{}", repair.source.text);
-        let at = |line, character| repair.position(Position { line, character });
+        let repair =
+            Repair::new(&source, &corrected, PositionEncoding::Utf16)
+                .expect("repaired");
+        assert!(
+            repair
+                .source
+                .text
+                .contains("R = SELECT s FROM P:s"),
+            "{}",
+            repair.source.text
+        );
+        let at =
+            |line, character| repair.position(Position { line, character });
         // Before the corrections, inside them (the last letter of `SELECT`
         // maps to the end of `SELCT`), after them.
-        assert_eq!(at(1, 2), Position { line: 1, character: 2 });
-        assert_eq!(at(1, 7), Position { line: 1, character: 7 });
-        assert_eq!(at(1, 11), Position { line: 1, character: 11 });
-        assert_eq!(at(1, 13), Position { line: 1, character: 12 });
-        let where_in_repaired = repair.source.text.lines().nth(1).unwrap().find("WHERE").unwrap() as u32;
-        let where_in_original = text.lines().nth(1).unwrap().find("WHERE").unwrap() as u32;
-        assert_eq!(at(1, where_in_repaired), Position { line: 1, character: where_in_original });
-        assert_eq!(at(2, 4), Position { line: 2, character: 4 });
+        assert_eq!(
+            at(1, 2),
+            Position {
+                line: 1,
+                character: 2
+            }
+        );
+        assert_eq!(
+            at(1, 7),
+            Position {
+                line: 1,
+                character: 7
+            }
+        );
+        assert_eq!(
+            at(1, 11),
+            Position {
+                line: 1,
+                character: 11
+            }
+        );
+        assert_eq!(
+            at(1, 13),
+            Position {
+                line: 1,
+                character: 12
+            }
+        );
+        let where_in_repaired = repair
+            .source
+            .text
+            .lines()
+            .nth(1)
+            .unwrap()
+            .find("WHERE")
+            .unwrap() as u32;
+        let where_in_original = text
+            .lines()
+            .nth(1)
+            .unwrap()
+            .find("WHERE")
+            .unwrap() as u32;
+        assert_eq!(
+            at(1, where_in_repaired),
+            Position {
+                line: 1,
+                character: where_in_original
+            }
+        );
+        assert_eq!(
+            at(2, 4),
+            Position {
+                line: 2,
+                character: 4
+            }
+        );
     }
 
     #[test]
-    fn finds_misspelled_accumulator_types_and_a_typo_next_to_another_mistake() {
-        let text = "CREATE QUERY q() {\n  SumAcum<INT> @@n;\n  PRINT @@n;\n}\n";
-        assert_eq!(typos(text), [("SumAcum".to_string(), "SumAccum".to_string())]);
+    fn finds_misspelled_accumulator_types_and_a_typo_next_to_another_mistake()
+    {
+        let text =
+            "CREATE QUERY q() {\n  SumAcum<INT> @@n;\n  PRINT @@n;\n}\n";
+        assert_eq!(
+            typos(text),
+            [("SumAcum".to_string(), "SumAccum".to_string())]
+        );
         // A typo and an unrelated missing `;` are both reported.
         let text = "CREATE QUERY q() {\n  SumAccum<INT> @@n;\n  R = SELECT s FORM P:s ACCUM @@n += 1;\n  INT y = 1\n  PRINT R, y;\n}\n";
         assert_eq!(
             syntax_messages(text),
-            ["Syntax error: did you mean `FROM` instead of `FORM`?", "Syntax error: missing `;` after this statement"]
+            [
+                "Syntax error: did you mean `FROM` instead of `FORM`?",
+                "Syntax error: missing `;` after this statement"
+            ]
         );
     }
 
@@ -1518,8 +2239,12 @@ mod tests {
         let job = "CREATE LOADING JOB j FOR GRAPH g {\n  LOAD f SO VERTEX P VALUES ($0);\n}\n";
         assert_eq!(typos(job), [("SO".to_string(), "TO".to_string())]);
         // The parser reports the error at the start of this long query, far from the typo.
-        let body: String = (0..60).map(|i| format!("  INT v{i} = {i};\n  PRINT v{i};\n")).collect();
-        let query = format!("CREATE QUERY q(BOOL a) {{\n{body}  IF a THEN PRINT 1; EDN;\n  PRINT 2;\n}}\n");
+        let body: String = (0..60)
+            .map(|i| format!("  INT v{i} = {i};\n  PRINT v{i};\n"))
+            .collect();
+        let query = format!(
+            "CREATE QUERY q(BOOL a) {{\n{body}  IF a THEN PRINT 1; EDN;\n  PRINT 2;\n}}\n"
+        );
         assert_eq!(typos(&query), [("EDN".to_string(), "END".to_string())]);
     }
 
@@ -1543,13 +2268,27 @@ mod tests {
     fn finds_one_token_that_is_stray_or_missing() {
         let stray = "CREATE QUERY q() {\n  INT x = 1;\n  PRINT x x;\n}\n";
         let found = token_repairs(stray);
-        assert_eq!(found[0], (false, "x".to_string(), "CREATE QUERY q() {\n  INT x = 1;\n  PRINT x;\n}\n".to_string()));
+        assert_eq!(
+            found[0],
+            (
+                false,
+                "x".to_string(),
+                "CREATE QUERY q() {\n  INT x = 1;\n  PRINT x;\n}\n"
+                    .to_string()
+            )
+        );
         let missing = "CREATE QUERY q() {\n  INT x = abs(1;\n  PRINT x;\n}\n";
         let found = token_repairs(missing);
         assert_eq!(found[0].1, ")");
-        assert_eq!(found[0].2, "CREATE QUERY q() {\n  INT x = abs(1);\n  PRINT x;\n}\n");
+        assert_eq!(
+            found[0].2,
+            "CREATE QUERY q() {\n  INT x = abs(1);\n  PRINT x;\n}\n"
+        );
         // Every repair leaves a statement without syntax errors.
-        for (_, _, edited) in token_repairs(missing).iter().chain(&token_repairs(stray)) {
+        for (_, _, edited) in token_repairs(missing)
+            .iter()
+            .chain(&token_repairs(stray))
+        {
             let tree = syntax::parse(&mut syntax::new_parser(), edited, None);
             assert!(!tree.root_node().has_error(), "{edited}");
         }
@@ -1559,7 +2298,9 @@ mod tests {
     fn does_not_remove_a_token_when_a_value_is_missing() {
         // `PRINT ;` lacks an expression: removing `PRINT` is no explanation, and neither is
         // inserting `END` (a name here, not the keyword).
-        assert!(token_repairs("CREATE QUERY q() {\n  PRINT ;\n}\n").is_empty());
+        assert!(
+            token_repairs("CREATE QUERY q() {\n  PRINT ;\n}\n").is_empty()
+        );
     }
 
     #[test]
@@ -1570,7 +2311,10 @@ mod tests {
 
     #[test]
     fn leaves_correct_code_alone() {
-        assert!(typos("CREATE QUERY q() {\n  R = SELECT s FROM P:s;\n  PRINT R;\n}\n").is_empty());
+        assert!(
+            typos("CREATE QUERY q() {\n  R = SELECT s FROM P:s;\n  PRINT R;\n}\n")
+                .is_empty()
+        );
         // An error that no keyword fixes.
         let found = typos("CREATE QUERY q() {\n  PRINT ;\n}\n");
         assert!(found.is_empty(), "{found:?}");

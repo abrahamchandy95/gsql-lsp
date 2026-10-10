@@ -6,17 +6,18 @@
 
 use std::collections::HashSet;
 
-use serde_json::json;
 use tree_sitter::Node;
 
-use crate::analysis::{Symbol, SymbolKind, Ty, type_of_type_node};
+use crate::analysis::{
+    FILE_SCOPE, Symbol, SymbolKind, Ty, type_of_type_node,
+};
 use crate::builtins;
-use crate::features::Snapshot;
 use crate::features::diagnostics::{add_fix, diagnostic};
-use crate::features::resolve::{self, Target};
-use crate::lsp::types::{Diagnostic, TextEdit, diagnostic_tag, severity};
+use crate::features::resolve::{self, Callee, Target};
+use crate::features::{Snapshot, plural};
+use crate::lsp::types::{Diagnostic, diagnostic_tag, severity};
 use crate::syntax;
-use crate::text::Span;
+use crate::text::{Span, starts_with_ignore_ascii_case};
 use crate::workspace::GlobalSymbol;
 
 /// Words the query compiler rejects as user-defined identifiers.
@@ -62,13 +63,19 @@ WHERE WHILE WITH GSQL_SYS_TAG _INTERNAL_ATTR_TAG";
 const RESERVED_PREFIX: &str = "gsql_sys_";
 
 pub(crate) fn is_query_reserved(name: &str) -> bool {
-    QUERY_RESERVED.split_whitespace().any(|w| w.eq_ignore_ascii_case(name))
-        || CPP_RESERVED.split_whitespace().any(|w| w == name)
+    QUERY_RESERVED
+        .split_whitespace()
+        .any(|w| w.eq_ignore_ascii_case(name))
+        || CPP_RESERVED
+            .split_whitespace()
+            .any(|w| w == name)
 }
 
 pub(crate) fn is_ddl_reserved(name: &str) -> bool {
-    DDL_RESERVED.split_whitespace().any(|w| w.eq_ignore_ascii_case(name))
-        || name.get(..RESERVED_PREFIX.len()).is_some_and(|p| p.eq_ignore_ascii_case(RESERVED_PREFIX))
+    DDL_RESERVED
+        .split_whitespace()
+        .any(|w| w.eq_ignore_ascii_case(name))
+        || starts_with_ignore_ascii_case(name, RESERVED_PREFIX)
 }
 
 pub fn check(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
@@ -77,16 +84,31 @@ pub fn check(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
         .analysis
         .symbols
         .iter()
-        .filter(|s| matches!(s.kind, SymbolKind::AccumulatorType | SymbolKind::TupleType))
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::AccumulatorType | SymbolKind::TupleType
+            )
+        })
         .collect();
-    let mut checker = Checker { snapshot, out, cypher_reported: None, arrow_typos: HashSet::new(), type_symbols };
+    let mut checker = Checker {
+        snapshot,
+        out,
+        cypher_reported: None,
+        arrow_typos: HashSet::new(),
+        type_symbols,
+    };
     let root = snapshot.root();
     let mut cursor = root.walk();
     // The context of each ancestor of the current node.
     let mut contexts = vec![Context::default()];
     loop {
         let node = cursor.node();
-        let context = enter(*contexts.last().expect("never empty"), node, snapshot.text());
+        let context = enter(
+            *contexts.last().expect("never empty"),
+            node,
+            snapshot.text(),
+        );
         checker.visit(node, &context);
         if !node.is_error() && cursor.goto_first_child() {
             contexts.push(context);
@@ -150,25 +172,35 @@ fn enter(parent: Context, node: Node, source: &str) -> Context {
     let mut context = parent;
     context.in_list_accum = parent.list_accum;
     context.list_accum = node.kind() == "accumulator_type"
-        && syntax::field_text(node, "kind", source).is_some_and(|k| k.eq_ignore_ascii_case("listaccum"));
+        && syntax::field_text(node, "kind", source)
+            .is_some_and(|k| k.eq_ignore_ascii_case("listaccum"));
     match node.kind() {
-        "query_definition" | "interpret_query_statement" | "opencypher_query_definition" => {
-            let versions: Vec<&str> = syntax::named_children(node)
-                .into_iter()
-                .filter(|c| c.kind() == "syntax_clause")
-                .filter_map(|c| syntax::field_text(c, "version", source))
-                .map(|version| version.trim_matches('"'))
-                .collect();
-            let v3 = versions.iter().any(|version| version.eq_ignore_ascii_case("v3"));
-            let old_syntax = versions.iter().any(|v| v.eq_ignore_ascii_case("v1") || v.eq_ignore_ascii_case("v2"));
-            let distributed = node.child_by_field_name("modifier").is_some_and(|m| m.kind() == "DISTRIBUTED");
+        "query_definition"
+        | "interpret_query_statement"
+        | "opencypher_query_definition" => {
+            let versions = syntax::declared_syntax_versions(node, source);
+            let v3 = versions
+                .iter()
+                .any(|version| version.eq_ignore_ascii_case("v3"));
+            let old_syntax = versions.iter().any(|v| {
+                v.eq_ignore_ascii_case("v1") || v.eq_ignore_ascii_case("v2")
+            });
+            let distributed = node
+                .child_by_field_name("modifier")
+                .is_some_and(|m| m.kind() == "DISTRIBUTED");
             let interpreted = node.kind() == "interpret_query_statement";
             context = Context {
-                query: Some(Mode { interpreted, distributed, v3, old_syntax, start: node.start_byte() }),
+                query: Some(Mode {
+                    interpreted,
+                    distributed,
+                    v3,
+                    old_syntax,
+                    start: node.start_byte(),
+                }),
                 ..Context::default()
             };
             if node.kind() == "query_definition" {
-                let clause = syntax::children(node).into_iter().find(|c| c.kind() == "returns_clause");
+                let clause = syntax::child_of_kind(node, "returns_clause");
                 context.returns = match clause {
                     // A query that does not parse cleanly may be misread.
                     None if node.has_error() => Returns::Unknown,
@@ -176,7 +208,11 @@ fn enter(parent: Context, node: Node, source: &str) -> Context {
                     Some(clause) => Returns::Declared(
                         clause
                             .child_by_field_name("type")
-                            .and_then(|t| stores_string_badly(&type_of_type_node(t, source))),
+                            .and_then(|t| {
+                                stores_string_badly(&type_of_type_node(
+                                    t, source,
+                                ))
+                            }),
                     ),
                 };
             }
@@ -184,8 +220,12 @@ fn enter(parent: Context, node: Node, source: &str) -> Context {
         "accum_clause" => context.accum = true,
         "post_accum_clause" => context.post_accum = true,
         "print_statement" => context.print = true,
-        "foreach_statement" | "dml_foreach_statement" => context.foreach = true,
-        "while_statement" | "dml_while_statement" => context.while_loop = true,
+        "foreach_statement" | "dml_foreach_statement" => {
+            context.foreach = true
+        }
+        "while_statement" | "dml_while_statement" => {
+            context.while_loop = true
+        }
         "insert_statement" => context.insert = true,
         _ => {}
     }
@@ -212,10 +252,23 @@ fn reserved_words(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
             | K::File
             | K::Exception
             | K::Table
-            | K::Query => is_query_reserved(name)
-                .then(|| (severity::ERROR, format!("`{name}` is a reserved word in GSQL and cannot name {label}"))),
-            K::VertexType | K::EdgeType | K::Graph | K::Attribute if is_ddl_reserved(name) => {
-                Some((severity::ERROR, format!("`{name}` is a reserved word in GSQL and cannot name {label}")))
+            | K::Query => is_query_reserved(name).then(|| {
+                (
+                    severity::ERROR,
+                    format!(
+                        "`{name}` is a reserved word in GSQL and cannot name {label}"
+                    ),
+                )
+            }),
+            K::VertexType | K::EdgeType | K::Graph | K::Attribute
+                if is_ddl_reserved(name) =>
+            {
+                Some((
+                    severity::ERROR,
+                    format!(
+                        "`{name}` is a reserved word in GSQL and cannot name {label}"
+                    ),
+                ))
             }
             K::VertexType | K::EdgeType if is_query_reserved(name) => Some((
                 severity::WARNING,
@@ -227,7 +280,13 @@ fn reserved_words(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
             _ => None,
         };
         if let Some((level, message)) = finding {
-            out.push(diagnostic(snapshot, symbol.name_span, level, "reserved-word", message));
+            out.push(diagnostic(
+                snapshot,
+                symbol.name_span,
+                level,
+                "reserved-word",
+                message,
+            ));
         }
     }
 }
@@ -260,35 +319,80 @@ impl<'s> Checker<'s, '_> {
     }
 
     fn report(&mut self, node: Node, level: u8, code: &str, message: String) {
-        self.out.push(diagnostic(self.snapshot, Span::of(node), level, code, message));
+        self.out.push(diagnostic(
+            self.snapshot,
+            Span::of(node),
+            level,
+            code,
+            message,
+        ));
     }
 
     /// The symbol an identifier or accumulator occurrence resolves to in this file.
     fn symbol_of(&self, node: Node) -> Option<&Symbol> {
-        let reference = self.snapshot.analysis.reference_at(node.start_byte())?;
+        let reference = self
+            .snapshot
+            .analysis
+            .reference_at(node.start_byte())?;
         (reference.span == Span::of(node)).then_some(())?;
-        reference.target.map(|id| &self.snapshot.analysis.symbols[id])
+        self.snapshot
+            .analysis
+            .target_symbol(reference)
+    }
+
+    /// Whether `method` modifies the accumulator that `accumulator` resolves to.
+    fn calls_mutator(&self, accumulator: Node, method: Node) -> bool {
+        let Some(Ty::Accumulator(kind, _)) =
+            self.symbol_of(accumulator).map(|s| &s.ty)
+        else {
+            return false;
+        };
+        builtins::accumulator(kind)
+            .and_then(|a| builtins::find_method(a.methods, self.text(method)))
+            .is_some_and(|m| m.mutator)
     }
 
     fn visit(&mut self, node: Node, context: &Context) {
-        if matches!(node.kind(), "assignment_statement" | "dml_assignment_statement" | "accumulator_declarator") {
+        if matches!(
+            node.kind(),
+            "assignment_statement"
+                | "dml_assignment_statement"
+                | "accumulator_declarator"
+        ) {
             self.accumulator_input(node);
         }
         self.type_checks(node, context);
         match node.kind() {
-            "assignment_statement" if context.accum || context.post_accum => self.accumulator_assignment(node),
-            "local_accumulator" if context.post_accum => self.edge_accumulator_in_post_accum(node),
-            "accumulator_declaration" if context.foreach || context.while_loop => {
-                self.attached_accumulator_in_loop(node, if context.foreach { "FOREACH" } else { "WHILE" })
+            "assignment_statement" if context.accum || context.post_accum => {
+                self.accumulator_assignment(node)
+            }
+            "local_accumulator" if context.post_accum => {
+                self.edge_accumulator_in_post_accum(node)
+            }
+            "accumulator_declaration"
+                if context.foreach || context.while_loop =>
+            {
+                self.attached_accumulator_in_loop(
+                    node,
+                    if context.foreach { "FOREACH" } else { "WHILE" },
+                )
             }
             "virtual_edge_declaration" => self.virtual_edge(node),
-            "foreach_statement" if !node.has_error() => self.foreach_variables(node),
+            "foreach_statement" if !node.has_error() => {
+                self.foreach_variables(node)
+            }
             // `CREATE QUERY q(MapAccum<STRING, INT> m)`. The arguments of a query run on its own
             // come from outside and cannot be accumulators; whether a subquery (one with
             // RETURNS) may take one is not documented, so that is only a warning.
             "parameter" => {
-                if let Some(ty) = node.child_by_field_name("type").filter(|t| t.kind() == "accumulator_type") {
-                    let (level, message) = if matches!(context.returns, Returns::Missing) {
+                if let Some(ty) = node
+                    .child_by_field_name("type")
+                    .filter(|t| t.kind() == "accumulator_type")
+                {
+                    let (level, message) = if matches!(
+                        context.returns,
+                        Returns::Missing
+                    ) {
                         (
                             severity::ERROR,
                             "A query parameter cannot be an accumulator; declare the accumulator in the query body",
@@ -299,12 +403,23 @@ impl<'s> Checker<'s, '_> {
                             "A query parameter is usually not an accumulator; pass a SET, BAG, LIST or MAP instead",
                         )
                     };
-                    self.report(ty, level, "accumulator-type", message.to_string());
+                    self.report(
+                        ty,
+                        level,
+                        "accumulator-type",
+                        message.to_string(),
+                    );
                 }
             }
-            "edge_alternation" | "relationship_detail" => self.mixed_virtual_edges(node),
+            "edge_alternation" | "relationship_detail" => {
+                self.mixed_virtual_edges(node)
+            }
             // An accumulator as a parameter type is reported once, as that.
-            "accumulator_type" if node.parent().is_none_or(|p| p.kind() != "parameter") => {
+            "accumulator_type"
+                if node
+                    .parent()
+                    .is_none_or(|p| p.kind() != "parameter") =>
+            {
                 self.accumulator_type(node, context)
             }
             "accumulator_kind" => self.accumulator_case(node),
@@ -312,7 +427,11 @@ impl<'s> Checker<'s, '_> {
                 if context.query.is_some() {
                     self.compared_condition(node);
                 }
-                if let Some(mode) = context.query.filter(|_| self.snapshot.config.diagnostics_float_equality) {
+                if let Some(mode) = context.query.filter(|_| {
+                    self.snapshot
+                        .config
+                        .diagnostics_float_equality
+                }) {
                     self.float_equality(node, mode);
                 }
             }
@@ -328,20 +447,32 @@ impl<'s> Checker<'s, '_> {
             }
             "cypher_pattern" => self.cypher_syntax(node, context),
             "break_statement" | "continue_statement"
-                if context.query.is_some() && !context.foreach && !context.while_loop =>
+                if context.query.is_some()
+                    && !context.foreach
+                    && !context.while_loop =>
             {
                 let message = format!(
                     "{} is only valid inside a WHILE or FOREACH loop",
-                    node.kind().replace("_statement", "").to_uppercase()
+                    node.kind()
+                        .replace("_statement", "")
+                        .to_uppercase()
                 );
                 self.report(node, severity::ERROR, "loop-control", message);
             }
             "return_statement" => self.return_value(node, context),
             "limit_clause" => self.offset_without_order(node),
-            "select_statement" if !node.has_error() => self.select_aliases(node),
-            "accum_clause" if !node.has_error() => self.read_after_write(node),
-            "edge_pattern" if !node.has_error() => self.aliased_repetition(node),
-            "tag_statement" | "tag_expression" | "tags_clause" => self.reserved_tags(node),
+            "select_statement" if !node.has_error() => {
+                self.select_aliases(node)
+            }
+            "accum_clause" if !node.has_error() => {
+                self.read_after_write(node)
+            }
+            "edge_pattern" if !node.has_error() => {
+                self.aliased_repetition(node)
+            }
+            "tag_statement" | "tag_expression" | "tags_clause" => {
+                self.reserved_tags(node)
+            }
             _ => {}
         }
         self.deprecated(node);
@@ -358,12 +489,14 @@ impl<'s> Checker<'s, '_> {
         let Some(left) = node.child_by_field_name("left") else {
             return;
         };
-        let assigns = node.child_by_field_name("operator").is_some_and(|o| o.kind() == "=");
+        let assigns = node
+            .child_by_field_name("operator")
+            .is_some_and(|o| o.kind() == "=");
         let global = match left.kind() {
             "global_accumulator" => true,
-            "subscript_expression" => {
-                left.child_by_field_name("object").is_some_and(|o| o.kind() == "global_accumulator")
-            }
+            "subscript_expression" => left
+                .child_by_field_name("object")
+                .is_some_and(|o| o.kind() == "global_accumulator"),
             _ => false,
         };
         if assigns && global {
@@ -377,8 +510,14 @@ impl<'s> Checker<'s, '_> {
     }
 
     fn edge_accumulator_in_post_accum(&mut self, node: Node) {
-        if self.symbol_of(node).is_some_and(|s| s.on_edges) {
-            let message = format!("Edge accumulators such as `{}` cannot be used in POST-ACCUM", self.text(node));
+        if self
+            .symbol_of(node)
+            .is_some_and(|s| s.on_edges)
+        {
+            let message = format!(
+                "Edge accumulators such as `{}` cannot be used in POST-ACCUM",
+                self.text(node)
+            );
             self.report(node, severity::ERROR, "edge-accumulator", message);
         }
     }
@@ -393,7 +532,8 @@ impl<'s> Checker<'s, '_> {
             "assignment_statement" => writes.push(n),
             "global_accumulator" => reads.push(n),
             "member_expression"
-                if n.child_by_field_name("property").is_some_and(|p| p.kind() == "local_accumulator") =>
+                if n.child_by_field_name("property")
+                    .is_some_and(|p| p.kind() == "local_accumulator") =>
             {
                 reads.push(n)
             }
@@ -403,16 +543,25 @@ impl<'s> Checker<'s, '_> {
         let targets: Vec<(usize, usize)> = writes
             .iter()
             .filter_map(|w| w.child_by_field_name("left"))
-            .filter_map(|left| self.accumulator_key(left).map(|_| accumulator_target(left)))
+            .filter_map(|left| {
+                self.accumulator_key(left)
+                    .map(|_| accumulator_target(left))
+            })
             .map(|t| (t.start_byte(), t.end_byte()))
             .collect();
         let mut reported = Vec::new();
         for write in writes {
-            let Some(key) = write.child_by_field_name("left").and_then(|l| self.accumulator_key(l)) else {
+            let Some(key) = write
+                .child_by_field_name("left")
+                .and_then(|l| self.accumulator_key(l))
+            else {
                 continue;
             };
             // Only reads in the same block (not the other branch of an IF) and after the write.
-            let Some(scope) = write.parent().filter(|p| matches!(p.kind(), "block" | "accum_clause")) else {
+            let Some(scope) = write
+                .parent()
+                .filter(|p| matches!(p.kind(), "block" | "accum_clause"))
+            else {
                 continue;
             };
             for read in &reads {
@@ -422,7 +571,8 @@ impl<'s> Checker<'s, '_> {
                     || targets.contains(&span)
                     || reported.contains(&span)
                     || self.is_mutated(*read)
-                    || self.accumulator_key(*read).as_deref() != Some(key.as_str())
+                    || self.accumulator_key(*read).as_deref()
+                        != Some(key.as_str())
                 {
                     continue;
                 }
@@ -432,40 +582,52 @@ impl<'s> Checker<'s, '_> {
                     self.text(*read)
                 );
                 // (The paper's ACCUM only has `+=`: a plain `=` write is an extrapolation, a hint.)
-                let level = if write.child_by_field_name("operator").is_some_and(|o| o.kind() == "=") {
+                let level = if write
+                    .child_by_field_name("operator")
+                    .is_some_and(|o| o.kind() == "=")
+                {
                     severity::HINT
                 } else {
                     severity::WARNING
                 };
-                self.report(*read, level, "accumulator-read-after-write", message);
+                self.report(
+                    *read,
+                    level,
+                    "accumulator-read-after-write",
+                    message,
+                );
             }
         }
     }
 
     /// The accumulator is the object of a call to a method that modifies it (`.clear()`, `.add(x)`).
     fn is_mutated(&self, read: Node) -> bool {
-        let Some(member) = read.parent().filter(|p| p.kind() == "member_expression") else {
-            return false;
-        };
-        let (Some(object), Some(method)) =
-            (member.child_by_field_name("object"), member.child_by_field_name("property"))
+        let Some(member) = read
+            .parent()
+            .filter(|p| p.kind() == "member_expression")
         else {
             return false;
         };
-        if object.id() != read.id() || !member.parent().is_some_and(|c| c.kind() == "call_expression") {
+        let (Some(object), Some(method)) = (
+            member.child_by_field_name("object"),
+            member.child_by_field_name("property"),
+        ) else {
+            return false;
+        };
+        if object.id() != read.id()
+            || member
+                .parent()
+                .is_none_or(|c| c.kind() != "call_expression")
+        {
             return false;
         }
         let accumulator = if read.kind() == "member_expression" {
-            read.child_by_field_name("property").unwrap_or(read)
+            read.child_by_field_name("property")
+                .unwrap_or(read)
         } else {
             read
         };
-        let Some(Ty::Accumulator(kind, _)) = self.symbol_of(accumulator).map(|s| &s.ty) else {
-            return false;
-        };
-        builtins::accumulator(kind)
-            .and_then(|a| builtins::find_method(a.methods, self.text(method)))
-            .is_some_and(|m| m.mutator)
+        self.calls_mutator(accumulator, method)
     }
 
     /// `@@name` or `alias.@name` for a global accumulator or a vertex accumulator of an alias,
@@ -475,24 +637,31 @@ impl<'s> Checker<'s, '_> {
         match node.kind() {
             "global_accumulator" => Some(self.text(node).to_string()),
             "member_expression" => {
-                let object = node.child_by_field_name("object").filter(|o| o.kind() == "identifier")?;
-                let property = node.child_by_field_name("property").filter(|p| p.kind() == "local_accumulator")?;
+                let object = node
+                    .child_by_field_name("object")
+                    .filter(|o| o.kind() == "identifier")?;
+                let property = node
+                    .child_by_field_name("property")
+                    .filter(|p| p.kind() == "local_accumulator")?;
                 Some(format!("{}.{}", self.text(object), self.text(property)))
             }
             _ => None,
         }
     }
 
-    /// An edge alias on a repeated edge pattern binds no single edge: the number of edges
-    /// varies (Sec. 7 of the GSQL paper; the TigerGraph documentation forbids it).
     /// `*2..2`: equal bounds are an exact count.
     fn same_bounds(&self, bounds: Node) -> bool {
-        match (bounds.child_by_field_name("min"), bounds.child_by_field_name("max")) {
+        match (
+            bounds.child_by_field_name("min"),
+            bounds.child_by_field_name("max"),
+        ) {
             (Some(min), Some(max)) => self.text(min) == self.text(max),
             _ => false,
         }
     }
 
+    /// An edge alias on a repeated edge pattern binds no single edge: the number of edges
+    /// varies (Sec. 7 of the GSQL paper; the TigerGraph documentation forbids it).
     fn aliased_repetition(&mut self, node: Node) {
         let Some(alias) = node.child_by_field_name("alias") else {
             return;
@@ -505,7 +674,8 @@ impl<'s> Checker<'s, '_> {
                     && !syntax::named_children(n).iter().any(|b| {
                         b.kind() == "repetition_bounds"
                             && (b.child_by_field_name("exact").is_some()
-                                || b.child_by_field_name("condition").is_some()
+                                || b.child_by_field_name("condition")
+                                    .is_some()
                                 || self.same_bounds(*b))
                     })
                 {
@@ -526,23 +696,40 @@ impl<'s> Checker<'s, '_> {
     /// patterns of the FROM clause.
     fn select_aliases(&mut self, node: Node) {
         let children = syntax::named_children(node);
-        let Some(from) = children.iter().find(|c| c.kind() == "from_clause") else {
+        let Some(from) = children
+            .iter()
+            .find(|c| c.kind() == "from_clause")
+        else {
             return;
         };
         let patterns: Vec<Node> = syntax::named_children(*from)
             .into_iter()
             .filter(|c| matches!(c.kind(), "path_pattern" | "cypher_pattern"))
             .collect();
-        let vertices: Vec<Vec<Node>> = patterns.iter().map(|p| pattern_vertices(*p)).collect();
+        let vertices: Vec<Vec<Node>> = patterns
+            .iter()
+            .map(|p| pattern_vertices(*p))
+            .collect();
         self.disjoint_patterns(&patterns, &vertices);
         let source = self.snapshot.text();
-        let aliases: Vec<&str> =
-            vertices.iter().flatten().filter_map(|v| syntax::field_text(*v, "alias", source)).collect();
+        let aliases: Vec<&str> = vertices
+            .iter()
+            .flatten()
+            .filter_map(|v| syntax::field_text(*v, "alias", source))
+            .collect();
         let results = syntax::children_by_field(node, "result");
         // The vertex aliases the block selects.
-        let selected: Vec<Node> =
-            results.iter().copied().filter(|r| r.kind() == "identifier" && aliases.contains(&self.text(*r))).collect();
-        for clause in children.iter().filter(|c| c.kind() == "post_accum_clause") {
+        let selected: Vec<Node> = results
+            .iter()
+            .copied()
+            .filter(|r| {
+                r.kind() == "identifier" && aliases.contains(&self.text(*r))
+            })
+            .collect();
+        for clause in children
+            .iter()
+            .filter(|c| c.kind() == "post_accum_clause")
+        {
             self.non_binding_post_accum(*clause, &aliases, &selected);
         }
         // HAVING: "The SELECT block selects src, but the HAVING clause uses tgt"
@@ -552,15 +739,26 @@ impl<'s> Checker<'s, '_> {
         if let ([one], 1, None, Some(having)) = (
             selected.as_slice(),
             results.len(),
-            children.iter().find(|c| c.kind() == "group_by_clause"),
-            children.iter().find(|c| c.kind() == "having_clause"),
+            children
+                .iter()
+                .find(|c| c.kind() == "group_by_clause"),
+            children
+                .iter()
+                .find(|c| c.kind() == "having_clause"),
         ) {
             let name = self.text(*one).to_string();
             for object in member_objects(*having) {
                 let used = self.text(object).to_string();
                 if used != name && aliases.contains(&used.as_str()) {
-                    let message = format!("The SELECT block selects `{name}`, but the HAVING clause uses `{used}`");
-                    self.report(object, severity::ERROR, "having-alias", message);
+                    let message = format!(
+                        "The SELECT block selects `{name}`, but the HAVING clause uses `{used}`"
+                    );
+                    self.report(
+                        object,
+                        severity::ERROR,
+                        "having-alias",
+                        message,
+                    );
                 }
             }
         }
@@ -572,20 +770,36 @@ impl<'s> Checker<'s, '_> {
         let per = children
             .iter()
             .copied()
-            .chain(children.iter().filter(|c| c.kind() == "accum_clause").flat_map(|a| syntax::named_children(*a)))
+            .chain(
+                children
+                    .iter()
+                    .filter(|c| c.kind() == "accum_clause")
+                    .flat_map(|a| syntax::named_children(*a)),
+            )
             .find(|c| c.kind() == "per_clause");
         let Some(per) = per else {
             return;
         };
-        let listed: Vec<String> = syntax::named_children(per).into_iter().map(|c| self.text(c).to_string()).collect();
+        let listed: Vec<String> = syntax::named_children(per)
+            .into_iter()
+            .map(|c| self.text(c).to_string())
+            .collect();
         let mut uses = selected;
-        for clause in children.iter().filter(|c| matches!(c.kind(), "accum_clause" | "post_accum_clause")) {
-            uses.extend(member_objects(*clause).into_iter().filter(|o| aliases.contains(&self.text(*o))));
+        for clause in children.iter().filter(|c| {
+            matches!(c.kind(), "accum_clause" | "post_accum_clause")
+        }) {
+            uses.extend(
+                member_objects(*clause)
+                    .into_iter()
+                    .filter(|o| aliases.contains(&self.text(*o))),
+            );
         }
         for used in uses {
             let name = self.text(used).to_string();
             if !listed.contains(&name) {
-                let message = format!("`{name}` is used here but does not appear in the PER clause");
+                let message = format!(
+                    "`{name}` is used here but does not appear in the PER clause"
+                );
                 self.report(used, severity::ERROR, "per-alias", message);
             }
         }
@@ -594,12 +808,21 @@ impl<'s> Checker<'s, '_> {
     /// A POST-ACCUM clause that uses no vertex alias of the FROM clause binds
     /// to none: the query compiler warns that such clauses "will be deprecated
     /// soon" and asks for `POST-ACCUM (selectAlias) ...` (WARN-7).
-    fn non_binding_post_accum(&mut self, clause: Node, aliases: &[&str], selected: &[Node]) {
-        if aliases.is_empty() || clause.child_by_field_name("alias").is_some() {
+    fn non_binding_post_accum(
+        &mut self,
+        clause: Node,
+        aliases: &[&str],
+        selected: &[Node],
+    ) {
+        if aliases.is_empty() || clause.child_by_field_name("alias").is_some()
+        {
             return;
         }
         let mut binds = false;
-        syntax::walk(clause, |n| binds |= n.kind() == "identifier" && aliases.contains(&self.text(n)));
+        syntax::walk(clause, |n| {
+            binds |=
+                n.kind() == "identifier" && aliases.contains(&self.text(n))
+        });
         let Some(keyword) = clause.child(0).filter(|_| !binds) else {
             return;
         };
@@ -612,9 +835,15 @@ impl<'s> Checker<'s, '_> {
         );
         if let [one] = selected {
             let name = self.text(*one);
-            let at = Span::new(keyword.end_byte(), keyword.end_byte());
-            let edit = TextEdit { range: self.snapshot.range(at), new_text: format!(" ({name})") };
-            add_fix(&mut d, format!("Bind the clause to `{name}`: `POST-ACCUM ({name})`"), vec![edit], false);
+            let edit = self
+                .snapshot
+                .insert(keyword.end_byte(), format!(" ({name})"));
+            add_fix(
+                &mut d,
+                format!("Bind the clause to `{name}`: `POST-ACCUM ({name})`"),
+                vec![edit],
+                false,
+            );
         }
         self.out.push(d);
     }
@@ -627,16 +856,28 @@ impl<'s> Checker<'s, '_> {
     /// conjunctive pattern matching page.) Judged only when every pattern has
     /// an edge (lists of plain vertex sets are another form) and every vertex
     /// has an alias, so that what is shared is known.
-    fn disjoint_patterns(&mut self, patterns: &[Node], vertices: &[Vec<Node>]) {
+    fn disjoint_patterns(
+        &mut self,
+        patterns: &[Node],
+        vertices: &[Vec<Node>],
+    ) {
         if patterns.len() < 2 || vertices.iter().any(|v| v.len() < 2) {
             return;
         }
         let source = self.snapshot.text();
         let names: Vec<Vec<&str>> = vertices
             .iter()
-            .map(|v| v.iter().filter_map(|n| syntax::field_text(*n, "alias", source)).collect())
+            .map(|v| {
+                v.iter()
+                    .filter_map(|n| syntax::field_text(*n, "alias", source))
+                    .collect()
+            })
             .collect();
-        if names.iter().zip(vertices).any(|(n, v)| n.len() != v.len()) {
+        if names
+            .iter()
+            .zip(vertices)
+            .any(|(n, v)| n.len() != v.len())
+        {
             return;
         }
         // The patterns joined to the first through shared aliases.
@@ -646,37 +887,61 @@ impl<'s> Checker<'s, '_> {
         while changed {
             changed = false;
             for i in 0..patterns.len() {
-                let shares = |j: usize| names[i].iter().any(|n| names[j].contains(n));
-                if !joined[i] && (0..patterns.len()).any(|j| joined[j] && shares(j)) {
+                let shares =
+                    |j: usize| names[i].iter().any(|n| names[j].contains(n));
+                if !joined[i]
+                    && (0..patterns.len()).any(|j| joined[j] && shares(j))
+                {
                     joined[i] = true;
                     changed = true;
                 }
             }
         }
         if let Some(i) = joined.iter().position(|j| !j) {
-            let message =
-                "This pattern shares no vertex alias with the patterns before it, so they cannot be naturally joined";
-            self.report(patterns[i], severity::WARNING, "pattern-join", message.into());
+            let message = "This pattern shares no vertex alias with the patterns before it, so they cannot be naturally joined";
+            self.report(
+                patterns[i],
+                severity::WARNING,
+                "pattern-join",
+                message.into(),
+            );
         }
     }
 
     /// `LIMIT k OFFSET j` skips results in a known order only; the query
     /// compiler rejects OFFSET without ORDER BY.
     fn offset_without_order(&mut self, node: Node) {
-        let Some(offset) = syntax::children(node).into_iter().find(|c| c.kind() == "OFFSET") else {
+        let Some(offset) = syntax::child_of_kind(node, "OFFSET") else {
             return;
         };
-        let select = node.parent().filter(|p| p.kind() == "select_statement");
-        if select.is_some_and(|s| syntax::named_children(s).iter().all(|c| c.kind() != "order_by_clause")) {
-            self.report(offset, severity::ERROR, "limit-offset", "OFFSET needs an ORDER BY clause".into());
+        let select = node
+            .parent()
+            .filter(|p| p.kind() == "select_statement");
+        if select.is_some_and(|s| !syntax::has_child(s, "order_by_clause")) {
+            self.report(
+                offset,
+                severity::ERROR,
+                "limit-offset",
+                "OFFSET needs an ORDER BY clause".into(),
+            );
         }
     }
 
     /// Vertex- and edge-attached accumulators cannot be declared in loops.
     fn attached_accumulator_in_loop(&mut self, node: Node, keyword: &str) {
-        let attached = if syntax::children(node).iter().any(|c| c.kind() == "EDGE") { "Edge" } else { "Vertex" };
-        for declarator in syntax::named_children(node).into_iter().filter(|c| c.kind() == "accumulator_declarator") {
-            if let Some(name) = declarator.child_by_field_name("name").filter(|n| n.kind() == "local_accumulator") {
+        let attached = if syntax::has_child(node, "EDGE") {
+            "Edge"
+        } else {
+            "Vertex"
+        };
+        for declarator in syntax::named_children(node)
+            .into_iter()
+            .filter(|c| c.kind() == "accumulator_declarator")
+        {
+            if let Some(name) = declarator
+                .child_by_field_name("name")
+                .filter(|n| n.kind() == "local_accumulator")
+            {
                 self.report(
                     name,
                     severity::ERROR,
@@ -688,8 +953,12 @@ impl<'s> Checker<'s, '_> {
     }
 
     fn virtual_edge(&mut self, node: Node) {
-        let at_top_level = node.parent().is_some_and(|p| p.kind() == "query_body");
-        let name = node.child_by_field_name("name").unwrap_or(node);
+        let at_top_level = node
+            .parent()
+            .is_some_and(|p| p.kind() == "query_body");
+        let name = node
+            .child_by_field_name("name")
+            .unwrap_or(node);
         if !at_top_level {
             self.report(
                 name,
@@ -699,7 +968,9 @@ impl<'s> Checker<'s, '_> {
             );
         }
         if let Some(attributes) = node.child_by_field_name("attributes") {
-            for discriminator in syntax::named_children(attributes).into_iter().filter(|c| c.kind() == "discriminator")
+            for discriminator in syntax::named_children(attributes)
+                .into_iter()
+                .filter(|c| c.kind() == "discriminator")
             {
                 self.report(
                     discriminator,
@@ -714,8 +985,16 @@ impl<'s> Checker<'s, '_> {
     /// A virtual edge type cannot share an edge pattern with other edge types.
     fn mixed_virtual_edges(&mut self, node: Node) {
         let names: Vec<Node> = match node.kind() {
-            "relationship_detail" => {
-                syntax::children_by_field(node, "type").into_iter().filter(|t| t.kind() == "identifier").collect()
+            "relationship_detail" => syntax::children_by_field(node, "type")
+                .into_iter()
+                .filter(|t| t.kind() == "identifier")
+                .collect(),
+            // A nested alternation is checked with the outermost one.
+            _ if syntax::ancestors(node)
+                .take_while(|a| a.kind() != "edge_pattern")
+                .any(|a| a.kind() == "edge_alternation") =>
+            {
+                return;
             }
             _ => {
                 let mut names = Vec::new();
@@ -729,40 +1008,64 @@ impl<'s> Checker<'s, '_> {
                 names
             }
         };
-        if names.len() < 2 {
+        // One type used more than once, as in `Near>|<Near`, is not a mix.
+        let distinct: HashSet<&str> =
+            names.iter().map(|n| self.text(*n)).collect();
+        if distinct.len() < 2 {
             return;
         }
-        let is_virtual =
-            |name: &Node| self.symbol_of(*name).is_some_and(|s| s.kind == SymbolKind::EdgeType && s.scope != 0);
-        if let Some(virtual_edge) = names.iter().find(|n| is_virtual(n)) {
+        let is_virtual = |name: &Node| {
+            self.symbol_of(*name).is_some_and(|s| {
+                s.kind == SymbolKind::EdgeType && s.scope != FILE_SCOPE
+            })
+        };
+        let virtual_edges: Vec<Node> = names
+            .into_iter()
+            .filter(is_virtual)
+            .collect();
+        for virtual_edge in virtual_edges {
             let message = format!(
                 "The virtual edge type `{}` cannot be combined with other edge types",
-                self.text(*virtual_edge)
+                self.text(virtual_edge)
             );
-            self.report(*virtual_edge, severity::ERROR, "virtual-edge", message);
+            self.report(
+                virtual_edge,
+                severity::ERROR,
+                "virtual-edge",
+                message,
+            );
         }
     }
 
     fn accumulator_type(&mut self, node: Node, context: &Context) {
-        let kind = syntax::field_text(node, "kind", self.snapshot.text()).unwrap_or("").to_ascii_lowercase();
+        let kind = syntax::field_text(node, "kind", self.snapshot.text())
+            .unwrap_or("")
+            .to_ascii_lowercase();
         let arguments = syntax::children_by_field(node, "argument");
         self.type_arguments(node, &kind, &arguments);
         if kind == "listaccum" {
             // "ListAccum is the only accumulator type that can be nested within ListAccum"
-            for argument in arguments.iter().filter(|a| a.kind() == "accumulator_type") {
+            for argument in arguments
+                .iter()
+                .filter(|a| a.kind() == "accumulator_type")
+            {
                 if !is_list_accum(*argument, self) {
                     self.report(
                         *argument,
                         severity::ERROR,
                         "accumulator-type",
-                        "Only a ListAccum can be nested within a ListAccum".into(),
+                        "Only a ListAccum can be nested within a ListAccum"
+                            .into(),
                     );
                 }
             }
         }
         match kind.as_str() {
             "groupbyaccum" => {
-                for argument in arguments.iter().filter(|a| a.kind() != "group_by_field") {
+                for argument in arguments
+                    .iter()
+                    .filter(|a| a.kind() != "group_by_field")
+                {
                     self.report(
                         *argument,
                         severity::ERROR,
@@ -774,7 +1077,10 @@ impl<'s> Checker<'s, '_> {
             }
             "mapaccum" => {
                 // "MapAccum<SetAccum<INT>, INT> # illegal" (querying/accumulators, Nested Accumulators)
-                if let Some(key) = arguments.first().filter(|k| k.kind() == "accumulator_type") {
+                if let Some(key) = arguments
+                    .first()
+                    .filter(|k| k.kind() == "accumulator_type")
+                {
                     self.report(
                         *key,
                         severity::ERROR,
@@ -784,8 +1090,12 @@ impl<'s> Checker<'s, '_> {
                 }
                 let heap_value = arguments.get(1).is_some_and(|value| {
                     value.kind() == "accumulator_type"
-                        && syntax::field_text(*value, "kind", self.snapshot.text())
-                            .is_some_and(|k| k.eq_ignore_ascii_case("heapaccum"))
+                        && syntax::field_text(
+                            *value,
+                            "kind",
+                            self.snapshot.text(),
+                        )
+                        .is_some_and(|k| k.eq_ignore_ascii_case("heapaccum"))
                 });
                 if heap_value {
                     self.report(
@@ -799,8 +1109,12 @@ impl<'s> Checker<'s, '_> {
             // "Only ListAccum, ArrayAccum, MapAccum, and GroupByAccum can contain other accumulators."
             // (HeapAccum arguments are tuple types, never accumulator types.)
             "setaccum" | "bagaccum" => {
-                for argument in arguments.iter().filter(|a| a.kind() == "accumulator_type") {
-                    let name = syntax::field_text(node, "kind", self.snapshot.text()).unwrap_or("");
+                let name =
+                    builtins::accumulator(&kind).map_or("", |a| a.name);
+                for argument in arguments
+                    .iter()
+                    .filter(|a| a.kind() == "accumulator_type")
+                {
                     self.report(
                         *argument,
                         severity::ERROR,
@@ -812,9 +1126,20 @@ impl<'s> Checker<'s, '_> {
             // "All accumulators, except HeapAccum, MapAccum, and GroupByAccum, can be used."
             // (querying/accumulators, ArrayAccum)
             "arrayaccum" => {
-                for argument in arguments.iter().filter(|a| a.kind() == "accumulator_type") {
-                    let element = syntax::field_text(*argument, "kind", self.snapshot.text()).unwrap_or("");
-                    if ["heapaccum", "mapaccum", "groupbyaccum"].iter().any(|k| element.eq_ignore_ascii_case(k)) {
+                for argument in arguments
+                    .iter()
+                    .filter(|a| a.kind() == "accumulator_type")
+                {
+                    let element = syntax::field_text(
+                        *argument,
+                        "kind",
+                        self.snapshot.text(),
+                    )
+                    .unwrap_or("");
+                    if ["heapaccum", "mapaccum", "groupbyaccum"]
+                        .iter()
+                        .any(|k| element.eq_ignore_ascii_case(k))
+                    {
                         self.report(
                             *argument,
                             severity::ERROR,
@@ -825,12 +1150,15 @@ impl<'s> Checker<'s, '_> {
                 }
             }
             // Report once, at the outermost ListAccum.
-            "listaccum" if !context.in_list_accum && list_depth(node, self) > 3 => {
+            "listaccum"
+                if !context.in_list_accum && list_depth(node, self) > 3 =>
+            {
                 self.report(
                     node,
                     severity::ERROR,
                     "accumulator-type",
-                    "ListAccum can be nested at most three levels deep".into(),
+                    "ListAccum can be nested at most three levels deep"
+                        .into(),
                 );
             }
             _ => {}
@@ -883,27 +1211,62 @@ impl<'s> Checker<'s, '_> {
             if bitwise {
                 // `BitwiseAndAccum<128>` or `BitwiseAndAccum<len>` (a parameter).
                 // A warning: older references write only the bare `BitwiseOrAccum`.
-                if !matches!(argument.kind(), "integer" | "identifier" | "type_identifier") {
-                    let message = format!("{name} takes a bit length (a number or an INT parameter), not a type");
-                    self.report(*argument, severity::WARNING, "accumulator-type", message);
+                if !matches!(
+                    argument.kind(),
+                    "integer" | "identifier" | "type_identifier"
+                ) {
+                    let message = format!(
+                        "{name} takes a bit length (a number or an INT parameter), not a type"
+                    );
+                    self.report(
+                        *argument,
+                        severity::WARNING,
+                        "accumulator-type",
+                        message,
+                    );
                 }
             } else if argument.kind() == "integer" {
                 let message = if matches!(kind, "oraccum" | "andaccum") {
-                    format!("{name} takes no bit length; only BitwiseOrAccum and BitwiseAndAccum do")
+                    format!(
+                        "{name} takes no bit length; only BitwiseOrAccum and BitwiseAndAccum do"
+                    )
                 } else {
                     format!(
                         "{name} takes a type, not a number; only BitwiseOrAccum and BitwiseAndAccum take a bit length"
                     )
                 };
-                self.report(*argument, severity::ERROR, "accumulator-type", message);
-            } else if argument.kind() == "group_by_field" && kind != "groupbyaccum" {
-                let message = format!("Only GroupByAccum names its type arguments; write `{name}<type>`");
-                self.report(*argument, severity::ERROR, "accumulator-type", message);
+                self.report(
+                    *argument,
+                    severity::ERROR,
+                    "accumulator-type",
+                    message,
+                );
+            } else if argument.kind() == "group_by_field"
+                && kind != "groupbyaccum"
+            {
+                let message = format!(
+                    "Only GroupByAccum names its type arguments; write `{name}<type>`"
+                );
+                self.report(
+                    *argument,
+                    severity::ERROR,
+                    "accumulator-type",
+                    message,
+                );
             } else if kind == "sumaccum" && !self.sums(*argument) {
                 // "operate on values of type INT, UINT, FLOAT, DOUBLE, or STRING only"
-                let given = type_of_type_node(*argument, self.snapshot.text()).display();
-                let message = format!("SumAccum takes INT, UINT, FLOAT, DOUBLE or STRING, not {given}");
-                self.report(*argument, severity::ERROR, "accumulator-type", message);
+                let given =
+                    type_of_type_node(*argument, self.snapshot.text())
+                        .display();
+                let message = format!(
+                    "SumAccum takes INT, UINT, FLOAT, DOUBLE or STRING, not {given}"
+                );
+                self.report(
+                    *argument,
+                    severity::ERROR,
+                    "accumulator-type",
+                    message,
+                );
             }
         }
     }
@@ -916,7 +1279,8 @@ impl<'s> Checker<'s, '_> {
                 // `STRING COMPRESS` is listed too (and reported as deprecated).
                 Ty::Primitive(p) if matches!(p.as_str(), "INT" | "UINT" | "FLOAT" | "DOUBLE") || p.starts_with("STRING")
             ),
-            "vertex_type" | "edge_type" | "collection_type" | "accumulator_type" => false,
+            "vertex_type" | "edge_type" | "collection_type"
+            | "accumulator_type" => false,
             _ => true,
         }
     }
@@ -924,17 +1288,33 @@ impl<'s> Checker<'s, '_> {
     /// `AvgAccum<DOUBLE>`: the type argument is not written; a quick fix removes it.
     fn untyped_accumulator(&mut self, node: Node, name: &str) {
         let children = syntax::children(node);
-        let (Some(open), Some(close)) =
-            (children.iter().find(|c| c.kind() == "<"), children.iter().rev().find(|c| c.kind() == ">"))
-        else {
+        let (Some(open), Some(close)) = (
+            children.iter().find(|c| c.kind() == "<"),
+            children
+                .iter()
+                .rev()
+                .find(|c| c.kind() == ">"),
+        ) else {
             return;
         };
-        let message =
-            format!("{name} is declared without a type argument; it accepts INT, UINT, FLOAT and DOUBLE inputs");
-        let mut d = diagnostic(self.snapshot, Span::of(node), severity::WARNING, "accumulator-type", message);
+        let message = format!(
+            "{name} is declared without a type argument; it accepts INT, UINT, FLOAT and DOUBLE inputs"
+        );
+        let mut d = diagnostic(
+            self.snapshot,
+            Span::of(node),
+            severity::WARNING,
+            "accumulator-type",
+            message,
+        );
         let span = Span::new(open.start_byte(), close.end_byte());
-        let edit = TextEdit { range: self.snapshot.range(span), new_text: String::new() };
-        add_fix(&mut d, format!("Write `{name}` without a type argument"), vec![edit], true);
+        let edit = self.snapshot.edit(span, "");
+        add_fix(
+            &mut d,
+            format!("Write `{name}` without a type argument"),
+            vec![edit],
+            true,
+        );
         self.out.push(d);
     }
 
@@ -948,16 +1328,29 @@ impl<'s> Checker<'s, '_> {
                 let ty = a.child_by_field_name("type").unwrap_or(*a);
                 ty.kind() == "accumulator_type"
                     || (ty.kind() == "type_identifier"
-                        && self.accumulator_typedef(self.text(ty), ty.start_byte()).is_some())
+                        && self
+                            .accumulator_typedef(
+                                self.text(ty),
+                                ty.start_byte(),
+                            )
+                            .is_some())
             })
             .collect();
         let count = accumulators.iter().filter(|a| **a).count();
         if count == 0 || count == arguments.len() {
             let message = "GroupByAccum needs at least one key and one accumulator, e.g. `GroupByAccum<INT age, SumAccum<INT> total>`";
-            self.report(node, severity::ERROR, "accumulator-type", message.into());
+            self.report(
+                node,
+                severity::ERROR,
+                "accumulator-type",
+                message.into(),
+            );
             return false;
         }
-        if let Some(i) = accumulators.windows(2).position(|w| w[0] && !w[1]) {
+        if let Some(i) = accumulators
+            .windows(2)
+            .position(|w| w[0] && !w[1])
+        {
             self.report(
                 arguments[i + 1],
                 severity::ERROR,
@@ -967,11 +1360,21 @@ impl<'s> Checker<'s, '_> {
             );
         }
         let mut seen = Vec::new();
-        for field in arguments.iter().filter_map(|a| a.child_by_field_name("name")) {
+        for field in arguments
+            .iter()
+            .filter_map(|a| a.child_by_field_name("name"))
+        {
             let name = self.text(field).to_string();
             if seen.contains(&name) {
-                let message = format!("GroupByAccum already has a field named `{name}`");
-                self.report(field, severity::ERROR, "accumulator-type", message);
+                let message = format!(
+                    "GroupByAccum already has a field named `{name}`"
+                );
+                self.report(
+                    field,
+                    severity::ERROR,
+                    "accumulator-type",
+                    message,
+                );
             }
             seen.push(name);
         }
@@ -980,39 +1383,63 @@ impl<'s> Checker<'s, '_> {
 
     /// The type a TYPEDEF'd accumulator name visible at `offset` stands for.
     fn accumulator_typedef(&self, name: &str, offset: usize) -> Option<Ty> {
-        self.visible_type(SymbolKind::AccumulatorType, name, offset).map(|s| s.ty.clone())
+        self.visible_type(SymbolKind::AccumulatorType, name, offset)
+            .map(|s| s.ty.clone())
     }
 
     /// The innermost TYPEDEF of `kind` named `name` visible at `offset` (without listing
     /// every visible symbol: this runs for each accumulator write).
-    fn visible_type(&self, kind: SymbolKind, name: &str, offset: usize) -> Option<&'s Symbol> {
-        let candidates: Vec<&'s Symbol> =
-            self.type_symbols.iter().copied().filter(|s| s.kind == kind && s.name == name).collect();
+    fn visible_type(
+        &self,
+        kind: SymbolKind,
+        name: &str,
+        offset: usize,
+    ) -> Option<&'s Symbol> {
+        let candidates: Vec<&'s Symbol> = self
+            .type_symbols
+            .iter()
+            .copied()
+            .filter(|s| s.kind == kind && s.name == name)
+            .collect();
         if candidates.is_empty() {
             return None;
         }
         let analysis = &self.snapshot.analysis;
         analysis
             .scope_chain(analysis.scope_at(offset))
-            .find_map(|scope| candidates.iter().find(|s| s.scope == scope).copied())
+            .find_map(|scope| {
+                candidates
+                    .iter()
+                    .find(|s| s.scope == scope)
+                    .copied()
+            })
     }
 
     /// `ty` with the TYPEDEF'd accumulator names among its arguments (which read as
     /// tuple names) replaced by their accumulator types.
     fn resolved(&self, ty: &Ty, offset: usize) -> Ty {
         match ty {
-            Ty::Tuple(name) => self.accumulator_typedef(name, offset).unwrap_or_else(|| ty.clone()),
-            Ty::Accumulator(kind, args) => {
-                Ty::Accumulator(kind.clone(), args.iter().map(|a| self.resolved(a, offset)).collect())
-            }
+            Ty::Tuple(name) => self
+                .accumulator_typedef(name, offset)
+                .unwrap_or_else(|| ty.clone()),
+            Ty::Accumulator(kind, args) => Ty::Accumulator(
+                kind.clone(),
+                args.iter()
+                    .map(|a| self.resolved(a, offset))
+                    .collect(),
+            ),
             _ => ty.clone(),
         }
     }
 
     /// Whether `name` is a tuple type visible at `offset` (or declared in the workspace).
     fn is_tuple_type(&self, name: &str, offset: usize) -> bool {
-        self.visible_type(SymbolKind::TupleType, name, offset).is_some()
-            || !self.snapshot.workspace.find_any(&[SymbolKind::TupleType], name).is_empty()
+        self.visible_type(SymbolKind::TupleType, name, offset)
+            .is_some()
+            || self
+                .snapshot
+                .workspace
+                .declares(&[SymbolKind::TupleType], name)
     }
 
     /// The value written to an accumulator with `+=` or `=` (also in ACCUM and POST-ACCUM,
@@ -1023,14 +1450,16 @@ impl<'s> Checker<'s, '_> {
         }
         let (ty, value) = if node.kind() == "accumulator_declarator" {
             // ArrayAccum elements are written through subscripts.
-            if syntax::named_children(node).iter().any(|c| c.kind() == "array_dimension") {
+            if syntax::has_child(node, "array_dimension") {
                 return;
             }
             let ty = node
                 .parent()
                 .and_then(|d| d.child_by_field_name("type"))
                 // `TYPEDEF MapAccum<...> Counts; Counts @@c = ...;` resolves below.
-                .filter(|t| matches!(t.kind(), "accumulator_type" | "type_identifier"))
+                .filter(|t| {
+                    matches!(t.kind(), "accumulator_type" | "type_identifier")
+                })
                 .map(|t| type_of_type_node(t, self.snapshot.text()));
             (ty, node.child_by_field_name("value"))
         } else {
@@ -1043,7 +1472,9 @@ impl<'s> Checker<'s, '_> {
         if let (Some(ty), Some(value)) = (ty, value) {
             let ty = self.resolved(&ty, node.start_byte());
             let assigned = node.kind() == "accumulator_declarator"
-                || node.child_by_field_name("operator").is_some_and(|o| o.kind() == "=");
+                || node
+                    .child_by_field_name("operator")
+                    .is_some_and(|o| o.kind() == "=");
             self.accumulator_value(value, &ty, assigned);
         }
     }
@@ -1058,12 +1489,19 @@ impl<'s> Checker<'s, '_> {
         match kind.as_str() {
             "MapAccum" => {
                 if let [key, item] = args.as_slice() {
-                    self.pair_input(value, ty, std::slice::from_ref(key), std::slice::from_ref(item));
+                    self.pair_input(
+                        value,
+                        ty,
+                        std::slice::from_ref(key),
+                        std::slice::from_ref(item),
+                    );
                 }
             }
             "GroupByAccum" => {
-                let (values, keys): (Vec<Ty>, Vec<Ty>) =
-                    args.iter().cloned().partition(|a| matches!(a, Ty::Accumulator(..)));
+                let (values, keys): (Vec<Ty>, Vec<Ty>) = args
+                    .iter()
+                    .cloned()
+                    .partition(|a| matches!(a, Ty::Accumulator(..)));
                 if !keys.is_empty() && !values.is_empty() {
                     self.pair_input(value, ty, &keys, &values);
                 }
@@ -1072,61 +1510,121 @@ impl<'s> Checker<'s, '_> {
                 let inner = unparenthesized(value);
                 let what = capitalized(&with_article(&ty.display()));
                 if matches!(inner.kind(), "key_value_pair" | "map_literal") {
-                    let message = format!("{what} takes no `(key -> value)` pairs; only MapAccum and GroupByAccum do");
-                    self.report(inner, severity::ERROR, "accumulator-input", message);
+                    let message = format!(
+                        "{what} takes no `(key -> value)` pairs; only MapAccum and GroupByAccum do"
+                    );
+                    self.report(
+                        inner,
+                        severity::ERROR,
+                        "accumulator-input",
+                        message,
+                    );
                     return;
                 }
                 let expected = accumulator_input_kind(ty);
                 // `SumAccum<INT>`, `OrAccum`: one value at a time.
                 let single = expected.is_some()
-                    && !matches!(kind.as_str(), "SetAccum" | "BagAccum" | "ListAccum" | "ArrayAccum");
-                if single && matches!(inner.kind(), "tuple" | "list_literal") {
-                    let shape = if inner.kind() == "tuple" { "a tuple" } else { "a list" };
-                    let message = format!("{what} takes a single value, not {shape}");
-                    self.report(value, severity::ERROR, "accumulator-input", message);
+                    && !matches!(
+                        kind.as_str(),
+                        "SetAccum" | "BagAccum" | "ListAccum" | "ArrayAccum"
+                    );
+                if single && matches!(inner.kind(), "tuple" | "list_literal")
+                {
+                    let shape = if inner.kind() == "tuple" {
+                        "a tuple"
+                    } else {
+                        "a list"
+                    };
+                    let message =
+                        format!("{what} takes a single value, not {shape}");
+                    self.report(
+                        value,
+                        severity::ERROR,
+                        "accumulator-input",
+                        message,
+                    );
                     return;
                 }
                 let given = match self.given(value) {
-                    Some(Given::Kind(given)) if expected.is_some_and(|e| e != given) => given.described().to_string(),
+                    Some(Given::Kind(given))
+                        if expected.is_some_and(|e| e != given) =>
+                    {
+                        given.described().to_string()
+                    }
                     Some(Given::Other(given)) if single => given,
                     _ => return,
                 };
                 let verb = if assigned { "stored in" } else { "added to" };
-                let message = format!("{} cannot be {verb} {}", capitalized(&given), with_article(&ty.display()));
-                self.report(value, severity::WARNING, "type-mismatch", message);
+                let message = format!(
+                    "{} cannot be {verb} {}",
+                    capitalized(&given),
+                    with_article(&ty.display())
+                );
+                self.report(
+                    value,
+                    severity::WARNING,
+                    "type-mismatch",
+                    message,
+                );
             }
         }
     }
 
     /// The input of a MapAccum (one key, one value) or a GroupByAccum (its keys and accumulators).
-    fn pair_input(&mut self, value: Node, ty: &Ty, keys: &[Ty], values: &[Ty]) {
+    fn pair_input(
+        &mut self,
+        value: Node,
+        ty: &Ty,
+        keys: &[Ty],
+        values: &[Ty],
+    ) {
         let inner = unparenthesized(value);
         let what = capitalized(&with_article(&ty.display()));
-        let map = matches!(ty, Ty::Accumulator(kind, _) if kind == "MapAccum");
+        let map =
+            matches!(ty, Ty::Accumulator(kind, _) if kind == "MapAccum");
         let shape = if map {
             "`(key -> value)`".to_string()
         } else {
             let names = |single: &str, prefix: &str, n: usize| match n {
                 1 => single.to_string(),
-                _ => (1..=n).map(|i| format!("{prefix}{i}")).collect::<Vec<_>>().join(", "),
+                _ => (1..=n)
+                    .map(|i| format!("{prefix}{i}"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
             };
-            format!("`({} -> {})`", names("key", "k", keys.len()), names("value", "v", values.len()))
+            format!(
+                "`({} -> {})`",
+                names("key", "k", keys.len()),
+                names("value", "v", values.len())
+            )
         };
-        let pairs = Pairs { ty, keys, values, what, shape };
+        let pairs = Pairs {
+            ty,
+            keys,
+            values,
+            what,
+            shape,
+        };
         let (what, shape) = (&pairs.what, &pairs.shape);
         match inner.kind() {
             "key_value_pair" => {
-                let arrow = syntax::children(inner).into_iter().find(|c| c.kind() == "->");
+                let arrow = syntax::child_of_kind(inner, "->");
                 let Some(arrow) = arrow else { return };
                 let (before, after): (Vec<Node>, Vec<Node>) =
-                    syntax::code_children(inner).into_iter().partition(|c| c.end_byte() <= arrow.start_byte());
+                    syntax::code_children(inner)
+                        .into_iter()
+                        .partition(|c| c.end_byte() <= arrow.start_byte());
                 self.pair(inner, &before, &after, &pairs);
             }
             "map_literal" => {
-                for entry in syntax::code_children(inner).into_iter().filter(|e| e.kind() == "map_entry") {
-                    let (Some(key), Some(item)) =
-                        (entry.child_by_field_name("key"), entry.child_by_field_name("value"))
-                    else {
+                for entry in syntax::code_children(inner)
+                    .into_iter()
+                    .filter(|e| e.kind() == "map_entry")
+                {
+                    let (Some(key), Some(item)) = (
+                        entry.child_by_field_name("key"),
+                        entry.child_by_field_name("value"),
+                    ) else {
                         continue;
                     };
                     self.pair(entry, &[key], &[item], &pairs);
@@ -1134,21 +1632,39 @@ impl<'s> Checker<'s, '_> {
             }
             "tuple" => {
                 let elements = syntax::code_children(inner);
-                let message =
-                    format!("{what} takes {shape} pairs, not a tuple; separate the keys from the values with `->`");
-                let mut d = diagnostic(self.snapshot, Span::of(inner), severity::ERROR, "accumulator-input", message);
+                let message = format!(
+                    "{what} takes {shape} pairs, not a tuple; separate the keys from the values with `->`"
+                );
+                let mut d = diagnostic(
+                    self.snapshot,
+                    Span::of(inner),
+                    severity::ERROR,
+                    "accumulator-input",
+                    message,
+                );
                 // `("a", 1)` -> `("a" -> 1)`
-                if elements.len() == keys.len() + values.len() && elements.len() >= 2 {
+                if elements.len() == keys.len() + values.len()
+                    && elements.len() >= 2
+                {
                     let last_key = elements[keys.len() - 1];
                     let first_value = elements[keys.len()];
-                    let comma = syntax::children(inner).into_iter().find(|c| {
-                        c.kind() == ","
-                            && c.start_byte() >= last_key.end_byte()
-                            && c.end_byte() <= first_value.start_byte()
-                    });
+                    let comma =
+                        syntax::children(inner)
+                            .into_iter()
+                            .find(|c| {
+                                c.kind() == ","
+                                    && c.start_byte() >= last_key.end_byte()
+                                    && c.end_byte()
+                                        <= first_value.start_byte()
+                            });
                     if let Some(comma) = comma {
-                        let edit = TextEdit { range: self.snapshot.range(Span::of(comma)), new_text: " ->".into() };
-                        add_fix(&mut d, "Replace `,` with `->`", vec![edit], false);
+                        let edit = self.snapshot.edit(Span::of(comma), " ->");
+                        add_fix(
+                            &mut d,
+                            "Replace `,` with `->`",
+                            vec![edit],
+                            false,
+                        );
                     }
                 }
                 self.out.push(d);
@@ -1158,19 +1674,44 @@ impl<'s> Checker<'s, '_> {
                 if inner.id() != value.id()
                     && keys.len() == 1
                     && values.len() == 1
-                    && inner.child_by_field_name("operator").is_some_and(|o| matches!(o.kind(), "-" | ">" | ">>")) =>
+                    && inner
+                        .child_by_field_name("operator")
+                        .is_some_and(|o| {
+                            matches!(o.kind(), "-" | ">" | ">>")
+                        }) =>
             {
-                let Some(operator) = inner.child_by_field_name("operator") else { return };
+                let Some(operator) = inner.child_by_field_name("operator")
+                else {
+                    return;
+                };
                 self.arrow_typos.insert(inner.id());
-                let message =
-                    format!("{what} takes {shape} pairs; did you mean `->` instead of `{}`?", operator.kind());
-                let mut d = diagnostic(self.snapshot, Span::of(value), severity::ERROR, "accumulator-input", message);
-                let edit = TextEdit { range: self.snapshot.range(Span::of(operator)), new_text: "->".into() };
-                add_fix(&mut d, format!("Replace `{}` with `->`", operator.kind()), vec![edit], false);
+                let message = format!(
+                    "{what} takes {shape} pairs; did you mean `->` instead of `{}`?",
+                    operator.kind()
+                );
+                let mut d = diagnostic(
+                    self.snapshot,
+                    Span::of(value),
+                    severity::ERROR,
+                    "accumulator-input",
+                    message,
+                );
+                let edit = self.snapshot.edit(Span::of(operator), "->");
+                add_fix(
+                    &mut d,
+                    format!("Replace `{}` with `->`", operator.kind()),
+                    vec![edit],
+                    false,
+                );
                 self.out.push(d);
             }
             "list_literal" => {
-                self.report(value, severity::ERROR, "accumulator-input", format!("{what} takes {shape} pairs"));
+                self.report(
+                    value,
+                    severity::ERROR,
+                    "accumulator-input",
+                    format!("{what} takes {shape} pairs"),
+                );
             }
             _ => {
                 if let Some(source) = self.operand_type(inner)
@@ -1184,7 +1725,12 @@ impl<'s> Checker<'s, '_> {
                     // One error: no comparison or arithmetic warning on `p >= 1` or
                     // `(p >= 1)` besides it.
                     self.arrow_typos.insert(inner.id());
-                    self.report(value, severity::ERROR, "accumulator-input", format!("{what} takes {shape} pairs"));
+                    self.report(
+                        value,
+                        severity::ERROR,
+                        "accumulator-input",
+                        format!("{what} takes {shape} pairs"),
+                    );
                 }
             }
         }
@@ -1193,8 +1739,20 @@ impl<'s> Checker<'s, '_> {
     /// A variable or accumulator of type `source` given to the MapAccum or GroupByAccum `ty`:
     /// another map is merged (its keys must fit), anything else that holds several
     /// values is wrong. Whether it was judged.
-    fn pair_source(&mut self, value: Node, operand: Node, source: &Ty, pairs: &Pairs) -> bool {
-        let &Pairs { ty, keys, ref what, ref shape, .. } = pairs;
+    fn pair_source(
+        &mut self,
+        value: Node,
+        operand: Node,
+        source: &Ty,
+        pairs: &Pairs,
+    ) -> bool {
+        let &Pairs {
+            ty,
+            keys,
+            ref what,
+            ref shape,
+            ..
+        } = pairs;
         let Ty::Accumulator(target, _) = ty else {
             return false;
         };
@@ -1205,16 +1763,33 @@ impl<'s> Checker<'s, '_> {
                 }
                 args.first()
             }
-            Ty::Collection(kind, args) if kind == "MAP" && target == "MapAccum" => args.first(),
-            Ty::Accumulator(..) | Ty::Collection(..) | Ty::Vertex(_) | Ty::Edge(_) | Ty::VertexSet(_) => {
-                let message = format!("{what} takes {shape} pairs, not {}", described_type(source));
-                self.report(value, severity::ERROR, "accumulator-input", message);
+            Ty::Collection(kind, args)
+                if kind == "MAP" && target == "MapAccum" =>
+            {
+                args.first()
+            }
+            Ty::Accumulator(..)
+            | Ty::Collection(..)
+            | Ty::Vertex(_)
+            | Ty::Edge(_)
+            | Ty::VertexSet(_) => {
+                let message = format!(
+                    "{what} takes {shape} pairs, not {}",
+                    described_type(source)
+                );
+                self.report(
+                    value,
+                    severity::ERROR,
+                    "accumulator-input",
+                    message,
+                );
                 return true;
             }
             _ => return false,
         };
         if let (Some(given), Some(declared)) = (source_key, keys.first())
-            && let (Some(a), Some(b)) = (value_kind_of(given), value_kind_of(declared))
+            && let (Some(a), Some(b)) =
+                (value_kind_of(given), value_kind_of(declared))
             && a != b
         {
             let message = format!(
@@ -1230,10 +1805,25 @@ impl<'s> Checker<'s, '_> {
     }
 
     /// One `(keys -> values)` pair of a MapAccum or GroupByAccum.
-    fn pair(&mut self, pair: Node, given_keys: &[Node], given_values: &[Node], pairs: &Pairs) {
-        let &Pairs { ty, keys, values, ref shape, .. } = pairs;
-        if given_keys.len() != keys.len() || given_values.len() != values.len() {
-            let count = |n: usize, what: &str| format!("{n} {what}{}", if n == 1 { "" } else { "s" });
+    fn pair(
+        &mut self,
+        pair: Node,
+        given_keys: &[Node],
+        given_values: &[Node],
+        pairs: &Pairs,
+    ) {
+        let &Pairs {
+            ty,
+            keys,
+            values,
+            ref shape,
+            ..
+        } = pairs;
+        if given_keys.len() != keys.len()
+            || given_values.len() != values.len()
+        {
+            let count =
+                |n: usize, what: &str| format!("{n} {what}{}", plural(n));
             let message = format!(
                 "{} takes {} pairs ({} and {}); this pair has {} and {}",
                 pairs.what,
@@ -1251,7 +1841,9 @@ impl<'s> Checker<'s, '_> {
         }
         for (item, item_ty) in given_values.iter().zip(values) {
             match item_ty {
-                Ty::Accumulator(..) => self.accumulator_value(*item, item_ty, false),
+                Ty::Accumulator(..) => {
+                    self.accumulator_value(*item, item_ty, false)
+                }
                 _ => self.scalar_input(*item, item_ty, ty, "values"),
             }
         }
@@ -1260,13 +1852,27 @@ impl<'s> Checker<'s, '_> {
     /// A key or a plain value of a map: a value of another kind than declared (a number
     /// where a string is declared, a vertex or a set where a string is, a number where a
     /// tuple is), and a pair where no accumulator takes one.
-    fn scalar_input(&mut self, node: Node, declared: &Ty, ty: &Ty, role: &str) {
+    fn scalar_input(
+        &mut self,
+        node: Node,
+        declared: &Ty,
+        ty: &Ty,
+        role: &str,
+    ) {
         let inner = unparenthesized(node);
         if matches!(inner.kind(), "key_value_pair" | "map_literal") {
             if matches!(declared, Ty::Primitive(_)) {
-                let message =
-                    format!("The {role} of {} are {}, not `(key -> value)` pairs", ty.display(), declared.display());
-                self.report(inner, severity::ERROR, "accumulator-input", message);
+                let message = format!(
+                    "The {role} of {} are {}, not `(key -> value)` pairs",
+                    ty.display(),
+                    declared.display()
+                );
+                self.report(
+                    inner,
+                    severity::ERROR,
+                    "accumulator-input",
+                    message,
+                );
             }
             return;
         }
@@ -1274,9 +1880,15 @@ impl<'s> Checker<'s, '_> {
             return;
         };
         let wrong = match (declared, &given) {
-            (Ty::Primitive(_), Given::Kind(given)) => value_kind_of(declared).is_some_and(|e| e != *given),
-            (Ty::Primitive(_), Given::Other(_)) => value_kind_of(declared).is_some(),
-            (Ty::Tuple(name), Given::Kind(_)) => self.is_tuple_type(name, node.start_byte()),
+            (Ty::Primitive(_), Given::Kind(given)) => {
+                value_kind_of(declared).is_some_and(|e| e != *given)
+            }
+            (Ty::Primitive(_), Given::Other(_)) => {
+                value_kind_of(declared).is_some()
+            }
+            (Ty::Tuple(name), Given::Kind(_)) => {
+                self.is_tuple_type(name, node.start_byte())
+            }
             _ => false,
         };
         if wrong {
@@ -1284,7 +1896,11 @@ impl<'s> Checker<'s, '_> {
                 Given::Kind(kind) => kind.described().to_string(),
                 Given::Other(what) => what,
             };
-            let message = format!("The {role} of {} are {}, not {what}", ty.display(), declared.display());
+            let message = format!(
+                "The {role} of {} are {}, not {what}",
+                ty.display(),
+                declared.display()
+            );
             self.report(node, severity::WARNING, "type-mismatch", message);
         }
     }
@@ -1292,7 +1908,9 @@ impl<'s> Checker<'s, '_> {
     /// The declared type of a variable, parameter, alias or accumulator (`@@a`, `@a`, `t.@a`).
     fn operand_type(&self, node: Node) -> Option<Ty> {
         let symbol = match node.kind() {
-            "identifier" | "global_accumulator" | "local_accumulator" => self.symbol_of(node),
+            "identifier" | "global_accumulator" | "local_accumulator" => {
+                self.symbol_of(node)
+            }
             "member_expression" => node
                 .child_by_field_name("property")
                 .filter(|p| p.kind() == "local_accumulator")
@@ -1309,31 +1927,42 @@ impl<'s> Checker<'s, '_> {
             return Some(Given::Kind(kind));
         }
         match self.operand_type(unparenthesized(node))? {
-            ty @ (Ty::Vertex(_) | Ty::Edge(_) | Ty::VertexSet(_) | Ty::Collection(..)) => {
-                Some(Given::Other(described_type(&ty)))
-            }
+            ty @ (Ty::Vertex(_)
+            | Ty::Edge(_)
+            | Ty::VertexSet(_)
+            | Ty::Collection(..)) => Some(Given::Other(described_type(&ty))),
             // Only accumulators that certainly hold several values (`MaxAccum<VERTEX>` reads
             // as one vertex, `MaxAccum<tuple>` as one tuple).
-            ty @ Ty::Accumulator(..) if holds_several_values(&ty) => Some(Given::Other(described_type(&ty))),
+            ty @ Ty::Accumulator(..) if holds_several_values(&ty) => {
+                Some(Given::Other(described_type(&ty)))
+            }
             _ => None,
         }
     }
 
     /// The keys given to `get`, `containsKey` and `remove` of a MapAccum or GroupByAccum.
     fn accumulator_method(&mut self, node: Node) {
-        let (Some(function), Some(arguments)) =
-            (node.child_by_field_name("function"), node.child_by_field_name("arguments"))
-        else {
+        let (Some(function), Some(arguments)) = (
+            node.child_by_field_name("function"),
+            node.child_by_field_name("arguments"),
+        ) else {
             return;
         };
         let (Some(object), Some(method)) = (
-            function.child_by_field_name("object").filter(|_| function.kind() == "member_expression"),
-            function.child_by_field_name("property").filter(|p| p.kind() == "identifier"),
+            function
+                .child_by_field_name("object")
+                .filter(|_| function.kind() == "member_expression"),
+            function
+                .child_by_field_name("property")
+                .filter(|p| p.kind() == "identifier"),
         ) else {
             return;
         };
         let method = self.text(method).to_string();
-        if !["get", "containsKey", "remove"].iter().any(|m| m.eq_ignore_ascii_case(&method)) {
+        if !["get", "containsKey", "remove"]
+            .iter()
+            .any(|m| m.eq_ignore_ascii_case(&method))
+        {
             return;
         }
         let Some(ty) = self.operand_type(object) else {
@@ -1345,27 +1974,50 @@ impl<'s> Checker<'s, '_> {
         let keys: Vec<Ty> = match kind.as_str() {
             // The count of a MapAccum's keys is checked with the other built-in methods.
             "MapAccum" => args.first().cloned().into_iter().collect(),
-            "GroupByAccum" => args.iter().filter(|a| !matches!(a, Ty::Accumulator(..))).cloned().collect(),
+            "GroupByAccum" => args
+                .iter()
+                .filter(|a| !matches!(a, Ty::Accumulator(..)))
+                .cloned()
+                .collect(),
             _ => return,
         };
-        let given = syntax::named_children(arguments).into_iter().filter(|c| c.kind() != "comment").collect::<Vec<_>>();
-        if kind == "GroupByAccum" && given.len() != keys.len() && !keys.is_empty() {
-            let plural = if keys.len() == 1 { "" } else { "s" };
+        let given = syntax::code_children(arguments);
+        if kind == "GroupByAccum"
+            && given.len() != keys.len()
+            && !keys.is_empty()
+        {
             let message = format!(
-                "`{method}` expects {} argument{plural}, the keys of {}, but {} given",
+                "`{method}` expects {} argument{}, the keys of {}, but {} given",
                 keys.len(),
+                plural(keys.len()),
                 ty.display(),
                 given.len()
             );
-            self.report(arguments, severity::WARNING, "argument-count", message);
+            self.report(
+                arguments,
+                severity::WARNING,
+                "argument-count",
+                message,
+            );
             return;
         }
         for (argument, key) in given.iter().zip(&keys) {
-            if let (Some(expected), Some(Given::Kind(found))) = (value_kind_of(key), self.given(*argument))
+            if let (Some(expected), Some(Given::Kind(found))) =
+                (value_kind_of(key), self.given(*argument))
                 && expected != found
             {
-                let message = format!("The keys of {} are {}, not {}", ty.display(), key.display(), found.described());
-                self.report(*argument, severity::WARNING, "type-mismatch", message);
+                let message = format!(
+                    "The keys of {} are {}, not {}",
+                    ty.display(),
+                    key.display(),
+                    found.described()
+                );
+                self.report(
+                    *argument,
+                    severity::WARNING,
+                    "type-mismatch",
+                    message,
+                );
             }
         }
     }
@@ -1373,13 +2025,17 @@ impl<'s> Checker<'s, '_> {
     /// `FOREACH (k, v) IN @@map`: a MapAccum or MAP binds a key and a value; a set, bag or
     /// list of plain values one element.
     fn foreach_variables(&mut self, node: Node) {
-        let (Some(variables), Some(collection)) =
-            (node.child_by_field_name("variable"), node.child_by_field_name("collection"))
-        else {
+        let (Some(variables), Some(collection)) = (
+            node.child_by_field_name("variable"),
+            node.child_by_field_name("collection"),
+        ) else {
             return;
         };
         let count = if variables.kind() == "foreach_variables" {
-            syntax::named_children(variables).into_iter().filter(|c| c.kind() == "identifier").count()
+            syntax::named_children(variables)
+                .into_iter()
+                .filter(|c| c.kind() == "identifier")
+                .count()
         } else {
             1
         };
@@ -1393,15 +2049,23 @@ impl<'s> Checker<'s, '_> {
                 format!(
                     "Iterating over {} binds a key and a value, `FOREACH (k, v) IN ...`, not {count} variable{}",
                     with_article(&ty.display()),
-                    if count == 1 { "" } else { "s" }
+                    plural(count)
                 )
             }
             Ty::Accumulator(kind, args) | Ty::Collection(kind, args)
-                if matches!(kind.as_str(), "SetAccum" | "BagAccum" | "ListAccum" | "SET" | "BAG" | "LIST")
-                    && count > 1
-                    && args
-                        .first()
-                        .is_some_and(|e| value_kind_of(e).is_some() || matches!(e, Ty::Vertex(_) | Ty::Edge(_))) =>
+                if matches!(
+                    kind.as_str(),
+                    "SetAccum"
+                        | "BagAccum"
+                        | "ListAccum"
+                        | "SET"
+                        | "BAG"
+                        | "LIST"
+                ) && count > 1
+                    && args.first().is_some_and(|e| {
+                        value_kind_of(e).is_some()
+                            || matches!(e, Ty::Vertex(_) | Ty::Edge(_))
+                    }) =>
             {
                 format!(
                     "{} yields one element at a time; write `FOREACH x IN ...`, not {count} variables",
@@ -1409,7 +2073,9 @@ impl<'s> Checker<'s, '_> {
                 )
             }
             Ty::VertexSet(_) if count > 1 => {
-                format!("A vertex set yields one vertex at a time; write `FOREACH x IN ...`, not {count} variables")
+                format!(
+                    "A vertex set yields one vertex at a time; write `FOREACH x IN ...`, not {count} variables"
+                )
             }
             _ => return,
         };
@@ -1428,9 +2094,20 @@ impl<'s> Checker<'s, '_> {
                 Span::of(node),
                 severity::WARNING,
                 "accumulator-case",
-                format!("Accumulator type names are case-sensitive: write `{}`", accumulator.name),
+                format!(
+                    "Accumulator type names are case-sensitive: write `{}`",
+                    accumulator.name
+                ),
             );
-            d.data = Some(json!({ "replacement": accumulator.name }));
+            add_fix(
+                &mut d,
+                format!("Replace with `{}`", accumulator.name),
+                vec![
+                    self.snapshot
+                        .edit(Span::of(node), accumulator.name),
+                ],
+                true,
+            );
             self.out.push(d);
         }
     }
@@ -1440,7 +2117,10 @@ impl<'s> Checker<'s, '_> {
     /// reference writes patterns such as `FROM (v:Post)` in default-syntax
     /// queries. Reported once per query.
     fn cypher_syntax(&mut self, node: Node, context: &Context) {
-        let Some(mode) = context.query.filter(|m| m.old_syntax && !m.v3 && !m.interpreted) else {
+        let Some(mode) = context
+            .query
+            .filter(|m| m.old_syntax && !m.v3 && !m.interpreted)
+        else {
             return;
         };
         if self.cypher_reported == Some(mode.start) {
@@ -1463,22 +2143,36 @@ impl<'s> Checker<'s, '_> {
         let Some(operator) = node.child_by_field_name("operator") else {
             return;
         };
-        if !matches!(operator.kind(), "==" | "!=" | "<>" | "=" | "<" | "<=" | ">=") {
+        if !matches!(
+            operator.kind(),
+            "==" | "!=" | "<>" | "=" | "<" | "<=" | ">="
+        ) {
             return;
         }
-        let Some(left) = node.child_by_field_name("left").filter(|l| l.kind() == "parenthesized_expression") else {
+        let Some(left) = node
+            .child_by_field_name("left")
+            .filter(|l| l.kind() == "parenthesized_expression")
+        else {
             return;
         };
         let inner = unparenthesized(left);
         let condition = match inner.kind() {
-            "binary_expression" => inner.child_by_field_name("operator").is_some_and(|o| {
-                matches!(o.kind(), "==" | "!=" | "<>" | "=" | "<" | "<=" | ">" | ">=")
-                    || matches!(self.text(o).to_ascii_uppercase().as_str(), "AND" | "OR")
-            }),
-            "unary_expression" => {
-                inner.child_by_field_name("operator").is_some_and(|o| self.text(o).eq_ignore_ascii_case("NOT"))
-            }
-            "in_expression" | "like_expression" | "is_expression" | "between_expression" => true,
+            "binary_expression" => inner
+                .child_by_field_name("operator")
+                .is_some_and(|o| {
+                    matches!(
+                        o.kind(),
+                        "==" | "!=" | "<>" | "=" | "<" | "<=" | ">" | ">="
+                    ) || matches!(
+                        self.text(o).to_ascii_uppercase().as_str(),
+                        "AND" | "OR"
+                    )
+                }),
+            "unary_expression" => inner
+                .child_by_field_name("operator")
+                .is_some_and(|o| self.text(o).eq_ignore_ascii_case("NOT")),
+            "in_expression" | "like_expression" | "is_expression"
+            | "between_expression" => true,
             _ => false,
         };
         if condition {
@@ -1486,22 +2180,34 @@ impl<'s> Checker<'s, '_> {
                 "GSQL cannot compare a parenthesized condition with `{}`; combine the conditions with AND, OR and NOT instead (for \"exactly one of A and B\": `(A AND NOT B) OR (NOT A AND B)`)",
                 self.text(operator)
             );
-            self.report(operator, severity::ERROR, "compared-condition", message);
+            self.report(
+                operator,
+                severity::ERROR,
+                "compared-condition",
+                message,
+            );
         }
     }
 
     /// The query compiler rejects a method called on a parenthesized set
     /// expression, `(@@a MINUS @@b).size()`; the result has to be stored first.
     fn set_expression_method(&mut self, node: Node) {
-        let Some(function) = node.child_by_field_name("function").filter(|f| f.kind() == "member_expression") else {
+        let Some(function) = node
+            .child_by_field_name("function")
+            .filter(|f| f.kind() == "member_expression")
+        else {
             return;
         };
-        let Some(object) = function.child_by_field_name("object").filter(|o| o.kind() == "parenthesized_expression")
+        let Some(object) = function
+            .child_by_field_name("object")
+            .filter(|o| o.kind() == "parenthesized_expression")
         else {
             return;
         };
         let inner = unparenthesized(object);
-        let Some(operator) = inner.child_by_field_name("operator").filter(|_| inner.kind() == "binary_expression")
+        let Some(operator) = inner
+            .child_by_field_name("operator")
+            .filter(|_| inner.kind() == "binary_expression")
         else {
             return;
         };
@@ -1516,7 +2222,12 @@ impl<'s> Checker<'s, '_> {
             "GSQL cannot call `{}()` on a parenthesized {operator} expression; store the result in an accumulator or variable first and call the method on that",
             self.text(method)
         );
-        self.report(method, severity::ERROR, "set-expression-method", message);
+        self.report(
+            method,
+            severity::ERROR,
+            "set-expression-method",
+            message,
+        );
     }
 
     /// The query compiler warns about exact comparison of floating-point values.
@@ -1524,11 +2235,15 @@ impl<'s> Checker<'s, '_> {
         let Some(operator) = node.child_by_field_name("operator") else {
             return;
         };
-        let equality = operator.kind() == "==" || (operator.kind() == "=" && mode.v3);
+        let equality =
+            operator.kind() == "==" || (operator.kind() == "=" && mode.v3);
         if !equality {
             return;
         }
-        let (Some(left), Some(right)) = (node.child_by_field_name("left"), node.child_by_field_name("right")) else {
+        let (Some(left), Some(right)) = (
+            node.child_by_field_name("left"),
+            node.child_by_field_name("right"),
+        ) else {
             return;
         };
         // Whole numbers are exact in floating point: `x == 0`, and the
@@ -1537,7 +2252,11 @@ impl<'s> Checker<'s, '_> {
             || self.is_whole_literal(right)
             || self.is_rounding_of(right, left)
             || self.is_rounding_of(left, right);
-        if !exact && [left, right].into_iter().any(|operand| self.is_float(operand)) {
+        if !exact
+            && [left, right]
+                .into_iter()
+                .any(|operand| self.is_float(operand))
+        {
             self.report(
                 operator,
                 severity::WARNING,
@@ -1548,19 +2267,22 @@ impl<'s> Checker<'s, '_> {
         }
     }
 
-    /// Whether an expression has a FLOAT or DOUBLE value (iterative: operator
-    /// chains can be tens of thousands of terms long).
     /// `0`, `-1`, `2.0`: a literal without a fractional part.
     fn is_whole_literal(&self, node: Node) -> bool {
         match node.kind() {
             "integer" => true,
-            "float" => self.text(node).parse::<f64>().is_ok_and(|v| v.fract() == 0.0 && v.abs() < 9e15),
-            "parenthesized_expression" => {
-                syntax::first_code_child(node).is_some_and(|inner| self.is_whole_literal(inner))
-            }
+            "float" => self
+                .text(node)
+                .parse::<f64>()
+                .is_ok_and(|v| v.fract() == 0.0 && v.abs() < 9e15),
+            "parenthesized_expression" => syntax::first_code_child(node)
+                .is_some_and(|inner| self.is_whole_literal(inner)),
             "unary_expression" => {
-                node.child_by_field_name("operator").is_some_and(|o| o.kind() == "-")
-                    && node.child_by_field_name("operand").is_some_and(|inner| self.is_whole_literal(inner))
+                node.child_by_field_name("operator")
+                    .is_some_and(|o| o.kind() == "-")
+                    && node
+                        .child_by_field_name("operand")
+                        .is_some_and(|inner| self.is_whole_literal(inner))
             }
             _ => false,
         }
@@ -1571,14 +2293,21 @@ impl<'s> Checker<'s, '_> {
     fn is_rounding_of(&self, call: Node, operand: Node) -> bool {
         let mut call = call;
         while call.kind() == "parenthesized_expression" {
-            let Some(inner) = syntax::first_code_child(call) else { return false };
+            let Some(inner) = syntax::first_code_child(call) else {
+                return false;
+            };
             call = inner;
         }
         if call.kind() != "call_expression" {
             return false;
         }
-        let name = call.child_by_field_name("function").map(|f| self.text(f).to_ascii_lowercase());
-        if !matches!(name.as_deref(), Some("float_to_int" | "floor" | "ceil" | "round" | "trunc")) {
+        // A query or tuple type of that name replaces the built-in.
+        let Some(Callee::Builtin(function)) = self.callee(call) else {
+            return false;
+        };
+        if !["float_to_int", "floor", "ceil", "round", "trunc"]
+            .contains(&function.name)
+        {
             return false;
         }
         // The tokens without whitespace and comments.
@@ -1591,10 +2320,17 @@ impl<'s> Checker<'s, '_> {
             });
             out
         };
-        let arguments = call.child_by_field_name("arguments").map(syntax::code_children).unwrap_or_default();
-        arguments.first().is_some_and(|first| squash(*first) == squash(operand))
+        let arguments = call
+            .child_by_field_name("arguments")
+            .map(syntax::code_children)
+            .unwrap_or_default();
+        arguments
+            .first()
+            .is_some_and(|first| squash(*first) == squash(operand))
     }
 
+    /// Whether an expression has a FLOAT or DOUBLE value (iterative: operator
+    /// chains can be tens of thousands of terms long).
     fn is_float(&self, node: Node) -> bool {
         let mut pending = vec![node];
         while let Some(node) = pending.pop() {
@@ -1609,8 +2345,11 @@ impl<'s> Checker<'s, '_> {
                     false
                 }
                 "binary_expression" => {
-                    let arithmetic =
-                        node.child_by_field_name("operator").is_some_and(|o| matches!(o.kind(), "+" | "-" | "*" | "/"));
+                    let arithmetic = node
+                        .child_by_field_name("operator")
+                        .is_some_and(|o| {
+                            matches!(o.kind(), "+" | "-" | "*" | "/")
+                        });
                     if arithmetic {
                         pending.extend(node.child_by_field_name("left"));
                         pending.extend(node.child_by_field_name("right"));
@@ -1618,14 +2357,24 @@ impl<'s> Checker<'s, '_> {
                     false
                 }
                 "identifier" | "global_accumulator" | "local_accumulator" => {
-                    self.symbol_of(node).is_some_and(|s| is_float_type(&s.ty))
+                    self.symbol_of(node)
+                        .is_some_and(|s| is_float_type(&s.ty))
                 }
-                "member_expression" => node.child_by_field_name("property").is_some_and(|p| self.is_float_member(p)),
-                "call_expression" => node
-                    .child_by_field_name("function")
-                    .filter(|f| f.kind() == "identifier")
-                    .and_then(|f| builtins::function(self.text(f)))
-                    .is_some_and(|f| matches!(f.returns, "FLOAT" | "DOUBLE")),
+                "member_expression" => node
+                    .child_by_field_name("property")
+                    .is_some_and(|p| self.is_float_member(p)),
+                "call_expression" => {
+                    self.callee(node).is_some_and(|callee| {
+                        match callee {
+                            // The type of its RETURNS clause.
+                            Callee::Query(query) => is_float_type(&query.ty),
+                            Callee::Tuple => false,
+                            Callee::Builtin(function) => {
+                                matches!(function.returns, "FLOAT" | "DOUBLE")
+                            }
+                        }
+                    })
+                }
                 _ => false,
             };
             if float {
@@ -1637,46 +2386,66 @@ impl<'s> Checker<'s, '_> {
 
     /// Whether `x.property` holds a FLOAT or DOUBLE.
     fn is_float_member(&self, property: Node) -> bool {
-        self.member_types(property).is_some_and(|types| !types.is_empty() && types.iter().all(is_float_type))
+        self.member_types(property)
+            .is_some_and(|types| {
+                !types.is_empty() && types.iter().all(is_float_type)
+            })
     }
 
     /// The declared types of a member: the accumulator or local variable, or
     /// the attribute in every type that declares it. `None` when unknown.
     fn member_types(&self, property: Node) -> Option<Vec<Ty>> {
         if property.kind() == "local_accumulator" {
-            return self.symbol_of(property).map(|s| vec![s.ty.clone()]);
+            return self
+                .symbol_of(property)
+                .map(|s| vec![s.ty.clone()]);
         }
-        let reference = self.snapshot.analysis.reference_at(property.start_byte())?;
+        let reference = self
+            .snapshot
+            .analysis
+            .reference_at(property.start_byte())?;
         match resolve::target(self.snapshot, reference)? {
-            Target::Local(id) => Some(vec![self.snapshot.analysis.symbols[id].ty.clone()]),
-            Target::Global(key) if key.kind == SymbolKind::Attribute => {
-                Some(resolve::declarations(self.snapshot, &key).iter().map(|d| d.ty.clone()).collect())
+            Target::Local(id) => {
+                Some(vec![self.snapshot.analysis.symbols[id].ty.clone()])
             }
+            Target::Global(key) if key.kind == SymbolKind::Attribute => Some(
+                resolve::declarations(self.snapshot, &key)
+                    .iter()
+                    .map(|d| d.ty.clone())
+                    .collect(),
+            ),
             _ => None,
         }
     }
 
-    /// The query `name(...)` calls, when exactly one workspace query has that
-    /// name and the call is in well-formed code.
+    /// What a call by plain name, `name(...)`, calls.
+    fn callee(&self, call: Node) -> Option<Callee<'s>> {
+        let function = call
+            .child_by_field_name("function")
+            .filter(|f| f.kind() == "identifier")?;
+        resolve::callee(self.snapshot, function)
+    }
+
+    /// The query `name(...)` calls, when the call is in well-formed code.
     fn user_query(&self, call: Node) -> Option<&'s GlobalSymbol> {
-        let function = call.child_by_field_name("function").filter(|f| f.kind() == "identifier")?;
+        let Callee::Query(query) = self.callee(call)? else {
+            return None;
+        };
         // Only a file with a syntax error can have a call inside code the parser gave
         // up on. (`Node::parent` costs the depth of the node, so the walk is capped
         // and skipped for clean files: it is quadratic on a long chain of calls.)
         if self.snapshot.root().has_error() {
             let mut ancestors = syntax::self_and_ancestors(call);
-            if ancestors.by_ref().take(MAX_CALL_DEPTH).any(|a| a.is_error()) || ancestors.next().is_some() {
+            if ancestors
+                .by_ref()
+                .take(MAX_CALL_DEPTH)
+                .any(|a| a.is_error())
+                || ancestors.next().is_some()
+            {
                 return None;
             }
         }
-        let name = self.text(function);
-        let snapshot: &'s Snapshot = self.snapshot;
-        let queries = snapshot.workspace.find(SymbolKind::Query, name);
-        let [query] = queries.as_slice() else {
-            return None;
-        };
-        let shadowed = !snapshot.workspace.find(SymbolKind::TupleType, name).is_empty();
-        (!query.in_error && !shadowed).then_some(*query)
+        (!query.in_error).then_some(query)
     }
 
     /// A subquery call whose value is used where the query returns none, and
@@ -1688,36 +2457,45 @@ impl<'s> Checker<'s, '_> {
         let Some(function) = node.child_by_field_name("function") else {
             return;
         };
-        let used_as_value = node.parent().is_some_and(|p| match p.kind() {
-            "variable_declarator" => p.child_by_field_name("value") == Some(node),
-            "assignment_statement" => p.child_by_field_name("right") == Some(node),
-            _ => false,
-        });
-        if query.returns.is_none() && used_as_value {
-            let message = format!("Query `{}` has no RETURNS clause, so it returns no value", self.text(function));
-            self.report(node, severity::WARNING, "type-mismatch", message);
-        }
-        let Some(arguments) = node.child_by_field_name("arguments").filter(|a| !a.has_error()) else {
-            return;
-        };
-        let values = syntax::named_children(arguments).into_iter().filter(|c| c.kind() != "comment");
-        for (value, param) in values.zip(&query.params) {
-            // Literals are judged by the `argument-type` check of the query call.
-            let literal = match value.kind() {
-                "integer" | "float" | "string" | "boolean" | "list_literal" => true,
-                "unary_expression" => {
-                    value.child_by_field_name("operand").is_some_and(|o| matches!(o.kind(), "integer" | "float"))
+        let used_as_value = node
+            .parent()
+            .is_some_and(|p| match p.kind() {
+                "variable_declarator" => {
+                    p.child_by_field_name("value") == Some(node)
+                }
+                "assignment_statement" => {
+                    p.child_by_field_name("right") == Some(node)
                 }
                 _ => false,
-            };
-            let Some(given) = self.value_kind(value).filter(|_| !literal) else {
+            });
+        if query.returns.is_none() && used_as_value {
+            let message = format!(
+                "Query `{}` has no RETURNS clause, so it returns no value",
+                self.text(function)
+            );
+            self.report(node, severity::WARNING, "type-mismatch", message);
+        }
+        let Some(arguments) = node
+            .child_by_field_name("arguments")
+            .filter(|a| !a.has_error())
+        else {
+            return;
+        };
+        let values = syntax::code_children(arguments);
+        for (value, param) in values.into_iter().zip(&query.params) {
+            // Literals are judged by the `argument-type` check of the query call.
+            if resolve::literal_argument(value).is_some() {
+                continue;
+            }
+            let Some(given) = self.value_kind(value) else {
                 continue;
             };
-            let ty: String = param.ty.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_ascii_uppercase();
-            let accepted = match ty.as_str() {
+            let accepted = match resolve::param_type(param).as_str() {
                 "BOOL" => &[ValueKind::Bool][..],
                 "INT" | "UINT" | "FLOAT" | "DOUBLE" => &[ValueKind::Number],
-                "STRING" | "DATETIME" => &[ValueKind::Number, ValueKind::Text],
+                "STRING" | "DATETIME" => {
+                    &[ValueKind::Number, ValueKind::Text]
+                }
                 _ => continue,
             };
             if !accepted.contains(&given) {
@@ -1726,9 +2504,18 @@ impl<'s> Checker<'s, '_> {
                     ValueKind::Text => "a string",
                     ValueKind::Bool => "a boolean",
                 };
-                let message =
-                    format!("Query `{}` expects {} for `{}`, not {what}", self.text(function), param.ty, param.name);
-                self.report(value, severity::WARNING, "argument-type", message);
+                let message = format!(
+                    "Query `{}` expects {} for `{}`, not {what}",
+                    self.text(function),
+                    param.ty,
+                    param.name
+                );
+                self.report(
+                    value,
+                    severity::WARNING,
+                    "argument-type",
+                    message,
+                );
             }
         }
     }
@@ -1739,10 +2526,16 @@ impl<'s> Checker<'s, '_> {
             "integer" | "float" => Some(ValueKind::Number),
             "string" => Some(ValueKind::Text),
             "boolean" => Some(ValueKind::Bool),
-            "parenthesized_expression" => syntax::first_code_child(node).and_then(|inner| self.value_kind(inner)),
+            "parenthesized_expression" => syntax::first_code_child(node)
+                .and_then(|inner| self.value_kind(inner)),
             "unary_expression" => {
-                let operand = node.child_by_field_name("operand").and_then(|o| self.value_kind(o));
-                match node.child_by_field_name("operator").map(|o| o.kind()) {
+                let operand = node
+                    .child_by_field_name("operand")
+                    .and_then(|o| self.value_kind(o));
+                match node
+                    .child_by_field_name("operator")
+                    .map(|o| o.kind())
+                {
                     Some("-") => operand.filter(|k| *k == ValueKind::Number),
                     Some("~") => Some(ValueKind::Number),
                     Some("NOT") => Some(ValueKind::Bool),
@@ -1750,36 +2543,56 @@ impl<'s> Checker<'s, '_> {
                 }
             }
             "binary_expression" => {
-                let operator = node.child_by_field_name("operator").map(|o| o.kind())?;
-                let side = |field: &str| node.child_by_field_name(field).and_then(|n| self.value_kind(n));
+                let operator = node
+                    .child_by_field_name("operator")
+                    .map(|o| o.kind())?;
+                let side = |field: &str| {
+                    node.child_by_field_name(field)
+                        .and_then(|n| self.value_kind(n))
+                };
                 match operator {
-                    "-" | "*" | "/" | "%" | "<<" | ">>" | "&" | "|" | "^" => Some(ValueKind::Number),
+                    "-" | "*" | "/" | "%" | "<<" | ">>" | "&" | "|" | "^" => {
+                        Some(ValueKind::Number)
+                    }
                     "+" => match (side("left"), side("right")) {
-                        (Some(ValueKind::Number), Some(ValueKind::Number)) => Some(ValueKind::Number),
-                        (Some(ValueKind::Text), _) | (_, Some(ValueKind::Text)) => Some(ValueKind::Text),
+                        (
+                            Some(ValueKind::Number),
+                            Some(ValueKind::Number),
+                        ) => Some(ValueKind::Number),
+                        (Some(ValueKind::Text), _)
+                        | (_, Some(ValueKind::Text)) => Some(ValueKind::Text),
                         _ => None,
                     },
-                    "==" | "!=" | "<>" | "=" | "<" | "<=" | ">" | ">=" | "AND" | "OR" => Some(ValueKind::Bool),
+                    "==" | "!=" | "<>" | "=" | "<" | "<=" | ">" | ">="
+                    | "AND" | "OR" => Some(ValueKind::Bool),
                     _ => None,
                 }
             }
-            "in_expression" | "like_expression" | "is_expression" | "between_expression" => Some(ValueKind::Bool),
-            "identifier" | "global_accumulator" | "local_accumulator" => {
-                self.symbol_of(node).and_then(|s| value_kind_of(&s.ty))
-            }
+            "in_expression" | "like_expression" | "is_expression"
+            | "between_expression" => Some(ValueKind::Bool),
+            "identifier" | "global_accumulator" | "local_accumulator" => self
+                .symbol_of(node)
+                .and_then(|s| value_kind_of(&s.ty)),
             // A subquery returning a plain number, string or BOOL.
             "call_expression" => {
                 let query = self.user_query(node)?;
                 match &query.ty {
-                    Ty::Primitive(_) if query.returns.is_some() => value_kind_of(&query.ty),
+                    Ty::Primitive(_) if query.returns.is_some() => {
+                        value_kind_of(&query.ty)
+                    }
                     _ => None,
                 }
             }
             "member_expression" => {
-                let types = self.member_types(node.child_by_field_name("property")?)?;
-                let kinds: Vec<Option<ValueKind>> = types.iter().map(value_kind_of).collect();
+                let types =
+                    self.member_types(node.child_by_field_name("property")?)?;
+                let kinds: Vec<Option<ValueKind>> =
+                    types.iter().map(value_kind_of).collect();
                 let first = (*kinds.first()?)?;
-                kinds.iter().all(|k| *k == Some(first)).then_some(first)
+                kinds
+                    .iter()
+                    .all(|k| *k == Some(first))
+                    .then_some(first)
             }
             _ => None,
         }
@@ -1804,36 +2617,62 @@ impl<'s> Checker<'s, '_> {
                 if operator.kind() == "="
                     && left.kind() == "identifier"
                     && let Some(symbol) = self.symbol_of(left).filter(|s| {
-                        matches!(s.kind, SymbolKind::Variable | SymbolKind::Parameter | SymbolKind::LoopVariable)
+                        matches!(
+                            s.kind,
+                            SymbolKind::Variable
+                                | SymbolKind::Parameter
+                                | SymbolKind::LoopVariable
+                        )
                     })
                     && let Some(what) = stores_string_badly(&symbol.ty)
                 {
-                    let message = format!("A string cannot be stored in {what} variable ({})", symbol.ty.display());
-                    self.report(right, severity::WARNING, "type-mismatch", message);
+                    let message = format!(
+                        "A string cannot be stored in {what} variable ({})",
+                        symbol.ty.display()
+                    );
+                    self.report(
+                        right,
+                        severity::WARNING,
+                        "type-mismatch",
+                        message,
+                    );
                 }
                 // `+=` into an accumulator: see `accumulator_value`.
             }
             "variable_declaration" => {
-                let Some(declared) =
-                    node.child_by_field_name("type").map(|t| type_of_type_node(t, self.snapshot.text()))
+                let Some(declared) = node
+                    .child_by_field_name("type")
+                    .map(|t| type_of_type_node(t, self.snapshot.text()))
                 else {
                     return;
                 };
                 let Some(what) = stores_string_badly(&declared) else {
                     return;
                 };
-                for declarator in syntax::named_children(node).into_iter().filter(|c| c.kind() == "variable_declarator")
+                for declarator in syntax::named_children(node)
+                    .into_iter()
+                    .filter(|c| c.kind() == "variable_declarator")
                 {
-                    if let Some(value) = declarator.child_by_field_name("value")
+                    if let Some(value) =
+                        declarator.child_by_field_name("value")
                         && self.value_kind(value) == Some(ValueKind::Text)
                     {
-                        let message = format!("A string cannot be stored in {what} variable ({})", declared.display());
-                        self.report(value, severity::WARNING, "type-mismatch", message);
+                        let message = format!(
+                            "A string cannot be stored in {what} variable ({})",
+                            declared.display()
+                        );
+                        self.report(
+                            value,
+                            severity::WARNING,
+                            "type-mismatch",
+                            message,
+                        );
                     }
                 }
             }
             "binary_expression" => {
-                let Some(operator) = node.child_by_field_name("operator") else {
+                let Some(operator) = node.child_by_field_name("operator")
+                else {
                     return;
                 };
                 // `(k - v)` meant as `(k -> v)` is reported as that.
@@ -1843,16 +2682,37 @@ impl<'s> Checker<'s, '_> {
                 // `=` compares only in SYNTAX V3 queries (elsewhere it is an assignment).
                 let v3_equals = operator.kind() == "="
                     && context.query.is_some_and(|mode| mode.v3)
-                    && !syntax::self_and_ancestors(node).any(|a| a.is_error());
-                if v3_equals || matches!(operator.kind(), "==" | "!=" | "<>" | "<" | "<=" | ">" | ">=") {
+                    && !syntax::self_and_ancestors(node)
+                        .any(|a| a.is_error());
+                if v3_equals
+                    || matches!(
+                        operator.kind(),
+                        "==" | "!=" | "<>" | "<" | "<=" | ">" | ">="
+                    )
+                {
                     let side = |field: &str| node.child_by_field_name(field);
-                    if let (Some(left), Some(right)) = (side("left"), side("right"))
-                        && let (Some(a), Some(b)) = (self.value_kind(left), self.value_kind(right))
-                        && matches!((a, b), (ValueKind::Number, ValueKind::Text) | (ValueKind::Text, ValueKind::Number))
+                    if let (Some(left), Some(right)) =
+                        (side("left"), side("right"))
+                        && let (Some(a), Some(b)) =
+                            (self.value_kind(left), self.value_kind(right))
+                        && matches!(
+                            (a, b),
+                            (ValueKind::Number, ValueKind::Text)
+                                | (ValueKind::Text, ValueKind::Number)
+                        )
                     {
-                        let text = if a == ValueKind::Text { left } else { right };
-                        let message = format!("`{}` compares a number with a string", operator.kind());
-                        self.report(text, severity::WARNING, "type-mismatch", message);
+                        let text =
+                            if a == ValueKind::Text { left } else { right };
+                        let message = format!(
+                            "`{}` compares a number with a string",
+                            operator.kind()
+                        );
+                        self.report(
+                            text,
+                            severity::WARNING,
+                            "type-mismatch",
+                            message,
+                        );
                     }
                     return;
                 }
@@ -1863,45 +2723,86 @@ impl<'s> Checker<'s, '_> {
                     if let Some(operand) = node.child_by_field_name(field)
                         && self.value_kind(operand) == Some(ValueKind::Text)
                     {
-                        let message = format!("Arithmetic with `{}` needs numbers, not a string", operator.kind());
-                        self.report(operand, severity::WARNING, "type-mismatch", message);
+                        let message = format!(
+                            "Arithmetic with `{}` needs numbers, not a string",
+                            operator.kind()
+                        );
+                        self.report(
+                            operand,
+                            severity::WARNING,
+                            "type-mismatch",
+                            message,
+                        );
                     }
                 }
             }
             // `-"a"`
             "unary_expression" => {
-                if node.child_by_field_name("operator").is_some_and(|o| o.kind() == "-")
+                if node
+                    .child_by_field_name("operator")
+                    .is_some_and(|o| o.kind() == "-")
                     && let Some(operand) = node.child_by_field_name("operand")
                     && self.value_kind(operand) == Some(ValueKind::Text)
                 {
-                    let message = "Arithmetic with `-` needs numbers, not a string".to_string();
-                    self.report(operand, severity::WARNING, "type-mismatch", message);
+                    let message =
+                        "Arithmetic with `-` needs numbers, not a string"
+                            .to_string();
+                    self.report(
+                        operand,
+                        severity::WARNING,
+                        "type-mismatch",
+                        message,
+                    );
                 }
             }
             // `(p:Person {age: "abc"})` means `p.age == "abc"`.
-            "pair" if node.parent().is_some_and(|p| p.kind() == "property_map") => {
-                let (Some(key), Some(value)) = (node.child_by_field_name("key"), node.child_by_field_name("value"))
-                else {
+            "pair"
+                if node
+                    .parent()
+                    .is_some_and(|p| p.kind() == "property_map") =>
+            {
+                let (Some(key), Some(value)) = (
+                    node.child_by_field_name("key"),
+                    node.child_by_field_name("value"),
+                ) else {
                     return;
                 };
-                let (Some(given), true) = (self.value_kind(value), key.kind() == "identifier") else {
+                let (Some(given), true) =
+                    (self.value_kind(value), key.kind() == "identifier")
+                else {
                     return;
                 };
                 let declared = self.member_types(key).unwrap_or_default();
                 let declared = declared
                     .first()
                     .and_then(value_kind_of)
-                    .filter(|first| declared.iter().all(|t| value_kind_of(t) == Some(*first)));
+                    .filter(|first| {
+                        declared
+                            .iter()
+                            .all(|t| value_kind_of(t) == Some(*first))
+                    });
                 if let Some(declared) = declared
                     && matches!(
                         (given, declared),
-                        (ValueKind::Number, ValueKind::Text) | (ValueKind::Text, ValueKind::Number)
+                        (ValueKind::Number, ValueKind::Text)
+                            | (ValueKind::Text, ValueKind::Number)
                     )
                 {
-                    let (what, other) =
-                        if given == ValueKind::Text { ("a number", "a string") } else { ("a string", "a number") };
-                    let message = format!("`{}` is {what}, but is compared with {other}", self.text(key));
-                    self.report(value, severity::WARNING, "type-mismatch", message);
+                    let (what, other) = if given == ValueKind::Text {
+                        ("a number", "a string")
+                    } else {
+                        ("a string", "a number")
+                    };
+                    let message = format!(
+                        "`{}` is {what}, but is compared with {other}",
+                        self.text(key)
+                    );
+                    self.report(
+                        value,
+                        severity::WARNING,
+                        "type-mismatch",
+                        message,
+                    );
                 }
             }
             _ => {}
@@ -1920,11 +2821,21 @@ impl<'s> Checker<'s, '_> {
                 value,
                 severity::WARNING,
                 "type-mismatch",
-                "RETURN has a value, but the query has no RETURNS clause".into(),
+                "RETURN has a value, but the query has no RETURNS clause"
+                    .into(),
             ),
-            Returns::Declared(Some(what)) if self.value_kind(value) == Some(ValueKind::Text) => {
-                let message = format!("A string cannot be returned by a query that returns {what}");
-                self.report(value, severity::WARNING, "type-mismatch", message);
+            Returns::Declared(Some(what))
+                if self.value_kind(value) == Some(ValueKind::Text) =>
+            {
+                let message = format!(
+                    "A string cannot be returned by a query that returns {what}"
+                );
+                self.report(
+                    value,
+                    severity::WARNING,
+                    "type-mismatch",
+                    message,
+                );
             }
             Returns::Declared(_) => {}
         }
@@ -1932,71 +2843,110 @@ impl<'s> Checker<'s, '_> {
 
     /// Accumulator methods that modify the accumulator are restricted by clause.
     fn mutator(&mut self, node: Node, context: &Context) {
-        let Some(function) = node.child_by_field_name("function").filter(|f| f.kind() == "member_expression") else {
+        let Some(function) = node
+            .child_by_field_name("function")
+            .filter(|f| f.kind() == "member_expression")
+        else {
             return;
         };
-        let (Some(object), Some(method)) =
-            (function.child_by_field_name("object"), function.child_by_field_name("property"))
-        else {
+        let (Some(object), Some(method)) = (
+            function.child_by_field_name("object"),
+            function.child_by_field_name("property"),
+        ) else {
             return;
         };
         // `@@acc.method()` or `v.@acc.method()`
         let accumulator = match object.kind() {
             "global_accumulator" => object,
-            "member_expression" => match object.child_by_field_name("property") {
-                Some(property) if property.kind() == "local_accumulator" => property,
+            "member_expression" => match object
+                .child_by_field_name("property")
+            {
+                Some(property) if property.kind() == "local_accumulator" => {
+                    property
+                }
                 _ => return,
             },
             _ => return,
         };
-        let Some(Ty::Accumulator(kind, _)) = self.symbol_of(accumulator).map(|s| &s.ty) else {
-            return;
-        };
-        let is_mutator = builtins::accumulator(kind)
-            .and_then(|a| builtins::find_method(a.methods, self.text(method)))
-            .is_some_and(|m| m.mutator);
-        if !is_mutator {
+        if !self.calls_mutator(accumulator, method) {
             return;
         }
         let call = format!(".{}()", self.text(method));
         let problem = if context.print {
-            Some(format!("The accumulator mutator `{call}` cannot be used in PRINT"))
-        } else if accumulator.kind() == "global_accumulator" && (context.accum || context.post_accum) {
+            Some(format!(
+                "The accumulator mutator `{call}` cannot be used in PRINT"
+            ))
+        } else if accumulator.kind() == "global_accumulator"
+            && (context.accum || context.post_accum)
+        {
             Some(format!(
                 "Mutators of global accumulators such as `{call}` can only be called at the query-body level, not inside ACCUM or POST-ACCUM"
             ))
-        } else if accumulator.kind() == "local_accumulator" && !context.post_accum {
-            Some(format!("Mutators of vertex-attached accumulators such as `{call}` can only be called in POST-ACCUM"))
+        } else if accumulator.kind() == "local_accumulator"
+            && !context.post_accum
+        {
+            Some(format!(
+                "Mutators of vertex-attached accumulators such as `{call}` can only be called in POST-ACCUM"
+            ))
         } else {
             None
         };
         if let Some(message) = problem {
-            self.report(method, severity::ERROR, "accumulator-mutator", message);
+            self.report(
+                method,
+                severity::ERROR,
+                "accumulator-mutator",
+                message,
+            );
         }
     }
 
     /// Features the reference marks as deprecated.
     fn deprecated(&mut self, node: Node) {
         let message = match node.kind() {
-            "COMPRESS" => "`STRING COMPRESS` is deprecated since TigerGraph 3.0 and cannot be used in new schemas",
-            "tag_statement" | "tags_clause" => "Tag-based access control is deprecated",
-            "TAGS" if node.parent().is_some_and(|p| p.kind() == "print_statement") => {
+            "COMPRESS" => {
+                "`STRING COMPRESS` is deprecated since TigerGraph 3.0 and cannot be used in new schemas"
+            }
+            "tag_statement" | "tags_clause" => {
+                "Tag-based access control is deprecated"
+            }
+            "TAGS"
+                if node
+                    .parent()
+                    .is_some_and(|p| p.kind() == "print_statement") =>
+            {
                 "`PRINT ... WITH TAGS` belongs to tag-based graphs, which are deprecated"
             }
             _ => return,
         };
-        let span_node = if node.kind() == "COMPRESS" { node } else { node.child(0).unwrap_or(node) };
-        let mut d = diagnostic(self.snapshot, Span::of(span_node), severity::HINT, "deprecated", message.into());
+        let span_node = if node.kind() == "COMPRESS" {
+            node
+        } else {
+            node.child(0).unwrap_or(node)
+        };
+        let mut d = diagnostic(
+            self.snapshot,
+            Span::of(span_node),
+            severity::HINT,
+            "deprecated",
+            message.into(),
+        );
         d.tags = vec![diagnostic_tag::DEPRECATED];
         self.out.push(d);
     }
 
     fn reserved_tags(&mut self, node: Node) {
-        let field = if node.kind() == "tag_statement" { "name" } else { "tag" };
+        let field = if node.kind() == "tag_statement" {
+            "name"
+        } else {
+            "tag"
+        };
         for tag in syntax::children_by_field(node, field) {
             let name = self.text(tag).to_string();
             if is_ddl_reserved(&name) {
-                let message = format!("`{name}` is a reserved word in GSQL and cannot name a tag");
+                let message = format!(
+                    "`{name}` is a reserved word in GSQL and cannot name a tag"
+                );
                 self.report(tag, severity::ERROR, "reserved-word", message);
             }
         }
@@ -2006,62 +2956,91 @@ impl<'s> Checker<'s, '_> {
     fn interpreted(&mut self, node: Node, context: &Context) {
         let what: Option<String> = match node.kind() {
             "file_declaration" => Some("FILE objects".into()),
-            "parameter" => node.child_by_field_name("type").and_then(|t| match t.kind() {
-                "file_type" => Some("FILE parameters".to_string()),
-                "collection_type" => {
-                    let bag = t.child_by_field_name("kind").is_some_and(|k| k.kind() == "BAG");
-                    bag.then(|| "BAG parameters".to_string())
-                }
-                _ => None,
-            }),
-            "print_statement" => {
-                syntax::children(node).iter().any(|c| c.kind() == "TO_CSV").then(|| "PRINT ... TO_CSV".to_string())
-            }
+            "parameter" => node
+                .child_by_field_name("type")
+                .and_then(|t| match t.kind() {
+                    "file_type" => Some("FILE parameters".to_string()),
+                    "collection_type" => {
+                        let bag = t
+                            .child_by_field_name("kind")
+                            .is_some_and(|k| k.kind() == "BAG");
+                        bag.then(|| "BAG parameters".to_string())
+                    }
+                    _ => None,
+                }),
+            "print_statement" => syntax::has_child(node, "TO_CSV")
+                .then(|| "PRINT ... TO_CSV".to_string()),
             "raise_statement" => Some("RAISE".into()),
             "try_statement" => Some("TRY ... EXCEPTION".into()),
             "return_statement" => Some("RETURN".into()),
-            "accumulator_kind" if self.text(node).eq_ignore_ascii_case("arrayaccum") => Some("ArrayAccum".into()),
-            "member_expression" if node.child_by_field_name("prime").is_some() => {
+            "accumulator_kind"
+                if self
+                    .text(node)
+                    .eq_ignore_ascii_case("arrayaccum") =>
+            {
+                Some("ArrayAccum".into())
+            }
+            "member_expression"
+                if node.child_by_field_name("prime").is_some() =>
+            {
                 Some("the previous-value operator `'`".into())
             }
-            "is_expression" if node.child_by_field_name("right").is_some_and(|r| r.kind() == "null") => {
+            "is_expression"
+                if node
+                    .child_by_field_name("right")
+                    .is_some_and(|r| r.kind() == "null") =>
+            {
                 Some("IS NULL".into())
             }
             "primitive_type" => {
                 let text = self.text(node).to_ascii_uppercase();
-                matches!(text.as_str(), "JSONOBJECT" | "JSONARRAY").then_some(text)
+                matches!(text.as_str(), "JSONOBJECT" | "JSONARRAY")
+                    .then_some(text)
             }
-            "typed_value" if context.insert => Some("vertex types in INSERT values".into()),
-            "call_expression" => node.child_by_field_name("function").and_then(|f| match f.kind() {
-                "identifier" => {
-                    let name = self.text(f).to_ascii_lowercase();
-                    let unsupported = [
-                        "loadaccum",
-                        "selectvertex",
-                        "coalesce",
-                        "evaluate",
-                        "datetime_format",
-                        "parse_json_object",
-                        "parse_json_array",
-                    ];
-                    unsupported.contains(&name.as_str()).then(|| format!("`{}()`", self.text(f)))
-                }
-                "member_expression" => f.child_by_field_name("property").and_then(|p| {
-                    let name = self.text(p);
-                    ["neighbors", "neighborAttribute"]
-                        .iter()
-                        .any(|m| m.eq_ignore_ascii_case(name))
-                        .then(|| format!("`.{name}()`"))
+            "typed_value" if context.insert => {
+                Some("vertex types in INSERT values".into())
+            }
+            "call_expression" => node
+                .child_by_field_name("function")
+                .and_then(|f| match f.kind() {
+                    "identifier" => {
+                        let name = self.text(f).to_ascii_lowercase();
+                        let unsupported = [
+                            "loadaccum",
+                            "selectvertex",
+                            "coalesce",
+                            "evaluate",
+                            "datetime_format",
+                            "parse_json_object",
+                            "parse_json_array",
+                        ];
+                        unsupported
+                            .contains(&name.as_str())
+                            .then(|| format!("`{}()`", self.text(f)))
+                    }
+                    "member_expression" => f
+                        .child_by_field_name("property")
+                        .and_then(|p| {
+                            let name = self.text(p);
+                            ["neighbors", "neighborAttribute"]
+                                .iter()
+                                .any(|m| m.eq_ignore_ascii_case(name))
+                                .then(|| format!("`.{name}()`"))
+                        }),
+                    _ => None,
                 }),
-                _ => None,
-            }),
-            "path_pattern" => {
-                syntax::first_code_child(node).filter(|v| v.kind() == "vertex_pattern").and_then(|source| {
-                    let any =
-                        source.child_by_field_name("type").is_some_and(|t| matches!(t.kind(), "wildcard" | "any"));
-                    any.then(|| "`_` or `ANY` as the source vertex type".to_string())
-                })
-            }
+            "path_pattern" => syntax::first_code_child(node)
+                .filter(|v| v.kind() == "vertex_pattern")
+                .and_then(|source| {
+                    let any = source
+                        .child_by_field_name("type")
+                        .is_some_and(|t| {
+                            matches!(t.kind(), "wildcard" | "any")
+                        });
+                    any.then(|| {
+                        "`_` or `ANY` as the source vertex type".to_string()
+                    })
+                }),
             "interpret_query_statement" => {
                 self.shared_names(node);
                 None
@@ -2069,14 +3048,22 @@ impl<'s> Checker<'s, '_> {
             _ => None,
         };
         if let Some(what) = what {
-            let message = format!("Interpreted queries do not support {what}; create and install the query instead");
+            let message = format!(
+                "Interpreted queries do not support {what}; create and install the query instead"
+            );
             let span_node = match node.kind() {
-                "print_statement" | "try_statement" | "raise_statement" | "return_statement" | "file_declaration" => {
+                "print_statement" | "try_statement" | "raise_statement"
+                | "return_statement" | "file_declaration" => {
                     node.child(0).unwrap_or(node)
                 }
                 _ => node,
             };
-            self.report(span_node, severity::WARNING, "interpreted-mode", message);
+            self.report(
+                span_node,
+                severity::WARNING,
+                "interpreted-mode",
+                message,
+            );
         }
     }
 
@@ -2086,16 +3073,21 @@ impl<'s> Checker<'s, '_> {
             return;
         };
         let analysis = self.snapshot.analysis;
-        let scope = analysis.scope_at(body.start_byte());
-        let Some(query_scope) = analysis.query_scope(scope) else {
+        let Some(query_scope) = analysis.query_scope_at(body.start_byte())
+        else {
             return;
         };
         let symbols: Vec<&Symbol> =
-            analysis.scopes[query_scope].symbols.iter().map(|&id| &analysis.symbols[id]).collect();
-        for accumulator in symbols.iter().filter(|s| s.kind == SymbolKind::GlobalAccumulator) {
+            analysis.scope_symbols(query_scope).collect();
+        for accumulator in symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::GlobalAccumulator)
+        {
             let bare = accumulator.name.trim_start_matches('@');
-            if symbols.iter().any(|s| matches!(s.kind, SymbolKind::Parameter | SymbolKind::Variable) && s.name == bare)
-            {
+            if symbols.iter().any(|s| {
+                matches!(s.kind, SymbolKind::Parameter | SymbolKind::Variable)
+                    && s.name == bare
+            }) {
                 let message = format!(
                     "`{}` has the same name as a parameter or variable, which interpreted queries do not support",
                     accumulator.name
@@ -2127,9 +3119,13 @@ impl<'s> Checker<'s, '_> {
                     Some("Distributed queries do not support `evaluate()`".to_string())
                 } else if self.is_distributed_query(&name) {
                     if mode.distributed {
-                        Some(format!("A distributed query cannot call the distributed query `{name}`"))
+                        Some(format!(
+                            "A distributed query cannot call the distributed query `{name}`"
+                        ))
                     } else if context.accum || context.post_accum {
-                        Some(format!("The distributed query `{name}` cannot be called inside ACCUM or POST-ACCUM"))
+                        Some(format!(
+                            "The distributed query `{name}` cannot be called inside ACCUM or POST-ACCUM"
+                        ))
                     } else {
                         None
                     }
@@ -2137,27 +3133,40 @@ impl<'s> Checker<'s, '_> {
                     None
                 }
             }
-            "member_expression" if mode.distributed => function.child_by_field_name("property").and_then(|p| {
-                let name = self.text(p);
-                ["neighbors", "neighborAttribute", "edgeAttribute"]
-                    .iter()
-                    .any(|m| m.eq_ignore_ascii_case(name))
-                    .then(|| format!("Distributed queries do not support `.{name}()`"))
-            }),
+            "member_expression" if mode.distributed => {
+                function.child_by_field_name("property").and_then(|p| {
+                    let name = self.text(p);
+                    ["neighbors", "neighborAttribute", "edgeAttribute"]
+                        .iter()
+                        .any(|m| m.eq_ignore_ascii_case(name))
+                        .then(|| {
+                            format!("Distributed queries do not support `.{name}()`")
+                        })
+                })
+            }
             _ => None,
         };
         if let Some(message) = message {
-            self.report(function, severity::WARNING, "distributed-mode", message);
+            self.report(
+                function,
+                severity::WARNING,
+                "distributed-mode",
+                message,
+            );
         }
     }
 
     fn is_distributed_query(&self, name: &str) -> bool {
-        self.snapshot.workspace.find(SymbolKind::Query, name).iter().any(|q| {
-            q.detail
-                .split_whitespace()
-                .take_while(|w| !w.eq_ignore_ascii_case("QUERY"))
-                .any(|w| w.eq_ignore_ascii_case("DISTRIBUTED"))
-        })
+        self.snapshot
+            .workspace
+            .find(SymbolKind::Query, name)
+            .iter()
+            .any(|q| {
+                q.detail
+                    .split_whitespace()
+                    .take_while(|w| !w.eq_ignore_ascii_case("QUERY"))
+                    .any(|w| w.eq_ignore_ascii_case("DISTRIBUTED"))
+            })
     }
 }
 
@@ -2187,7 +3196,10 @@ fn unparenthesized(node: Node) -> Node {
 /// The accumulator a write or read is about: the object of a subscript (`@@m[k]`, `t.@m[k]`).
 fn accumulator_target(node: Node) -> Node {
     match node.kind() {
-        "subscript_expression" => node.child_by_field_name("object").map(accumulator_target).unwrap_or(node),
+        "subscript_expression" => node
+            .child_by_field_name("object")
+            .map(accumulator_target)
+            .unwrap_or(node),
         _ => node,
     }
 }
@@ -2197,7 +3209,10 @@ fn member_objects(root: Node) -> Vec<Node> {
     let mut found = Vec::new();
     syntax::walk(root, |n| {
         if n.kind() == "member_expression" {
-            found.extend(n.child_by_field_name("object").filter(|o| o.kind() == "identifier"));
+            found.extend(
+                n.child_by_field_name("object")
+                    .filter(|o| o.kind() == "identifier"),
+            );
         }
     });
     found
@@ -2205,13 +3220,21 @@ fn member_objects(root: Node) -> Vec<Node> {
 
 fn capitalized(text: &str) -> String {
     let mut chars = text.chars();
-    chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 /// `vertex type` -> `a vertex type`, `attribute` -> `an attribute`, `AvgAccum` -> `an AvgAccum`
 /// (but `a UINT`).
 fn with_article(label: &str) -> String {
-    let article = if label.starts_with(['a', 'e', 'i', 'o', 'u', 'A', 'E', 'I', 'O']) { "an" } else { "a" };
+    let article =
+        if label.starts_with(['a', 'e', 'i', 'o', 'u', 'A', 'E', 'I', 'O']) {
+            "an"
+        } else {
+            "a"
+        };
     format!("{article} {label}")
 }
 
@@ -2259,13 +3282,11 @@ fn accumulator_input_kind(ty: &Ty) -> Option<ValueKind> {
         return None;
     };
     match kind.as_str() {
-        "AvgAccum" | "DeviationAccum" | "DeviationPAccum" | "BitwiseOrAccum" | "BitwiseAndAccum" => {
-            Some(ValueKind::Number)
-        }
+        "AvgAccum" | "DeviationAccum" | "DeviationPAccum"
+        | "BitwiseOrAccum" | "BitwiseAndAccum" => Some(ValueKind::Number),
         "OrAccum" | "AndAccum" => Some(ValueKind::Bool),
-        "SumAccum" | "MaxAccum" | "MinAccum" | "SetAccum" | "BagAccum" | "ListAccum" => {
-            args.first().and_then(value_kind_of)
-        }
+        "SumAccum" | "MaxAccum" | "MinAccum" | "SetAccum" | "BagAccum"
+        | "ListAccum" => args.first().and_then(value_kind_of),
         _ => None,
     }
 }
@@ -2289,11 +3310,12 @@ fn value_kind_of(ty: &Ty) -> Option<ValueKind> {
         },
         // Reading a Deviation accumulator gives a DOUBLE, a bitwise one an INT.
         Ty::Accumulator(kind, args) => match kind.as_str() {
-            "AvgAccum" | "DeviationAccum" | "DeviationPAccum" | "BitwiseOrAccum" | "BitwiseAndAccum" => {
-                Some(ValueKind::Number)
-            }
+            "AvgAccum" | "DeviationAccum" | "DeviationPAccum"
+            | "BitwiseOrAccum" | "BitwiseAndAccum" => Some(ValueKind::Number),
             "OrAccum" | "AndAccum" => Some(ValueKind::Bool),
-            "SumAccum" | "MaxAccum" | "MinAccum" => args.first().and_then(value_kind_of),
+            "SumAccum" | "MaxAccum" | "MinAccum" => {
+                args.first().and_then(value_kind_of)
+            }
             _ => None,
         },
         _ => None,
@@ -2315,7 +3337,9 @@ fn is_float_type(ty: &Ty) -> bool {
         Ty::Primitive(name) => name == "FLOAT" || name == "DOUBLE",
         Ty::Accumulator(kind, args) => match kind.as_str() {
             "AvgAccum" | "DeviationAccum" | "DeviationPAccum" => true,
-            "SumAccum" | "MaxAccum" | "MinAccum" => args.first().is_some_and(is_float_type),
+            "SumAccum" | "MaxAccum" | "MinAccum" => {
+                args.first().is_some_and(is_float_type)
+            }
             _ => false,
         },
         _ => false,
@@ -2323,7 +3347,8 @@ fn is_float_type(ty: &Ty) -> bool {
 }
 
 fn is_list_accum(node: Node, checker: &Checker) -> bool {
-    syntax::field_text(node, "kind", checker.snapshot.text()).is_some_and(|k| k.eq_ignore_ascii_case("listaccum"))
+    syntax::field_text(node, "kind", checker.snapshot.text())
+        .is_some_and(|k| k.eq_ignore_ascii_case("listaccum"))
 }
 
 /// How many ListAccums are nested starting at `node` (a ListAccum has one
@@ -2331,7 +3356,9 @@ fn is_list_accum(node: Node, checker: &Checker) -> bool {
 fn list_depth(node: Node, checker: &Checker) -> usize {
     let mut depth = 0;
     let mut current = Some(node);
-    while let Some(list) = current.filter(|n| n.kind() == "accumulator_type" && is_list_accum(*n, checker)) {
+    while let Some(list) = current.filter(|n| {
+        n.kind() == "accumulator_type" && is_list_accum(*n, checker)
+    }) {
         depth += 1;
         current = list.child_by_field_name("argument");
     }
@@ -2342,18 +3369,10 @@ fn list_depth(node: Node, checker: &Checker) -> usize {
 mod tests {
     use crate::features::code_actions::code_actions;
     use crate::features::diagnostics::diagnostics;
-    use crate::features::test_support::Fixture;
+    use crate::features::test_support::{
+        Fixture, SCHEMA_URI, findings, with_code,
+    };
     use crate::lsp::types::{Position, Range};
-
-    /// (code, message) of every diagnostic.
-    fn findings(text: &str, others: &[(&str, &str)]) -> Vec<(String, String)> {
-        let fixture = Fixture::with_files(text, others);
-        diagnostics(&fixture.snapshot()).into_iter().filter_map(|d| Some((d.code?, d.message))).collect()
-    }
-
-    fn with_code<'a>(found: &'a [(String, String)], code: &str) -> Vec<&'a str> {
-        found.iter().filter(|(c, _)| c == code).map(|(_, m)| m.as_str()).collect()
-    }
 
     #[test]
     fn reserved_words_cannot_be_names() {
@@ -2370,7 +3389,10 @@ mod tests {
             "`count` is a reserved word in GSQL and cannot name a parameter",
             "`new` is a reserved word in GSQL and cannot name a variable",
         ] {
-            assert!(reserved.contains(&expected), "{expected:?} not in {reserved:?}");
+            assert!(
+                reserved.contains(&expected),
+                "{expected:?} not in {reserved:?}"
+            );
         }
         // C++ keywords are case-sensitive.
         assert_eq!(reserved.len(), 6, "{reserved:?}");
@@ -2397,7 +3419,10 @@ mod tests {
             "CREATE QUERY q() {\n  R = SELECT v FROM S:v LIMIT 5 OFFSET 2;\n  T = SELECT v FROM S:v ORDER BY v.id LIMIT 5 OFFSET 2;\n  U = SELECT v FROM S:v LIMIT 2, 5;\n  PRINT R, T, U;\n}\n",
             &[],
         );
-        assert_eq!(with_code(&found, "limit-offset"), ["OFFSET needs an ORDER BY clause"]);
+        assert_eq!(
+            with_code(&found, "limit-offset"),
+            ["OFFSET needs an ORDER BY clause"]
+        );
     }
 
     #[test]
@@ -2422,16 +3447,34 @@ mod tests {
                 "Edge-attached accumulators cannot be declared inside a WHILE loop",
             ]
         );
-        assert_eq!(with_code(&found, "accumulator-assignment").len(), 1, "{found:?}");
+        assert_eq!(
+            with_code(&found, "accumulator-assignment").len(),
+            1,
+            "{found:?}"
+        );
         assert_eq!(
             with_code(&found, "edge-accumulator"),
             ["Edge accumulators such as `@w` cannot be used in POST-ACCUM"]
         );
         let mutators = with_code(&found, "accumulator-mutator");
         assert_eq!(mutators.len(), 3, "{mutators:?}");
-        assert!(mutators.iter().any(|m| m.contains("global accumulators") && m.contains("query-body level")));
-        assert!(mutators.iter().any(|m| m.contains("vertex-attached accumulators") && m.contains("POST-ACCUM")));
-        assert!(mutators.iter().any(|m| m.contains("cannot be used in PRINT")));
+        assert!(
+            mutators
+                .iter()
+                .any(|m| m.contains("global accumulators")
+                    && m.contains("query-body level"))
+        );
+        assert!(
+            mutators
+                .iter()
+                .any(|m| m.contains("vertex-attached accumulators")
+                    && m.contains("POST-ACCUM"))
+        );
+        assert!(
+            mutators
+                .iter()
+                .any(|m| m.contains("cannot be used in PRINT"))
+        );
     }
 
     #[test]
@@ -2452,6 +3495,84 @@ mod tests {
     }
 
     #[test]
+    fn a_virtual_edge_in_nested_alternations_is_reported_once() {
+        let found = findings(
+            "CREATE QUERY q() {\n  CREATE DIRECTED VIRTUAL EDGE Near (FROM Person, TO Person);\n  R = SELECT t FROM Person:s -((Near>|Knows>)|Far>)- Person:t;\n  PRINT R;\n}\n",
+            &[],
+        );
+        assert_eq!(
+            with_code(&found, "virtual-edge"),
+            [
+                "The virtual edge type `Near` cannot be combined with other edge types"
+            ]
+        );
+    }
+
+    #[test]
+    fn every_virtual_edge_in_a_mixed_alternation_is_reported() {
+        let declare = |name: &str| {
+            format!(
+                "  CREATE DIRECTED VIRTUAL EDGE {name} (FROM Person, TO Person);\n"
+            )
+        };
+        let header = format!(
+            "CREATE QUERY q() {{\n{}{}",
+            declare("Near"),
+            declare("Near2")
+        );
+        let expected = [
+            "The virtual edge type `Near` cannot be combined with other edge types",
+            "The virtual edge type `Near2` cannot be combined with other edge types",
+        ];
+        // The nested and the flat form of one alternation, and a V3 list of types.
+        for pattern in [
+            "Person:s -((Knows>|Near>)|(Far>|Near2>))- Person:t",
+            "Person:s -(Knows>|Near>|Far>|Near2>)- Person:t",
+            "(s:Person)-[:Knows|Near|Far|Near2]->(t:Person)",
+        ] {
+            assert_eq!(
+                virtual_edge_messages(&header, pattern),
+                expected,
+                "{pattern}"
+            );
+        }
+    }
+
+    /// The `virtual-edge` messages for `pattern` in a query that starts with `header`.
+    fn virtual_edge_messages(header: &str, pattern: &str) -> Vec<String> {
+        let text = format!(
+            "{header}  R = SELECT t FROM {pattern};\n  PRINT R;\n}}\n"
+        );
+        let found = findings(&text, &[]);
+        with_code(&found, "virtual-edge")
+            .into_iter()
+            .map(String::from)
+            .collect()
+    }
+
+    #[test]
+    fn a_virtual_edge_repeated_alone_is_not_combined() {
+        let header = "CREATE QUERY q() {\n  \
+                      CREATE DIRECTED VIRTUAL EDGE Near (FROM Person, TO Person);\n";
+        let mixed = "The virtual edge type `Near` cannot be combined with other edge types";
+        // Both directions of one type, and one type listed twice.
+        for (pattern, expected) in [
+            ("Person:s -(Near>|<Near)- Person:t", vec![]),
+            ("(s:Person)-[:Near|Near]->(t:Person)", vec![]),
+            (
+                "Person:s -(Near>|<Near|Knows>)- Person:t",
+                vec![mixed, mixed],
+            ),
+        ] {
+            assert_eq!(
+                virtual_edge_messages(header, pattern),
+                expected,
+                "{pattern}"
+            );
+        }
+    }
+
+    #[test]
     fn nested_accumulators_follow_the_documented_rules() {
         let illegal = "CREATE QUERY q() {\n  ListAccum<SetAccum<INT>> @@a;\n  MapAccum<SetAccum<INT>, INT> @@b;\n  SetAccum<SetAccum<INT>> @@c;\n  BagAccum<ListAccum<INT>> @@d;\n  PRINT @@a, @@b, @@c, @@d;\n}\n";
         let found = findings(illegal, &[]);
@@ -2465,7 +3586,24 @@ mod tests {
             ]
         );
         let legal = "CREATE QUERY q() {\n  ListAccum<ListAccum<INT>> @@a;\n  ListAccum<ListAccum<ListAccum<INT>>> @@b;\n  MapAccum<STRING, ListAccum<INT>> @@c;\n  MapAccum<INT, MapAccum<INT, STRING>> @@d;\n  MapAccum<VERTEX, SumAccum<INT>> @@e;\n  MapAccum<STRING, SetAccum<VERTEX>> @@f;\n  MapAccum<STRING, GroupByAccum<VERTEX a, MaxAccum<INT> maxs>> @@g;\n  GroupByAccum<INT a, STRING b, MaxAccum<INT> maxs, ListAccum<ListAccum<INT>> lists> @@h;\n  ArrayAccum<SetAccum<INT>> @@i[3];\n  SetAccum<INT> @@j;\n  PRINT @@a, @@b, @@c, @@d, @@e, @@f, @@g, @@h, @@i, @@j;\n}\n";
-        assert!(with_code(&findings(legal, &[]), "accumulator-type").is_empty());
+        assert!(
+            with_code(&findings(legal, &[]), "accumulator-type").is_empty()
+        );
+    }
+
+    #[test]
+    fn nesting_messages_spell_the_accumulator_type_canonically() {
+        let found = findings(
+            "CREATE QUERY q() {\n  setaccum<SetAccum<INT>> @@a;\n  BAGACCUM<SetAccum<INT>> @@b;\n  PRINT @@a, @@b;\n}\n",
+            &[],
+        );
+        assert_eq!(
+            with_code(&found, "accumulator-type"),
+            [
+                "A SetAccum cannot contain accumulators; only ListAccum, ArrayAccum, MapAccum and GroupByAccum can",
+                "A BagAccum cannot contain accumulators; only ListAccum, ArrayAccum, MapAccum and GroupByAccum can",
+            ]
+        );
     }
 
     #[test]
@@ -2474,10 +3612,13 @@ mod tests {
         let found = findings(illegal, &[]);
         assert_eq!(
             with_code(&found, "accumulator-type"),
-            ["An ArrayAccum cannot contain a HeapAccum, MapAccum or GroupByAccum"; 3]
+            ["An ArrayAccum cannot contain a HeapAccum, MapAccum or GroupByAccum";
+                3]
         );
         let legal = "CREATE QUERY q() {\n  ArrayAccum<SumAccum<INT>> @@a[2];\n  ArrayAccum<ListAccum<INT>> @@b[2];\n  ArrayAccum<SetAccum<STRING>> @@names[10];\n  ArrayAccum<SetAccum<INT>> @@ids[][];\n  ArrayAccum<ArrayAccum<SumAccum<INT>>> @@d[2][2];\n  PRINT @@a, @@b, @@names, @@ids, @@d;\n}\n";
-        assert!(with_code(&findings(legal, &[]), "accumulator-type").is_empty());
+        assert!(
+            with_code(&findings(legal, &[]), "accumulator-type").is_empty()
+        );
     }
 
     #[test]
@@ -2502,14 +3643,19 @@ mod tests {
         let all = diagnostics(&snapshot);
         let line = Range::new(Position::new(1, 0), Position::new(1, 20));
         let actions = code_actions(&snapshot, line, &all, None, &all);
-        assert!(actions.iter().any(|a| a.title == "Replace with `SumAccum`"), "{actions:?}");
+        assert!(
+            actions
+                .iter()
+                .any(|a| a.title == "Replace with `SumAccum`"),
+            "{actions:?}"
+        );
     }
 
     #[test]
     fn warns_about_exact_float_comparison() {
         let schema = "CREATE VERTEX Account (PRIMARY_ID id STRING, balance DOUBLE, limit_ DOUBLE, n INT)\n";
         let query = "CREATE QUERY q(FLOAT x, FLOAT y) {\n  AvgAccum @@avg;\n  S = {Account.*};\n  R = SELECT a FROM S:a WHERE a.balance == a.limit_ OR a.n == 1;\n  IF x == y OR @@avg == 0.5 OR x + 1 > 2 OR 1 == 1 OR sqrt(2) == x THEN PRINT R; END;\n}\n";
-        let found = findings(query, &[("file:///test/schema.gsql", schema)]);
+        let found = findings(query, &[(SCHEMA_URI, schema)]);
         // a.balance == a.limit_, x == y, @@avg == 0.5 and sqrt(2) == x; not a.n, 1 == 1 or `>`.
         assert_eq!(with_code(&found, "float-equality").len(), 4, "{found:?}");
     }
@@ -2518,7 +3664,7 @@ mod tests {
     fn flags_strings_where_numbers_are_needed() {
         let schema = "CREATE VERTEX Account (PRIMARY_ID id STRING, name STRING, balance DOUBLE, n INT)\n";
         let query = "CREATE QUERY q(STRING label) {\n  SumAccum<INT> @@total;\n  SumAccum<STRING> @@names;\n  SumAccum<DOUBLE> @sum;\n  SetAccum<INT> @@ids;\n  INT bad = \"x\";\n  BOOL also = \"true\";\n  STRING fine = \"x\";\n  S = {Account.*};\n  R = SELECT a FROM S:a\n      ACCUM @@total += a.name, @@total += a.n, @@names += a.name, a.@sum += label, a.@sum += a.balance * 2, @@ids += a.name,\n            @@total += \"1\" + a.n;\n  INT x = a.n - \"2\";\n  PRINT R, bad, also, fine, x;\n}\n";
-        let found = findings(query, &[("file:///test/schema.gsql", schema)]);
+        let found = findings(query, &[(SCHEMA_URI, schema)]);
         let mismatches = with_code(&found, "type-mismatch");
         assert_eq!(
             mismatches,
@@ -2586,7 +3732,7 @@ mod tests {
     fn flags_comparing_numbers_with_strings() {
         let schema = "CREATE VERTEX Account (PRIMARY_ID id STRING, name STRING, n INT)\n";
         let query = "CREATE QUERY q(INT k, STRING label) {\n  S = {Account.*};\n  R = SELECT a FROM S:a WHERE a.n == \"7\" OR a.name == 7 OR k > \"1\" OR label != 1 OR a.n == k OR a.name == label OR a.name == \"x\" OR a.n >= 1;\n  PRINT R;\n}\n";
-        let found = findings(query, &[("file:///test/schema.gsql", schema)]);
+        let found = findings(query, &[(SCHEMA_URI, schema)]);
         assert_eq!(with_code(&found, "type-mismatch").len(), 4, "{found:?}");
     }
 
@@ -2598,7 +3744,12 @@ mod tests {
         // Not: a condition on the right, arithmetic or a plain name in parentheses,
         // `>`, or a comparison without parentheses.
         assert_eq!(messages.len(), 3, "{found:?}");
-        assert!(messages[0].starts_with("GSQL cannot compare a parenthesized condition with `!=`"), "{messages:?}");
+        assert!(
+            messages[0].starts_with(
+                "GSQL cannot compare a parenthesized condition with `!=`"
+            ),
+            "{messages:?}"
+        );
     }
 
     #[test]
@@ -2609,11 +3760,15 @@ mod tests {
         // Not: the stored result, or a plain accumulator in parentheses.
         assert_eq!(messages.len(), 3, "{found:?}");
         assert!(
-            messages[0].starts_with("GSQL cannot call `size()` on a parenthesized MINUS expression"),
+            messages[0].starts_with(
+                "GSQL cannot call `size()` on a parenthesized MINUS expression"
+            ),
             "{messages:?}"
         );
         assert!(
-            messages[1].starts_with("GSQL cannot call `contains()` on a parenthesized UNION expression"),
+            messages[1].starts_with(
+                "GSQL cannot call `contains()` on a parenthesized UNION expression"
+            ),
             "{messages:?}"
         );
     }
@@ -2629,36 +3784,120 @@ mod tests {
             .collect();
         // Only the first clause: the others use `v` or are bound to it.
         assert_eq!(found.len(), 1, "{found:?}");
-        assert_eq!(found[0].range.start, Position { line: 4, character: 24 });
-        let actions = code_actions(&snapshot, found[0].range, std::slice::from_ref(&found[0]), None, &found);
-        let titles: Vec<&str> = actions.iter().map(|a| a.title.as_str()).collect();
+        assert_eq!(
+            found[0].range.start,
+            Position {
+                line: 4,
+                character: 24
+            }
+        );
+        let actions = code_actions(
+            &snapshot,
+            found[0].range,
+            std::slice::from_ref(&found[0]),
+            None,
+            &found,
+        );
+        let titles: Vec<&str> = actions
+            .iter()
+            .map(|a| a.title.as_str())
+            .collect();
         assert_eq!(titles, ["Bind the clause to `v`: `POST-ACCUM (v)`"]);
     }
 
     #[test]
     fn whole_number_comparisons_are_exact() {
-        let schema = "CREATE VERTEX Account (PRIMARY_ID id STRING, balance DOUBLE)\n";
+        let schema =
+            "CREATE VERTEX Account (PRIMARY_ID id STRING, balance DOUBLE)\n";
         let query = "CREATE QUERY q(DOUBLE val) {\n  S = {Account.*};\n  R = SELECT a FROM S:a WHERE a.balance == 0 OR a.balance == -1 OR 2.0 == a.balance;\n  BOOL whole = val == float_to_int(val);\n  BOOL also = (floor(val)) == val OR val == round( val );\n  BOOL flagged = val == float_to_int(val + 1) OR val == 0.1;\n  PRINT R, whole, also, flagged;\n}\n";
-        let found = findings(query, &[("file:///test/schema.gsql", schema)]);
+        let found = findings(query, &[(SCHEMA_URI, schema)]);
         // Only `val == float_to_int(val + 1)` (another value) and `val == 0.1`.
         assert_eq!(with_code(&found, "float-equality").len(), 2, "{found:?}");
+    }
+
+    /// A query comparing an INT with `sqrt`, a builtin that returns a float.
+    const SQRT_CALLER: &str = "CREATE QUERY caller() {\n  INT x = 2;\n  \
+                               IF x == sqrt(4) THEN PRINT x; END;\n}\n";
+
+    /// The number of float-equality warnings in `text`.
+    fn float_equality(text: &str, others: &[(&str, &str)]) -> usize {
+        with_code(&findings(text, others), "float-equality").len()
+    }
+
+    #[test]
+    fn a_query_or_tuple_type_named_like_a_float_builtin_is_not_a_float() {
+        assert_eq!(float_equality(SQRT_CALLER, &[]), 1);
+        let query = "CREATE QUERY sqrt(INT a) RETURNS (INT) { RETURN a; }\n";
+        let tuple = "TYPEDEF TUPLE <INT n> sqrt;\n";
+        for shadow in [query, tuple] {
+            let other = [("file:///test/other.gsql", shadow)];
+            assert_eq!(float_equality(SQRT_CALLER, &other), 0, "{shadow}");
+            let text = format!("{shadow}{SQRT_CALLER}");
+            assert_eq!(float_equality(&text, &[]), 0, "{shadow}");
+        }
+    }
+
+    #[test]
+    fn a_query_named_like_a_builtin_has_the_value_its_returns_clause_names() {
+        let query =
+            "CREATE QUERY sqrt(INT a) RETURNS (FLOAT) { RETURN a * 1.5; }\n";
+        let other = [("file:///test/other.gsql", query)];
+        assert_eq!(float_equality(SQRT_CALLER, &other), 1);
+        assert_eq!(float_equality(&format!("{query}{SQRT_CALLER}"), &[]), 1);
+        // A tuple type of that name shadows the query.
+        let tuple =
+            ("file:///test/tuple.gsql", "TYPEDEF TUPLE <INT n> sqrt;\n");
+        assert_eq!(float_equality(SQRT_CALLER, &[other[0], tuple]), 0);
+    }
+
+    #[test]
+    fn a_query_or_tuple_type_named_like_a_rounding_builtin_does_not_round() {
+        let caller = "CREATE QUERY q(DOUBLE val) {\n  \
+                      BOOL b = val == round(val);\n  PRINT b;\n}\n";
+        assert_eq!(float_equality(caller, &[]), 0);
+        let query = "CREATE QUERY round(DOUBLE v) RETURNS (DOUBLE) { RETURN v * 1.5; }\n";
+        let tuple = "TYPEDEF TUPLE <DOUBLE d> round;\n";
+        for shadow in [query, tuple] {
+            let other = [("file:///test/other.gsql", shadow)];
+            assert_eq!(float_equality(caller, &other), 1, "{shadow}");
+            assert_eq!(
+                float_equality(&format!("{shadow}{caller}"), &[]),
+                1,
+                "{shadow}"
+            );
+        }
+        // A tuple type declared in the query.
+        let local =
+            caller.replace("{\n", "{\n  TYPEDEF TUPLE <DOUBLE d> round;\n");
+        assert_eq!(float_equality(&local, &[]), 1);
     }
 
     #[test]
     fn float_equality_has_its_own_switch() {
         let query = "CREATE QUERY q(FLOAT x, FLOAT y) {\n  IF x == y THEN PRINT x; END;\n}\n";
         let mut fixture = Fixture::new(query);
-        assert_eq!(with_code(&findings(query, &[]), "float-equality").len(), 1);
-        fixture.config.update(&serde_json::json!({ "diagnostics": { "floatEquality": false } }));
-        let found: Vec<String> = diagnostics(&fixture.snapshot()).into_iter().filter_map(|d| d.code).collect();
+        assert_eq!(float_equality(query, &[]), 1);
+        fixture.config.update(
+            &serde_json::json!({ "diagnostics": { "floatEquality": false } }),
+        );
+        let found: Vec<String> = diagnostics(&fixture.snapshot())
+            .into_iter()
+            .filter_map(|d| d.code)
+            .collect();
         assert!(!found.contains(&"float-equality".to_string()), "{found:?}");
         // The other language rules stay on.
         let reserved = "CREATE QUERY q(FLOAT x, FLOAT y) {\n  INT count = 1;\n  IF x == y THEN PRINT count; END;\n}\n";
         let mut fixture = Fixture::new(reserved);
-        fixture.config.update(&serde_json::json!({ "diagnostics": { "floatEquality": false } }));
-        let found: Vec<String> = diagnostics(&fixture.snapshot()).into_iter().filter_map(|d| d.code).collect();
+        fixture.config.update(
+            &serde_json::json!({ "diagnostics": { "floatEquality": false } }),
+        );
+        let found: Vec<String> = diagnostics(&fixture.snapshot())
+            .into_iter()
+            .filter_map(|d| d.code)
+            .collect();
         assert!(
-            found.contains(&"reserved-word".to_string()) && !found.contains(&"float-equality".to_string()),
+            found.contains(&"reserved-word".to_string())
+                && !found.contains(&"float-equality".to_string()),
             "{found:?}"
         );
     }
@@ -2669,10 +3908,20 @@ mod tests {
         let found = findings(interpreted, &[]);
         let messages = with_code(&found, "interpreted-mode");
         assert_eq!(messages.len(), 6, "{messages:?}");
-        assert!(messages.iter().all(|m| m.contains("not support") || m.contains("same name")), "{messages:?}");
+        assert!(
+            messages
+                .iter()
+                .all(|m| m.contains("not support")
+                    || m.contains("same name")),
+            "{messages:?}"
+        );
         // The same body is fine in an installed query.
-        let installed = interpreted.replace("INTERPRET QUERY (", "CREATE QUERY q(");
-        assert!(with_code(&findings(&installed, &[]), "interpreted-mode").is_empty());
+        let installed =
+            interpreted.replace("INTERPRET QUERY (", "CREATE QUERY q(");
+        assert!(
+            with_code(&findings(&installed, &[]), "interpreted-mode")
+                .is_empty()
+        );
 
         let distributed = "CREATE DISTRIBUTED QUERY helper() { PRINT 1; }\nCREATE DISTRIBUTED QUERY d(VERTEX v) {\n  S = {v};\n  R = SELECT s FROM S:s WHERE s.neighbors().size() > 1;\n  helper();\n  PRINT R;\n}\nCREATE QUERY plain() {\n  S = {Person.*};\n  R = SELECT s FROM S:s ACCUM helper();\n  helper();\n  PRINT R;\n}\n";
         let found = findings(distributed, &[]);
@@ -2688,7 +3937,8 @@ mod tests {
 
     #[test]
     fn rules_can_be_turned_off() {
-        let mut fixture = Fixture::new("CREATE QUERY q(INT count) { PRINT count; }\n");
+        let mut fixture =
+            Fixture::new("CREATE QUERY q(INT count) { PRINT count; }\n");
         fixture.config.diagnostics_language_rules = false;
         assert!(diagnostics(&fixture.snapshot()).is_empty());
     }
@@ -2697,7 +3947,7 @@ mod tests {
     fn number_and_string_comparisons_with_v3_operators() {
         let schema = "CREATE VERTEX Person (PRIMARY_ID id STRING, name STRING, age INT)\nCREATE UNDIRECTED EDGE Knows (FROM Person, TO Person, since INT)\n";
         let v3 = "CREATE QUERY q() FOR GRAPH G SYNTAX V3 {\n  INT n = 1;\n  SELECT p INTO T FROM (p:Person {age: \"abc\", name: 5, name: \"x\", age: 7})-[:Knows {since: \"1\"}]-(q:Person) WHERE q.age = \"7\" AND q.name = \"a\" AND q.age <> 7;\n  IF n = \"a\" THEN PRINT n; END;\n  IF n <> \"a\" THEN PRINT n; END;\n  IF n = 1 THEN PRINT n; END;\n  PRINT T;\n}\n";
-        let found = findings(v3, &[("file:///test/schema.gsql", schema)]);
+        let found = findings(v3, &[(SCHEMA_URI, schema)]);
         assert_eq!(
             with_code(&found, "type-mismatch"),
             [
@@ -2713,14 +3963,24 @@ mod tests {
         // Before SYNTAX V3, `=` is not a comparison (it has its own diagnostic).
         let v2 = "CREATE QUERY q(INT n) {\n  IF n = \"a\" THEN PRINT n; END;\n  IF n <> \"a\" THEN PRINT n; END;\n}\n";
         let found = findings(v2, &[]);
-        assert_eq!(with_code(&found, "type-mismatch"), ["`<>` compares a number with a string"], "{found:?}");
+        assert_eq!(
+            with_code(&found, "type-mismatch"),
+            ["`<>` compares a number with a string"],
+            "{found:?}"
+        );
     }
 
     #[test]
     fn cypher_patterns_need_an_explicit_v3_only_when_v1_or_v2_is_declared() {
         let pattern = "SELECT p.name INTO T FROM (p:Person)-[e:Knows]-(q:Person);\n  SELECT q.name INTO T2 FROM (p:Person)-[e:Knows]-(q:Person);\n";
-        let query = |clause: &str| format!("CREATE QUERY q() FOR GRAPH G {clause}{{\n  {pattern}  PRINT T;\n}}\n");
-        let reported = |text: &str| with_code(&findings(text, &[]), "cypher-syntax").len();
+        let query = |clause: &str| {
+            format!(
+                "CREATE QUERY q() FOR GRAPH G {clause}{{\n  {pattern}  PRINT T;\n}}\n"
+            )
+        };
+        let reported = |text: &str| {
+            with_code(&findings(text, &[]), "cypher-syntax").len()
+        };
         // Once per query.
         assert_eq!(reported(&query("SYNTAX V2 ")), 1);
         assert_eq!(reported(&query("SYNTAX v1 ")), 1);
@@ -2733,7 +3993,12 @@ mod tests {
         let all = diagnostics(&snapshot);
         let line = Range::new(Position::new(1, 0), Position::new(1, 30));
         let actions = code_actions(&snapshot, line, &all, None, &all);
-        assert!(actions.iter().any(|a| a.title == "Change the query to SYNTAX V3"), "{actions:?}");
+        assert!(
+            actions
+                .iter()
+                .any(|a| a.title == "Change the query to SYNTAX V3"),
+            "{actions:?}"
+        );
     }
 
     const SUBQUERIES: &str = "CREATE QUERY count_of(INT n, STRING label, BOOL flag) FOR GRAPH G RETURNS (INT) { RETURN n; }\n\
@@ -2742,7 +4007,9 @@ mod tests {
         CREATE QUERY plain(INT n) FOR GRAPH G { PRINT n; }\n";
 
     fn caller(body: &str) -> String {
-        format!("CREATE QUERY q(STRING s, INT i, BOOL b) FOR GRAPH G {{\n{body}\n}}\n")
+        format!(
+            "CREATE QUERY q(STRING s, INT i, BOOL b) FOR GRAPH G {{\n{body}\n}}\n"
+        )
     }
 
     #[test]
@@ -2767,16 +4034,67 @@ mod tests {
     #[test]
     fn subquery_without_returns_gives_no_value() {
         let found = findings(
-            &caller("  INT a = plain(1);\n  a = plain(2);\n  INT c = count_of(1, \"x\", TRUE);\n  PRINT a, c;"),
+            &caller(
+                "  INT a = plain(1);\n  a = plain(2);\n  INT c = count_of(1, \"x\", TRUE);\n  PRINT a, c;",
+            ),
             &[("file:///test/s.gsql", SUBQUERIES)],
         );
-        let expected = "Query `plain` has no RETURNS clause, so it returns no value";
-        assert_eq!(with_code(&found, "type-mismatch"), [expected, expected], "{found:?}");
+        let expected =
+            "Query `plain` has no RETURNS clause, so it returns no value";
+        assert_eq!(
+            with_code(&found, "type-mismatch"),
+            [expected, expected],
+            "{found:?}"
+        );
         // Without the query in the workspace, or with two of that name, nothing is known.
-        assert!(with_code(&findings(&caller("  INT a = plain(1);\n  PRINT a;"), &[]), "type-mismatch").is_empty());
-        let twice = format!("{SUBQUERIES}CREATE QUERY plain(INT n) FOR GRAPH G RETURNS (INT) {{ RETURN n; }}\n");
-        let found = findings(&caller("  INT a = plain(1);\n  PRINT a;"), &[("file:///test/s.gsql", &twice)]);
+        assert!(
+            with_code(
+                &findings(&caller("  INT a = plain(1);\n  PRINT a;"), &[]),
+                "type-mismatch"
+            )
+            .is_empty()
+        );
+        let twice = format!(
+            "{SUBQUERIES}CREATE QUERY plain(INT n) FOR GRAPH G RETURNS (INT) {{ RETURN n; }}\n"
+        );
+        let found = findings(
+            &caller("  INT a = plain(1);\n  PRINT a;"),
+            &[("file:///test/s.gsql", &twice)],
+        );
         assert!(with_code(&found, "type-mismatch").is_empty(), "{found:?}");
+    }
+
+    #[test]
+    fn a_tuple_type_shadows_a_subquery_of_the_same_name() {
+        // `plain` takes an INT and returns nothing.
+        let call = |typedef: &str| {
+            caller(&format!(
+                "  {typedef}ListAccum<plain> @@l;\n  @@l += plain(s);\n  PRINT @@l;"
+            ))
+        };
+        let subquery_findings =
+            |text: &str, others: &[(&str, &str)]| -> Vec<String> {
+                let found = findings(text, others);
+                let mut messages = with_code(&found, "type-mismatch");
+                messages.extend(with_code(&found, "argument-type"));
+                messages
+                    .into_iter()
+                    .map(String::from)
+                    .collect()
+            };
+        let subqueries = ("file:///test/s.gsql", SUBQUERIES);
+        assert_eq!(
+            subquery_findings(&call(""), &[subqueries]),
+            [
+                "Query `plain` has no RETURNS clause, so it returns no value",
+                "Query `plain` expects INT for `n`, not a string",
+            ]
+        );
+        let tuple = "TYPEDEF TUPLE <STRING label> plain;\n";
+        // In another file, and in the calling query.
+        let others = [("file:///test/t.gsql", tuple), subqueries];
+        assert!(subquery_findings(&call(""), &others).is_empty());
+        assert!(subquery_findings(&call(tuple), &[subqueries]).is_empty());
     }
 
     #[test]
@@ -2809,6 +4127,25 @@ mod tests {
         assert_eq!(with_code(&found, "argument-type").len(), 1, "{found:?}");
     }
 
+    #[test]
+    fn subquery_arguments_with_tilde_or_not_are_judged_like_other_values() {
+        let found = findings(
+            &caller(
+                "  INT a = count_of(1, \"x\", -1);\n  INT c = count_of(1, \"x\", ~1);\n  INT d = count_of(NOT 1, \"x\", TRUE);\n  PRINT a, c, d;",
+            ),
+            &[("file:///test/s.gsql", SUBQUERIES)],
+        );
+        assert_eq!(
+            with_code(&found, "argument-type"),
+            [
+                "Query `count_of` expects BOOL for `flag`, not a negative integer",
+                "Query `count_of` expects BOOL for `flag`, not a number",
+                "Query `count_of` expects INT for `n`, not a boolean",
+            ],
+            "{found:?}"
+        );
+    }
+
     fn select_block(select: &str) -> String {
         format!(
             "CREATE QUERY q() FOR GRAPH G {{\n  SumAccum<INT> @cnt;\n  SumAccum<INT> @@n;\n  S = {{Person.*}};\n  R = {select};\n  PRINT R;\n}}\n"
@@ -2817,7 +4154,10 @@ mod tests {
 
     fn select_messages(select: &str, code: &str) -> Vec<String> {
         let found = findings(&select_block(select), &[]);
-        with_code(&found, code).iter().map(|m| m.to_string()).collect()
+        with_code(&found, code)
+            .iter()
+            .map(|m| m.to_string())
+            .collect()
     }
 
     #[test]
@@ -2825,11 +4165,20 @@ mod tests {
         let messages = |select: &str| select_messages(select, "having-alias");
         // The documentation's example, in both patterns syntaxes.
         let docs = "SELECT v FROM (v:S) -[e]- (tgt:Post) HAVING tgt.subject == \"cats\"";
-        assert_eq!(messages(docs), ["The SELECT block selects `v`, but the HAVING clause uses `tgt`"]);
+        assert_eq!(
+            messages(docs),
+            [
+                "The SELECT block selects `v`, but the HAVING clause uses `tgt`"
+            ]
+        );
         let v1 = "SELECT v FROM S:v -(:e)- Post:tgt HAVING tgt.subject == \"cats\"";
         assert_eq!(messages(v1).len(), 1);
         // Accumulators of another alias count too.
-        assert_eq!(messages("SELECT v FROM S:v -(E)- Post:t HAVING v.@cnt > 1 AND t.@cnt > 1").len(), 1);
+        assert_eq!(
+            messages("SELECT v FROM S:v -(E)- Post:t HAVING v.@cnt > 1 AND t.@cnt > 1")
+                .len(),
+            1
+        );
         // Valid: the selected alias, non-alias names, several results, GROUP BY.
         for ok in [
             "SELECT v FROM (v:S) -[e]- (tgt:Post) HAVING v.@cnt > 1",
@@ -2846,21 +4195,38 @@ mod tests {
     #[test]
     fn per_confines_the_aliases_of_select_and_accumulation() {
         let from = "FROM S:s - (E1:edge1) - M:m - (E2:edge2) - T:t";
-        let count = |tail: &str| select_messages(&format!("SELECT {tail}"), "per-alias");
+        let count = |tail: &str| {
+            select_messages(&format!("SELECT {tail}"), "per-alias")
+        };
         // The three illegal examples of the documentation.
         assert_eq!(
             count(&format!("t {from} PER (s, m) ACCUM @@n += 1")),
             ["`t` is used here but does not appear in the PER clause"]
         );
-        assert_eq!(count(&format!("t {from} PER (s, m) ACCUM t.@cnt += 1")).len(), 2);
-        assert_eq!(count(&format!("s {from} PER (s) ACCUM s.@cnt += 1 POST-ACCUM t.@cnt = 1")).len(), 1);
-        assert_eq!(count("v FROM (v:S) -[e]- (t:Post) PER (v) ACCUM t.@cnt += 1").len(), 1);
+        assert_eq!(
+            count(&format!("t {from} PER (s, m) ACCUM t.@cnt += 1")).len(),
+            2
+        );
+        assert_eq!(
+            count(&format!(
+                "s {from} PER (s) ACCUM s.@cnt += 1 POST-ACCUM t.@cnt = 1"
+            ))
+            .len(),
+            1
+        );
+        assert_eq!(
+            count("v FROM (v:S) -[e]- (t:Post) PER (v) ACCUM t.@cnt += 1")
+                .len(),
+            1
+        );
         // Valid: the documentation's legal examples, and names that are no pattern vertices.
         for ok in [
             format!("s {from} PER (s) ACCUM @@n += 1"),
             format!("t {from} PER (s, t) ACCUM @@n += 1"),
             format!("t {from} PER (s, m, t) ACCUM t.@cnt += 1, s.@cnt += 1"),
-            format!("s {from} PER (s) ACCUM s.@cnt += edge1.x POST-ACCUM s.@cnt += 1"),
+            format!(
+                "s {from} PER (s) ACCUM s.@cnt += edge1.x POST-ACCUM s.@cnt += 1"
+            ),
             format!("t {from} ACCUM t.@cnt += 1"),
         ] {
             assert!(count(&ok).is_empty(), "{ok}");
@@ -2869,12 +4235,27 @@ mod tests {
 
     #[test]
     fn conjunctive_patterns_must_share_a_vertex_alias() {
-        let count = |from: &str| select_messages(&format!("SELECT p {from}"), "pattern-join").len();
+        let count = |from: &str| {
+            select_messages(&format!("SELECT p {from}"), "pattern-join").len()
+        };
         // The documentation's invalid example, and its V3 form.
-        assert_eq!(count("FROM Person:p - (KNOWS) - Person:tgt, Post:s - (<LIKES) - Person:t"), 1);
-        assert_eq!(count("FROM (p:Person) - [:Friend] - (tgt:Person), (s:Post) - [:Likes] - (t:Person)"), 1);
+        assert_eq!(
+            count(
+                "FROM Person:p - (KNOWS) - Person:tgt, Post:s - (<LIKES) - Person:t"
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                "FROM (p:Person) - [:Friend] - (tgt:Person), (s:Post) - [:Likes] - (t:Person)"
+            ),
+            1
+        );
         // The third pattern joins the second but not the first.
-        assert_eq!(count("FROM X:p - (E) - Y:a, Z:b - (E) - W:c, Z:b - (E) - U:d"), 1);
+        assert_eq!(
+            count("FROM X:p - (E) - Y:a, Z:b - (E) - W:c, Z:b - (E) - U:d"),
+            1
+        );
         // Valid: joined directly, transitively, through an alias-only vertex.
         for ok in [
             "FROM Person:p - (KNOWS) - :tgt, Post:s - (<LIKES) - :tgt",
@@ -2892,7 +4273,8 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_assignment_before_the_read_is_only_a_hint_and_equal_bounds_are_a_count() {
+    fn a_plain_assignment_before_the_read_is_only_a_hint_and_equal_bounds_are_a_count()
+     {
         let severities = |text: &str, code: &str| -> Vec<Option<u8>> {
             let fixture = Fixture::new(text);
             crate::features::diagnostics::diagnostics(&fixture.snapshot())
@@ -2907,11 +4289,17 @@ mod tests {
             )
         };
         assert_eq!(
-            severities(&query("ACCUM s.@c = 1, @@n += s.@c"), "accumulator-read-after-write"),
+            severities(
+                &query("ACCUM s.@c = 1, @@n += s.@c"),
+                "accumulator-read-after-write"
+            ),
             [Some(crate::lsp::types::severity::HINT)]
         );
         assert_eq!(
-            severities(&query("ACCUM s.@c += 1, @@n += s.@c"), "accumulator-read-after-write"),
+            severities(
+                &query("ACCUM s.@c += 1, @@n += s.@c"),
+                "accumulator-read-after-write"
+            ),
             [Some(crate::lsp::types::severity::WARNING)]
         );
         let edge = |bounds: &str| {
@@ -2920,7 +4308,10 @@ mod tests {
             )
         };
         for exact in ["3", "2..2"] {
-            assert!(severities(&edge(exact), "kleene-edge-alias").is_empty(), "*{exact}");
+            assert!(
+                severities(&edge(exact), "kleene-edge-alias").is_empty(),
+                "*{exact}"
+            );
         }
         assert_eq!(severities(&edge("1..3"), "kleene-edge-alias").len(), 1);
     }
@@ -2928,7 +4319,10 @@ mod tests {
     #[test]
     fn accumulators_are_read_from_the_snapshot_of_the_accum_clause() {
         let count = |tail: &str| {
-            select_messages(&format!("SELECT s FROM S:s -(E:e)- P:t {tail}"), "accumulator-read-after-write")
+            select_messages(
+                &format!("SELECT s FROM S:s -(E:e)- P:t {tail}"),
+                "accumulator-read-after-write",
+            )
         };
         // The documentation's wrong example, and its global and subscripted forms.
         assert_eq!(
@@ -2939,9 +4333,18 @@ mod tests {
         );
         assert_eq!(count("ACCUM @@n += 1, t.@cnt += @@n").len(), 1);
         assert_eq!(count("ACCUM t.@cnt += 1, s.@cnt += t.@cnt").len(), 1);
-        assert_eq!(count("ACCUM s.@cnt = 1, @@n += s.@cnt + s.@cnt").len(), 2);
-        assert_eq!(count("ACCUM @@n += 1, IF @@n > 3 THEN t.@cnt += 1 END").len(), 1);
-        assert_eq!(count("ACCUM IF e.x > 1 THEN @@n += 1, t.@cnt += @@n END").len(), 1);
+        assert_eq!(
+            count("ACCUM s.@cnt = 1, @@n += s.@cnt + s.@cnt").len(),
+            2
+        );
+        assert_eq!(
+            count("ACCUM @@n += 1, IF @@n > 3 THEN t.@cnt += 1 END").len(),
+            1
+        );
+        assert_eq!(
+            count("ACCUM IF e.x > 1 THEN @@n += 1, t.@cnt += @@n END").len(),
+            1
+        );
         // Valid: the read moves to POST-ACCUM, comes first, or sits in the write itself.
         for ok in [
             "ACCUM s.@cnt += 1 POST-ACCUM @@n += s.@cnt",
@@ -2964,12 +4367,17 @@ mod tests {
             "CREATE QUERY q() FOR GRAPH G {\n  ListAccum<INT> @@l;\n  MapAccum<INT, INT> @@m;\n  S = {Person.*};\n  R = SELECT s FROM S:s -(E)- P:t ACCUM @@m[1] += 1, @@m[2] += 1, @@l.clear();\n}\n",
             &[],
         );
-        assert!(with_code(&found, "accumulator-read-after-write").is_empty(), "{found:?}");
+        assert!(
+            with_code(&found, "accumulator-read-after-write").is_empty(),
+            "{found:?}"
+        );
     }
 
     #[test]
     fn edge_aliases_need_a_single_edge() {
-        let count = |from: &str| select_messages(&format!("SELECT t {from}"), "kleene-edge-alias");
+        let count = |from: &str| {
+            select_messages(&format!("SELECT t {from}"), "kleene-edge-alias")
+        };
         assert_eq!(
             count("FROM S:s -(E>*:e)- P:t"),
             [
@@ -2980,9 +4388,12 @@ mod tests {
         assert_eq!(count("FROM S:s -((E>|F>)*:e)- P:t").len(), 1);
         assert_eq!(count("FROM S:s -(A>.B>*:e)- P:t").len(), 1);
         // Valid: no alias, no repetition, an exact count.
-        for ok in
-            ["FROM S:s -(E>*)- P:t", "FROM S:s -(E>*1..3)- P:t", "FROM S:s -(E>:e)- P:t", "FROM S:s -(E>*2:e)- P:t"]
-        {
+        for ok in [
+            "FROM S:s -(E>*)- P:t",
+            "FROM S:s -(E>*1..3)- P:t",
+            "FROM S:s -(E>:e)- P:t",
+            "FROM S:s -(E>*2:e)- P:t",
+        ] {
             assert!(count(ok).is_empty(), "{ok}");
         }
     }
@@ -2995,7 +4406,7 @@ mod tests {
         let text = format!(
             "CREATE QUERY q(STRING p, INT n) FOR GRAPH G {{\n{MAP_DECLARATIONS}{body}\n  PRINT @@m, @@n, @@plain, @@s, @@l, @@sum, @@g, @@g2;\n}}\n"
         );
-        findings(&text, &[("file:///test/schema.gsql", schema)])
+        findings(&text, &[(SCHEMA_URI, schema)])
             .into_iter()
             .filter(|(code, _)| code != "unused")
             .collect()
@@ -3030,7 +4441,11 @@ mod tests {
                 "accumulator-input",
                 "A MapAccum<STRING, SumAccum<INT>> takes `(key -> value)` pairs (1 key and 1 value); this pair has 1 key and 2 values",
             ),
-            ("  @@m += (\"a\" -> \"x\");", "type-mismatch", "A string cannot be added to a SumAccum<INT>"),
+            (
+                "  @@m += (\"a\" -> \"x\");",
+                "type-mismatch",
+                "A string cannot be added to a SumAccum<INT>",
+            ),
             (
                 "  @@m += (1 -> 1);",
                 "type-mismatch",
@@ -3046,9 +4461,21 @@ mod tests {
                 "accumulator-input",
                 "The values of MapAccum<STRING, INT> are INT, not `(key -> value)` pairs",
             ),
-            ("  @@m += 1;", "accumulator-input", "A MapAccum<STRING, SumAccum<INT>> takes `(key -> value)` pairs"),
-            ("  @@m += p;", "accumulator-input", "A MapAccum<STRING, SumAccum<INT>> takes `(key -> value)` pairs"),
-            ("  @@m = \"a\";", "accumulator-input", "A MapAccum<STRING, SumAccum<INT>> takes `(key -> value)` pairs"),
+            (
+                "  @@m += 1;",
+                "accumulator-input",
+                "A MapAccum<STRING, SumAccum<INT>> takes `(key -> value)` pairs",
+            ),
+            (
+                "  @@m += p;",
+                "accumulator-input",
+                "A MapAccum<STRING, SumAccum<INT>> takes `(key -> value)` pairs",
+            ),
+            (
+                "  @@m = \"a\";",
+                "accumulator-input",
+                "A MapAccum<STRING, SumAccum<INT>> takes `(key -> value)` pairs",
+            ),
             // A nested MapAccum value is itself a pair.
             (
                 "  @@n += (\"a\" -> 1);",
@@ -3091,15 +4518,26 @@ mod tests {
                 "accumulator-input",
                 "A GroupByAccum<STRING, INT, SumAccum<INT>, MaxAccum<INT>> takes `(k1, k2 -> v1, v2)` pairs, not a tuple; separate the keys from the values with `->`",
             ),
-            ("  @@g2 += (\"a\", 1 -> \"x\", 3);", "type-mismatch", "A string cannot be added to a SumAccum<INT>"),
+            (
+                "  @@g2 += (\"a\", 1 -> \"x\", 3);",
+                "type-mismatch",
+                "A string cannot be added to a SumAccum<INT>",
+            ),
         ];
         for (body, code, message) in cases {
             let found = map_findings(body);
             let messages = with_code(&found, code);
-            assert!(messages.contains(&message), "{body}: {message:?} not in {found:?}");
+            assert!(
+                messages.contains(&message),
+                "{body}: {message:?} not in {found:?}"
+            );
             // One clear error: no generic arithmetic or comparison warning besides it.
-            let others: Vec<_> =
-                found.iter().filter(|(c, m)| (c, m.as_str()) != (&code.to_string(), message)).collect();
+            let others: Vec<_> = found
+                .iter()
+                .filter(|(c, m)| {
+                    (c, m.as_str()) != (&code.to_string(), message)
+                })
+                .collect();
             assert!(others.is_empty(), "{body}: {others:?}");
         }
     }
@@ -3120,16 +4558,31 @@ mod tests {
         let whole = Range::new(Position::new(0, 0), Position::new(6, 0));
         let actions = code_actions(&snapshot, whole, &all, None, &all);
         let edits = |title: &str| {
-            let action = actions.iter().find(|a| a.title == title).unwrap_or_else(|| panic!("{title}: {actions:?}"));
-            action.edit.changes.values().flatten().map(|e| (e.range, e.new_text.clone())).collect::<Vec<_>>()
+            let action = actions
+                .iter()
+                .find(|a| a.title == title)
+                .unwrap_or_else(|| panic!("{title}: {actions:?}"));
+            action
+                .edit
+                .changes
+                .values()
+                .flatten()
+                .map(|e| (e.range, e.new_text.clone()))
+                .collect::<Vec<_>>()
         };
         assert_eq!(
             edits("Replace `-` with `->`"),
-            [(Range::new(Position::new(2, 12), Position::new(2, 13)), "->".to_string())]
+            [(
+                Range::new(Position::new(2, 12), Position::new(2, 13)),
+                "->".to_string()
+            )]
         );
         assert_eq!(
             edits("Replace `,` with `->`"),
-            [(Range::new(Position::new(3, 11), Position::new(3, 12)), " ->".to_string())]
+            [(
+                Range::new(Position::new(3, 11), Position::new(3, 12)),
+                " ->".to_string()
+            )]
         );
     }
 
@@ -3163,15 +4616,19 @@ mod tests {
             ]
         );
         let valid = "TYPEDEF TUPLE<STRING name, INT score> Rec;\nCREATE QUERY ok(INT len) {\n  TYPEDEF HeapAccum<Rec>(10, score DESC) Top;\n  Top @@top;\n  HeapAccum<Rec>(5, score ASC) @@heap;\n  BitwiseOrAccum<128> @@bits;\n  BitwiseAndAccum<len> @@band;\n  BitwiseAndAccum @@b64;\n  AvgAccum @@avg;\n  OrAccum @@or;\n  AndAccum @@and;\n  DeviationAccum @@dev;\n  ArrayAccum<SumAccum<INT>> @@arr[3];\n  GroupByAccum<INT a, STRING b, MaxAccum<INT> m, ListAccum<STRING> l> @@g;\n  TYPEDEF SumAccum<INT> Cnt;\n  GroupByAccum<STRING k, Top t> @@g1;\n  GroupByAccum<STRING k, Cnt c> @@g2;\n  GroupByAccum<STRING k, Cnt c, SumAccum<INT> s> @@g3;\n  MapAccum<STRING, Cnt> @@m;\n  OrAccum<BOOL> @@or2;\n  SumAccum<STRING> @@text;\n  SumAccum<UINT> @@u;\n  @@g1 += (\"a\" -> Rec(\"x\", 1));\n  @@g2 += (\"a\" -> 1);\n  @@g3 += (\"a\" -> 1, 2);\n  @@m += (\"a\" -> 1);\n  PRINT @@top, @@heap, @@bits, @@band, @@b64, @@avg, @@or, @@and, @@dev, @@arr, @@g, @@g1, @@g2, @@g3, @@m, @@or2, @@text, @@u;\n}\n";
-        let found: Vec<_> = findings(valid, &[]).into_iter().filter(|(code, _)| code != "unused").collect();
+        let found: Vec<_> = findings(valid, &[])
+            .into_iter()
+            .filter(|(code, _)| code != "unused")
+            .collect();
         assert!(found.is_empty(), "{found:?}");
     }
 
     /// The findings (without `unused`) of a query over a Person/Knows schema.
     fn graph_findings(header: &str, body: &str) -> Vec<(String, String)> {
         let schema = "CREATE VERTEX Person (PRIMARY_ID id STRING, name STRING, age INT)\nCREATE UNDIRECTED EDGE Knows (FROM Person, TO Person, w INT)\nCREATE GRAPH G (Person, Knows)\nTYPEDEF TUPLE<STRING name, INT score> Rec;\n";
-        let text = format!("CREATE QUERY q({header}) FOR GRAPH G {{\n{body}\n}}\n");
-        findings(&text, &[("file:///test/schema.gsql", schema)])
+        let text =
+            format!("CREATE QUERY q({header}) FOR GRAPH G {{\n{body}\n}}\n");
+        findings(&text, &[(SCHEMA_URI, schema)])
             .into_iter()
             .filter(|(code, _)| code != "unused")
             .collect()
@@ -3180,7 +4637,8 @@ mod tests {
     #[test]
     fn map_input_is_judged_by_shape_kind_and_source() {
         let declarations = "  MapAccum<STRING, SumAccum<INT>> @@m;\n  MapAccum<STRING, SumAccum<INT>> @mv;\n  MapAccum<INT, SumAccum<INT>> @@k;\n  MapAccum<STRING, Rec> @@mt;\n  MapAccum<Rec, INT> @@tk;\n  MapAccum<STRING, OrAccum> @@mo;\n  MapAccum<STRING, ListAccum<STRING>> @@ml;\n  SetAccum<INT> @@s;\n  SetAccum<STRING> @@ss;\n  ListAccum<INT> @@l;\n  SumAccum<INT> @@sum;\n  OrAccum @@or;\n  AvgAccum @@avg;\n  TYPEDEF SumAccum<INT> Cnt;\n  GroupByAccum<STRING k, Cnt c, SumAccum<INT> s> @@g;\n";
-        let m = "A MapAccum<STRING, SumAccum<INT>> takes `(key -> value)` pairs";
+        let m =
+            "A MapAccum<STRING, SumAccum<INT>> takes `(key -> value)` pairs";
         let cases: Vec<(&str, &str, String)> = vec![
             // Scalar operators: no pair; `>>` is a mistyped `->`.
             ("@@m += (\"a\" >> 1);", "accumulator-input", format!("{m}; did you mean `->` instead of `>>`?")),
@@ -3249,14 +4707,26 @@ mod tests {
         ];
         let print = "\n  PRINT @@m, @@k, @@mt, @@tk, @@mo, @@ml, @@s, @@ss, @@l, @@sum, @@or, @@avg, @@g;";
         for (statement, code, message) in &cases {
-            let found = graph_findings("STRING p, SET<STRING> ps", &format!("{declarations}  {statement}{print}"));
+            let found = graph_findings(
+                "STRING p, SET<STRING> ps",
+                &format!("{declarations}  {statement}{print}"),
+            );
             let messages = with_code(&found, code);
-            assert!(messages.contains(&message.as_str()), "{statement}: {message:?} not in {found:?}");
-            let others: Vec<_> = found.iter().filter(|(c, m)| (c.as_str(), m) != (*code, message)).collect();
+            assert!(
+                messages.contains(&message.as_str()),
+                "{statement}: {message:?} not in {found:?}"
+            );
+            let others: Vec<_> = found
+                .iter()
+                .filter(|(c, m)| (c.as_str(), m) != (*code, message))
+                .collect();
             assert!(others.is_empty(), "{statement}: {others:?}");
         }
         let valid = "  @@m += (\"a\" -> 1);\n  @@m += (p -> @@sum);\n  @@m += (\"a\" -> (1 + 2));\n  @@g += (\"a\" -> 1, 2);\n  @@l += (1, 2);\n  @@l += [1, 2];\n  @@s += @@s;\n  @@ml += (\"a\" -> \"x\");\n  @@ml += (\"a\" -> [\"x\"]);\n  @@or += TRUE;\n  @@or += p IN ps;\n  @@avg += 1;\n  @@mt += (\"a\" -> Rec(\"x\", 1));\n  @@m += @@m;\n  R = SELECT t FROM Person:s -(Knows:e)- Person:t ACCUM @@m += (s.name -> e.w), t.@mv += (t.name -> 1);\n  PRINT R;";
-        let found = graph_findings("STRING p, SET<STRING> ps", &format!("{declarations}{valid}{print}"));
+        let found = graph_findings(
+            "STRING p, SET<STRING> ps",
+            &format!("{declarations}{valid}{print}"),
+        );
         assert!(found.is_empty(), "{found:?}");
     }
 
@@ -3270,7 +4740,10 @@ mod tests {
             ),
         );
         assert_eq!(
-            found.iter().map(|(c, m)| format!("{c}: {m}")).collect::<Vec<_>>(),
+            found
+                .iter()
+                .map(|(c, m)| format!("{c}: {m}"))
+                .collect::<Vec<_>>(),
             [
                 "type-mismatch: The keys of MapAccum<STRING, SumAccum<INT>> are STRING, not a number",
                 "type-mismatch: The keys of MapAccum<STRING, SumAccum<INT>> are STRING, not a number",
@@ -3297,13 +4770,17 @@ mod tests {
         let found = graph_findings("MapAccum<STRING, INT> m", "  PRINT m;");
         assert_eq!(
             with_code(&found, "accumulator-type"),
-            ["A query parameter cannot be an accumulator; declare the accumulator in the query body"]
+            [
+                "A query parameter cannot be an accumulator; declare the accumulator in the query body"
+            ]
         );
         // Reported once, not also for its arguments.
         let found = graph_findings("MapAccum<STRING> m", "  PRINT m;");
         assert_eq!(
             with_code(&found, "accumulator-type"),
-            ["A query parameter cannot be an accumulator; declare the accumulator in the query body"]
+            [
+                "A query parameter cannot be an accumulator; declare the accumulator in the query body"
+            ]
         );
         // A subquery may be allowed to take one: only a warning.
         let text = "CREATE QUERY sub(ListAccum<INT> xs) FOR GRAPH G RETURNS (INT) {\n  RETURN xs.size();\n}\n";
@@ -3359,7 +4836,19 @@ mod tests {
             .iter()
             .find(|a| a.title == "Write `AvgAccum` without a type argument")
             .unwrap_or_else(|| panic!("{actions:?}"));
-        let edits: Vec<_> = action.edit.changes.values().flatten().map(|e| (e.range, e.new_text.clone())).collect();
-        assert_eq!(edits, [(Range::new(Position::new(1, 10), Position::new(1, 18)), String::new())]);
+        let edits: Vec<_> = action
+            .edit
+            .changes
+            .values()
+            .flatten()
+            .map(|e| (e.range, e.new_text.clone()))
+            .collect();
+        assert_eq!(
+            edits,
+            [(
+                Range::new(Position::new(1, 10), Position::new(1, 18)),
+                String::new()
+            )]
+        );
     }
 }

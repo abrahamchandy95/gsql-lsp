@@ -11,7 +11,9 @@ fn root() -> PathBuf {
 fn is_code(text: &str) -> bool {
     text.len() >= 4
         && text.starts_with(|c: char| c.is_ascii_lowercase())
-        && text.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && text
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 /// The text up to `len` bytes after `at`, cut at a character boundary.
@@ -56,8 +58,15 @@ fn codes_in_sources() -> BTreeSet<String> {
                     continue;
                 }
                 for (text, before) in literals(window(code, at, 400)) {
-                    let before = before.trim_end().strip_suffix(',').unwrap_or("").trim_end();
-                    if is_code(text) && (before.ends_with("level") || before.contains("severity")) {
+                    let before = before
+                        .trim_end()
+                        .strip_suffix(',')
+                        .unwrap_or("")
+                        .trim_end();
+                    if is_code(text)
+                        && (before.ends_with("level")
+                            || before.contains("severity"))
+                    {
                         codes.insert(text.to_string());
                         break;
                     }
@@ -66,9 +75,14 @@ fn codes_in_sources() -> BTreeSet<String> {
         }
         for (at, _) in code.match_indices("=> \"") {
             let rest = &code[at + 4..];
-            let Some(close) = rest.find('"') else { continue };
+            let Some(close) = rest.find('"') else {
+                continue;
+            };
             let text = &rest[..close];
-            if text.contains('-') && is_code(text) && window(rest, close, 300).contains("diagnostic(") {
+            if text.contains('-')
+                && is_code(text)
+                && window(rest, close, 300).contains("diagnostic(")
+            {
                 codes.insert(text.to_string());
             }
         }
@@ -77,7 +91,8 @@ fn codes_in_sources() -> BTreeSet<String> {
 }
 
 fn codes_in_docs() -> Vec<String> {
-    let docs = fs::read_to_string(root().join("docs/diagnostics.md")).unwrap();
+    let docs =
+        fs::read_to_string(root().join("docs/diagnostics.md")).unwrap();
     docs.lines()
         .filter_map(|line| line.strip_prefix("| `"))
         .filter_map(|rest| rest.split('`').next())
@@ -88,18 +103,34 @@ fn codes_in_docs() -> Vec<String> {
 #[test]
 fn every_diagnostic_code_has_a_row_in_the_docs() {
     let documented: BTreeSet<String> = codes_in_docs().into_iter().collect();
-    let missing: Vec<_> = codes_in_sources().difference(&documented).cloned().collect();
-    assert!(missing.is_empty(), "codes without a row in docs/diagnostics.md: {missing:?}");
+    let missing: Vec<_> = codes_in_sources()
+        .difference(&documented)
+        .cloned()
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "codes without a row in docs/diagnostics.md: {missing:?}"
+    );
 }
 
 #[test]
 fn the_docs_name_only_existing_codes_once() {
     let sources = codes_in_sources();
     let docs = codes_in_docs();
-    let unknown: Vec<_> = docs.iter().filter(|c| !sources.contains(*c)).collect();
-    assert!(unknown.is_empty(), "documented codes the sources never emit: {unknown:?}");
+    let unknown: Vec<_> = docs
+        .iter()
+        .filter(|c| !sources.contains(*c))
+        .collect();
+    assert!(
+        unknown.is_empty(),
+        "documented codes the sources never emit: {unknown:?}"
+    );
     let unique: BTreeSet<_> = docs.iter().collect();
-    assert_eq!(unique.len(), docs.len(), "a code has more than one row: {docs:?}");
+    assert_eq!(
+        unique.len(),
+        docs.len(),
+        "a code has more than one row: {docs:?}"
+    );
 }
 
 #[test]

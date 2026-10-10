@@ -15,9 +15,14 @@ fn examples_have_no_errors_or_warnings() {
         format: gsql_lsp::check::OutputFormat::Text,
     };
     let mut output = Vec::new();
-    let errors = gsql_lsp::check::run(&options, &mut output).unwrap().problems;
+    let errors = gsql_lsp::check::run(&options, &mut output)
+        .unwrap()
+        .problems;
     let output = String::from_utf8(output).unwrap();
-    let problems: Vec<&str> = output.lines().filter(|line| !line.contains(": hint: ")).collect();
+    let problems: Vec<&str> = output
+        .lines()
+        .filter(|line| !line.contains(": hint: "))
+        .collect();
     assert_eq!(errors, 0, "{output}");
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
@@ -34,8 +39,12 @@ fn examples_follow_the_style_guide() {
     let mut output = Vec::new();
     gsql_lsp::check::run(&options, &mut output).unwrap();
     let output = String::from_utf8(output).unwrap();
-    let style: Vec<&str> =
-        output.lines().filter(|line| line.contains("[keyword-case]") || line.contains("[hash-comment]")).collect();
+    let style: Vec<&str> = output
+        .lines()
+        .filter(|line| {
+            line.contains("[keyword-case]") || line.contains("[hash-comment]")
+        })
+        .collect();
     assert!(style.is_empty(), "{}", style.join("\n"));
 }
 
@@ -51,14 +60,21 @@ fn examples_are_formatted() {
                 pending.push(path);
             } else if path.extension().is_some_and(|e| e == "gsql") {
                 let text = std::fs::read_to_string(&path).unwrap();
-                let formatted = gsql_lsp::format::format_text(&text, gsql_lsp::features::KeywordCase::Preserve, indent);
+                let formatted = gsql_lsp::format::format_text(
+                    &text,
+                    gsql_lsp::features::KeywordCase::Preserve,
+                    indent,
+                );
                 if formatted.as_deref() != Some(text.as_str()) {
                     stale.push(path.display().to_string());
                 }
             }
         }
     }
-    assert!(stale.is_empty(), "run `gsql-lsp format examples`: {stale:?}");
+    assert!(
+        stale.is_empty(),
+        "run `gsql-lsp format examples`: {stale:?}"
+    );
 }
 
 #[test]
@@ -71,7 +87,11 @@ fn fixtures_parse_without_syntax_errors() {
         if path.extension().is_some_and(|e| e == "gsql") {
             let text = std::fs::read_to_string(&path).unwrap();
             let tree = gsql_lsp::syntax::parse(&mut parser, &text, None);
-            assert!(!tree.root_node().has_error(), "{} has syntax errors", path.display());
+            assert!(
+                !tree.root_node().has_error(),
+                "{} has syntax errors",
+                path.display()
+            );
             checked += 1;
         }
     }

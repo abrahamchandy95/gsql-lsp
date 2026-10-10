@@ -1,2 +1,7 @@
-max_width = 120
-use_small_heuristics = "Max"
+# Code wraps at 78 columns, leaving room for rust-analyzer's inlay hints,
+# which are drawn inline and add about 12 columns to a typical hinted line.
+max_width = 78
+# For any max_width up to 100, rustfmt keeps chain_width at 60, so a chain
+# could fill the whole line and then hang under a bare `let x =`. Chains
+# longer than 45 columns get one call per line instead.
+chain_width = 45

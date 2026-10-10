@@ -24,7 +24,13 @@ pub const TOKEN_TYPES: &[&str] = &[
     "operator",
 ];
 
-pub const TOKEN_MODIFIERS: &[&str] = &["declaration", "readonly", "static", "defaultLibrary", "modification"];
+pub const TOKEN_MODIFIERS: &[&str] = &[
+    "declaration",
+    "readonly",
+    "static",
+    "defaultLibrary",
+    "modification",
+];
 
 mod ty {
     pub const NAMESPACE: u32 = 0;
@@ -86,7 +92,9 @@ fn kind_token(kind: SymbolKind) -> (u32, u32) {
 
 fn role_token(role: &Role) -> (u32, u32) {
     match role {
-        Role::VertexType | Role::VertexSource | Role::SchemaType => (ty::CLASS, 0),
+        Role::VertexType | Role::VertexSource | Role::SchemaType => {
+            (ty::CLASS, 0)
+        }
         Role::EdgeType | Role::EdgeSource => (ty::STRUCT, 0),
         Role::Graph => (ty::NAMESPACE, 0),
         Role::Query | Role::Job | Role::Function => (ty::FUNCTION, 0),
@@ -95,17 +103,27 @@ fn role_token(role: &Role) -> (u32, u32) {
         Role::Method(_) => (ty::METHOD, 0),
         Role::GlobalAccumulator => (ty::VARIABLE, modifier::STATIC),
         Role::LocalAccumulator => (ty::PROPERTY, modifier::STATIC),
-        Role::Value | Role::Alias | Role::JobLocal | Role::JobFile(_) | Role::TempColumn(_) => (ty::VARIABLE, 0),
+        Role::Value
+        | Role::Alias
+        | Role::JobLocal
+        | Role::JobFile(_)
+        | Role::TempColumn(_) => (ty::VARIABLE, 0),
     }
 }
 
 fn reference_token(snapshot: &Snapshot, reference: &Reference) -> Token {
     let (kind, mut modifiers) = match resolve::target(snapshot, reference) {
-        Some(Target::Local(id)) => kind_token(snapshot.analysis.symbols[id].kind),
+        Some(Target::Local(id)) => {
+            kind_token(snapshot.analysis.symbols[id].kind)
+        }
         Some(Target::Global(key)) => kind_token(key.kind),
-        Some(Target::Function(_)) => (ty::FUNCTION, modifier::DEFAULT_LIBRARY),
+        Some(Target::Function(_)) => {
+            (ty::FUNCTION, modifier::DEFAULT_LIBRARY)
+        }
         Some(Target::Method(_)) => (ty::METHOD, modifier::DEFAULT_LIBRARY),
-        Some(Target::Constant(..)) => (ty::VARIABLE, modifier::READONLY | modifier::DEFAULT_LIBRARY),
+        Some(Target::Constant(..)) => {
+            (ty::VARIABLE, modifier::READONLY | modifier::DEFAULT_LIBRARY)
+        }
         None => role_token(&reference.role),
     };
     if reference.declaration {
@@ -113,7 +131,11 @@ fn reference_token(snapshot: &Snapshot, reference: &Reference) -> Token {
     } else if reference.write {
         modifiers |= modifier::MODIFICATION;
     }
-    Token { span: reference.span, kind, modifiers }
+    Token {
+        span: reference.span,
+        kind,
+        modifiers,
+    }
 }
 
 fn lexical_tokens(snapshot: &Snapshot, out: &mut Vec<Token>) {
@@ -122,31 +144,47 @@ fn lexical_tokens(snapshot: &Snapshot, out: &mut Vec<Token>) {
     while let Some(node) = stack.pop() {
         let token = match node.kind() {
             "comment" => Some((ty::COMMENT, 0)),
-            "string" | "column_reference" | "file_include" => Some((ty::STRING, 0)),
+            "string" | "column_reference" | "file_include" => {
+                Some((ty::STRING, 0))
+            }
             "integer" | "float" => Some((ty::NUMBER, 0)),
             "boolean" | "null" => Some((ty::KEYWORD, 0)),
             "accumulator_kind" => Some((ty::TYPE, modifier::DEFAULT_LIBRARY)),
-            "identifier" | "type_identifier" | "global_accumulator" | "local_accumulator" | "qualified_identifier" => {
-                continue;
-            }
+            kind if syntax::is_name_kind(kind) => continue,
             _ if syntax::is_keyword(node) => {
                 let in_type = node.parent().is_some_and(|p| {
                     matches!(
                         p.kind(),
-                        "primitive_type" | "vertex_type" | "edge_type" | "collection_type" | "tuple_type" | "file_type"
+                        "primitive_type"
+                            | "vertex_type"
+                            | "edge_type"
+                            | "collection_type"
+                            | "tuple_type"
+                            | "file_type"
                     )
                 });
-                if in_type { Some((ty::TYPE, modifier::DEFAULT_LIBRARY)) } else { Some((ty::KEYWORD, 0)) }
+                if in_type {
+                    Some((ty::TYPE, modifier::DEFAULT_LIBRARY))
+                } else {
+                    Some((ty::KEYWORD, 0))
+                }
             }
             _ if !node.is_named() && node.child_count() == 0 => {
                 let text = node.kind();
-                let is_operator = !text.is_empty() && text.chars().all(|c| "=+-*/%<>!&|^~'".contains(c));
+                let is_operator = !text.is_empty()
+                    && text
+                        .chars()
+                        .all(|c| "=+-*/%<>!&|^~'".contains(c));
                 is_operator.then_some((ty::OPERATOR, 0))
             }
             _ => None,
         };
         match token {
-            Some((kind, modifiers)) => out.push(Token { span: Span::of(node), kind, modifiers }),
+            Some((kind, modifiers)) => out.push(Token {
+                span: Span::of(node),
+                kind,
+                modifiers,
+            }),
             None => {
                 let children: Vec<_> = node.children(&mut cursor).collect();
                 stack.extend(children.into_iter().rev());
@@ -183,7 +221,11 @@ fn collect(snapshot: &Snapshot) -> Vec<Token> {
 }
 
 /// Encodes tokens in the LSP relative format, splitting multi-line tokens.
-fn encode(snapshot: &Snapshot, tokens: &[Token], range: Option<Range>) -> Vec<u32> {
+fn encode(
+    snapshot: &Snapshot,
+    tokens: &[Token],
+    range: Option<Range>,
+) -> Vec<u32> {
     let text = snapshot.text();
     let lines = &snapshot.source.lines;
     let mut data = Vec::with_capacity(tokens.len() * 5);
@@ -192,17 +234,31 @@ fn encode(snapshot: &Snapshot, tokens: &[Token], range: Option<Range>) -> Vec<u3
         let mut start = token.span.start;
         while start < token.span.end {
             let line = lines.line_of(start);
-            let end = token.span.end.min(lines.line_end(text, line).max(start));
+            let end = token
+                .span
+                .end
+                .min(lines.line_end(text, line).max(start));
             let start_position = snapshot.position(start);
             let end_position = snapshot.position(end);
             let next_line_start = lines.line_start(line + 1);
-            let within = range.is_none_or(|r| start_position >= r.start && start_position <= r.end);
-            let length = end_position.character.saturating_sub(start_position.character);
+            let within = range.is_none_or(|r| r.contains(start_position));
+            let length = end_position
+                .character
+                .saturating_sub(start_position.character);
             if within && length > 0 {
                 let delta_line = start_position.line - previous_line;
-                let delta_start =
-                    if delta_line == 0 { start_position.character - previous_start } else { start_position.character };
-                data.extend([delta_line, delta_start, length, token.kind, token.modifiers]);
+                let delta_start = if delta_line == 0 {
+                    start_position.character - previous_start
+                } else {
+                    start_position.character
+                };
+                data.extend([
+                    delta_line,
+                    delta_start,
+                    length,
+                    token.kind,
+                    token.modifiers,
+                ]);
                 previous_line = start_position.line;
                 previous_start = start_position.character;
             }
@@ -215,7 +271,10 @@ fn encode(snapshot: &Snapshot, tokens: &[Token], range: Option<Range>) -> Vec<u3
     data
 }
 
-pub fn semantic_tokens(snapshot: &Snapshot, range: Option<Range>) -> Vec<u32> {
+pub fn semantic_tokens(
+    snapshot: &Snapshot,
+    range: Option<Range>,
+) -> Vec<u32> {
     let tokens = collect(snapshot);
     encode(snapshot, &tokens, range)
 }
@@ -235,7 +294,13 @@ mod tests {
                 }
                 line += chunk[0];
                 start += chunk[1];
-                (line, start, chunk[2], TOKEN_TYPES[chunk[3] as usize], chunk[4])
+                (
+                    line,
+                    start,
+                    chunk[2],
+                    TOKEN_TYPES[chunk[3] as usize],
+                    chunk[4],
+                )
             })
             .collect()
     }
@@ -264,7 +329,10 @@ mod tests {
         );
         // `@@n` is static; `abs` comes from the default library.
         assert_eq!(tokens[4].4 & modifier::STATIC, modifier::STATIC);
-        assert_eq!(tokens[8].4 & modifier::DEFAULT_LIBRARY, modifier::DEFAULT_LIBRARY);
+        assert_eq!(
+            tokens[8].4 & modifier::DEFAULT_LIBRARY,
+            modifier::DEFAULT_LIBRARY
+        );
     }
 
     #[test]
@@ -272,7 +340,14 @@ mod tests {
         let mut fixture = Fixture::new("/* a\n   b */\nLS\n");
         fixture.config.semantic_tokens_lexical = true;
         let tokens = decode(&semantic_tokens(&fixture.snapshot(), None));
-        assert_eq!(tokens, vec![(0, 0, 4, "comment", 0), (1, 0, 7, "comment", 0), (2, 0, 2, "keyword", 0)]);
+        assert_eq!(
+            tokens,
+            vec![
+                (0, 0, 4, "comment", 0),
+                (1, 0, 7, "comment", 0),
+                (2, 0, 2, "keyword", 0)
+            ]
+        );
     }
 
     #[test]
@@ -281,8 +356,11 @@ mod tests {
             "CREATE QUERY q(SET<STRING> ss, MAP<STRING, INT> m) {\n  PRINT ss.contains(\"a\"), m.containsKey(\"a\"), ss.foo();\n}\n",
         );
         let tokens = decode(&semantic_tokens(&fixture.snapshot(), None));
-        let methods: Vec<(u32, bool)> =
-            tokens.iter().filter(|t| t.3 == "method").map(|t| (t.2, t.4 & modifier::DEFAULT_LIBRARY != 0)).collect();
+        let methods: Vec<(u32, bool)> = tokens
+            .iter()
+            .filter(|t| t.3 == "method")
+            .map(|t| (t.2, t.4 & modifier::DEFAULT_LIBRARY != 0))
+            .collect();
         // `foo` is not a built-in.
         assert_eq!(methods, vec![(8, true), (11, true), (3, false)]);
     }

@@ -28,12 +28,16 @@ pub enum OutputFormat {
 
 /// Escapes the message of a GitHub workflow command.
 fn github_escape(text: &str) -> String {
-    text.replace('%', "%25").replace('\r', "%0D").replace('\n', "%0A")
+    text.replace('%', "%25")
+        .replace('\r', "%0D")
+        .replace('\n', "%0A")
 }
 
 /// Escapes a property (such as `file=`) of a GitHub workflow command.
 fn github_property(text: &str) -> String {
-    github_escape(text).replace(':', "%3A").replace(',', "%2C")
+    github_escape(text)
+        .replace(':', "%3A")
+        .replace(',', "%2C")
 }
 
 /// What a run found, for the exit code.
@@ -46,7 +50,10 @@ pub struct Summary {
 }
 
 /// Prints the diagnostics in `options.format`; read failures go to stderr.
-pub fn run(options: &Options, out: &mut impl std::io::Write) -> std::io::Result<Summary> {
+pub fn run(
+    options: &Options,
+    out: &mut impl std::io::Write,
+) -> std::io::Result<Summary> {
     let mut files = Vec::new();
     // Folders searched for the schema of explicit file arguments, as the
     // language server does for a file outside every workspace folder.
@@ -56,7 +63,8 @@ pub fn run(options: &Options, out: &mut impl std::io::Write) -> std::io::Result<
         if path.is_dir() {
             // Absolute, so that a file found through `.` and through its
             // `.gsqlroot` project has one URI (it is printed relative again).
-            let absolute = std::path::absolute(path).unwrap_or_else(|_| path.clone());
+            let absolute =
+                std::path::absolute(path).unwrap_or_else(|_| path.clone());
             files.extend(workspace::scan(std::slice::from_ref(&absolute)));
             // Below a `.gsqlroot`, the schema is searched in that project, as for
             // a file; only the files under the argument are reported.
@@ -67,9 +75,11 @@ pub fn run(options: &Options, out: &mut impl std::io::Write) -> std::io::Result<
             }
         } else {
             // Absolute, so that the URI (and the walk up to a `.gsqlroot`) is right.
-            let absolute = std::path::absolute(path).unwrap_or_else(|_| path.clone());
+            let absolute =
+                std::path::absolute(path).unwrap_or_else(|_| path.clone());
             files.push(absolute.clone());
-            if let Some((dir, neighbours)) = workspace::loose_project(&absolute)
+            if let Some((dir, neighbours)) =
+                workspace::loose_project(&absolute)
                 && searched.insert(dir)
             {
                 context.extend(neighbours);
@@ -77,8 +87,7 @@ pub fn run(options: &Options, out: &mut impl std::io::Write) -> std::io::Result<
         }
     }
     // A file named twice (itself and through its folder) is checked once.
-    let mut seen = std::collections::HashSet::new();
-    files.retain(|file| seen.insert(uri::key(&uri::from_path(file))));
+    workspace::dedupe_paths(&mut files);
     let mut unreadable = 0;
     struct Parsed {
         path: PathBuf,
@@ -93,13 +102,16 @@ pub fn run(options: &Options, out: &mut impl std::io::Write) -> std::io::Result<
         let text = match workspace::read_text(&path) {
             Ok(text) => text,
             Err(err) => {
-                eprintln!("{}: error: cannot read file: {err}", display(&path));
+                eprintln!(
+                    "{}: error: cannot read file: {err}",
+                    display(&path)
+                );
                 unreadable += 1;
                 continue;
             }
         };
         let tree = syntax::parse(&mut parser, &text, None);
-        let analysis = analysis::analyze(&tree, &text);
+        let analysis = analysis::Analysis::from_tree(&tree, &text, None);
         let source = SourceText::new(text);
         workspace.update(FileIndex::of_document(
             &uri::from_path(&path),
@@ -107,11 +119,19 @@ pub fn run(options: &Options, out: &mut impl std::io::Write) -> std::io::Result<
             &analysis,
             &source,
             PositionEncoding::Utf32,
+            None,
         ));
-        parsed.push(Parsed { path, source, tree, analysis });
+        parsed.push(Parsed {
+            path,
+            source,
+            tree,
+            analysis,
+        });
     }
-    let indexed: std::collections::HashSet<String> =
-        parsed.iter().map(|f| uri::key(&uri::from_path(&f.path))).collect();
+    let indexed: std::collections::HashSet<String> = parsed
+        .iter()
+        .map(|f| uri::key(&uri::from_path(&f.path)))
+        .collect();
     let encoding = PositionEncoding::Utf32;
     for path in context {
         if !indexed.contains(&uri::key(&uri::from_path(&path)))
@@ -121,8 +141,12 @@ pub fn run(options: &Options, out: &mut impl std::io::Write) -> std::io::Result<
         }
     }
     // Aliases take vertex types from the schema's edges: analyze again.
-    for file in parsed.iter_mut().filter(|f| f.analysis.uses_schema_edges) {
-        file.analysis = analysis::analyze_in(&file.tree, &file.source.text, Some(&workspace));
+    for file in &mut parsed {
+        file.analysis.schema_changed(
+            &file.tree,
+            &file.source.text,
+            &workspace,
+        );
     }
     let config = Config::default();
     let mut errors = 0;
@@ -139,16 +163,22 @@ pub fn run(options: &Options, out: &mut impl std::io::Write) -> std::io::Result<
             config: &config,
         };
         // A bug in one file's analysis must not end the run for the others.
-        let found = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            crate::features::diagnostics::diagnostics(&snapshot)
-        }));
+        let found =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::features::diagnostics::diagnostics(&snapshot)
+            }));
         let Ok(found) = found else {
-            eprintln!("{}: error: internal error while checking this file (please report it)", display(&file.path));
+            eprintln!(
+                "{}: error: internal error while checking this file (please report it)",
+                display(&file.path)
+            );
             unreadable += 1;
             continue;
         };
         for diagnostic in found {
-            let level = diagnostic.severity.unwrap_or(severity::ERROR);
+            let level = diagnostic
+                .severity
+                .unwrap_or(severity::ERROR);
             if level == severity::ERROR {
                 errors += 1;
             } else if options.errors_only {
@@ -161,11 +191,18 @@ pub fn run(options: &Options, out: &mut impl std::io::Write) -> std::io::Result<
                 _ => "hint",
             };
             let path = display(&file.path);
-            let (line, column) = (diagnostic.range.start.line + 1, diagnostic.range.start.character + 1);
+            let (line, column) = (
+                diagnostic.range.start.line + 1,
+                diagnostic.range.start.character + 1,
+            );
             let code = diagnostic.code.as_deref().unwrap_or("");
             match options.format {
                 OutputFormat::Text => {
-                    writeln!(out, "{path}:{line}:{column}: {label}: {} [{code}]", diagnostic.message)?;
+                    writeln!(
+                        out,
+                        "{path}:{line}:{column}: {label}: {} [{code}]",
+                        diagnostic.message
+                    )?;
                 }
                 OutputFormat::Github => {
                     let command = match level {
@@ -199,14 +236,21 @@ pub fn run(options: &Options, out: &mut impl std::io::Write) -> std::io::Result<
     if options.format == OutputFormat::Json {
         writeln!(out, "{}", serde_json::Value::Array(json_items))?;
     }
-    Ok(Summary { problems: errors, unreadable })
+    Ok(Summary {
+        problems: errors,
+        unreadable,
+    })
 }
 
 /// A path as printed in messages: relative to the current folder when inside it.
 pub(crate) fn display(path: &Path) -> String {
     std::env::current_dir()
         .ok()
-        .and_then(|cwd| path.strip_prefix(cwd).ok().map(|p| p.display().to_string()))
+        .and_then(|cwd| {
+            path.strip_prefix(cwd)
+                .ok()
+                .map(|p| p.display().to_string())
+        })
         .unwrap_or_else(|| path.display().to_string())
 }
 
@@ -215,13 +259,21 @@ mod tests {
     use super::*;
 
     fn run_on(text: &str, format: OutputFormat) -> String {
-        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        static NEXT: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("gsql-check-{}-{format:?}-{n}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "gsql-check-{}-{format:?}-{n}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("q.gsql");
         std::fs::write(&path, text).unwrap();
-        let options = Options { paths: vec![path], errors_only: false, format };
+        let options = Options {
+            paths: vec![path],
+            errors_only: false,
+            format,
+        };
         let mut out = Vec::new();
         run(&options, &mut out).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
@@ -269,8 +321,10 @@ mod tests {
         let out = run_on(text, OutputFormat::Text);
         assert!(!out.contains("syntax-error"), "{out}");
         // a real unbalanced brace is still an error
-        let out =
-            run_on("CREATE OPENCYPHER QUERY oc() FOR GRAPH G {\n  MATCH (p {a: 1) RETURN p\n}\n", OutputFormat::Text);
+        let out = run_on(
+            "CREATE OPENCYPHER QUERY oc() FOR GRAPH G {\n  MATCH (p {a: 1) RETURN p\n}\n",
+            OutputFormat::Text,
+        );
         assert!(out.contains("rror"), "{out}");
     }
 
@@ -280,19 +334,25 @@ mod tests {
         let github = run_on(text, OutputFormat::Github);
         assert!(github.starts_with("::error file="), "{github}");
         assert!(github.contains(",line=2,col=3,"), "{github}");
-        assert!(github.contains("title=gsql-lsp undeclared-accumulator::The global accumulator"), "{github}");
-        let json: serde_json::Value = serde_json::from_str(&run_on(text, OutputFormat::Json)).unwrap();
+        assert!(
+            github.contains(
+                "title=gsql-lsp undeclared-accumulator::The global accumulator"
+            ),
+            "{github}"
+        );
+        let json: serde_json::Value =
+            serde_json::from_str(&run_on(text, OutputFormat::Json)).unwrap();
         assert_eq!(json[0]["line"], 2);
         assert_eq!(json[0]["severity"], "error");
         assert_eq!(json[0]["code"], "undeclared-accumulator");
     }
 
     const SCHEMA: &str = "CREATE VERTEX Person (PRIMARY_ID id STRING, name STRING)\nCREATE GRAPH G (Person)\n";
-    const QUERY: &str =
-        "CREATE QUERY q() FOR GRAPH G {\n  S = SELECT t FROM Person:t WHERE t.nme == \"a\";\n  PRINT S;\n}\n";
+    const QUERY: &str = "CREATE QUERY q() FOR GRAPH G {\n  S = SELECT t FROM Person:t WHERE t.nme == \"a\";\n  PRINT S;\n}\n";
 
     fn project(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("gsql-check-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir()
+            .join(format!("gsql-check-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("queries")).unwrap();
         std::fs::create_dir_all(dir.join("schema")).unwrap();
@@ -302,7 +362,11 @@ mod tests {
     }
 
     fn check(paths: Vec<PathBuf>) -> (String, Summary) {
-        let options = Options { paths, errors_only: false, format: OutputFormat::Text };
+        let options = Options {
+            paths,
+            errors_only: false,
+            format: OutputFormat::Text,
+        };
         let mut out = Vec::new();
         let summary = run(&options, &mut out).unwrap();
         (String::from_utf8(out).unwrap(), summary)
@@ -311,13 +375,20 @@ mod tests {
     #[test]
     fn a_file_argument_finds_the_schema_next_to_it() {
         let dir = project("neighbour");
-        std::fs::copy(dir.join("schema/s.gsql"), dir.join("queries/s.gsql")).unwrap();
+        std::fs::copy(dir.join("schema/s.gsql"), dir.join("queries/s.gsql"))
+            .unwrap();
         let (out, summary) = check(vec![dir.join("queries/q.gsql")]);
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(out.contains("no attribute `nme`"), "{out}");
         assert!(!out.contains("no-schema"), "{out}");
         assert_eq!(out.lines().count(), 1, "{out}");
-        assert_eq!(summary, Summary { problems: 0, unreadable: 0 });
+        assert_eq!(
+            summary,
+            Summary {
+                problems: 0,
+                unreadable: 0
+            }
+        );
     }
 
     #[test]
@@ -328,7 +399,10 @@ mod tests {
         std::fs::write(dir.join(".gsqlroot"), "").unwrap();
         let (out, _) = check(vec![dir.join("queries/q.gsql")]);
         std::fs::remove_dir_all(&dir).unwrap();
-        assert!(out.contains("no attribute `nme`") && !out.contains("no-schema"), "{out}");
+        assert!(
+            out.contains("no attribute `nme`") && !out.contains("no-schema"),
+            "{out}"
+        );
         assert_eq!(out.lines().count(), 1, "{out}");
     }
 
@@ -338,10 +412,17 @@ mod tests {
         let (out, _) = check(vec![dir.join("queries")]);
         assert!(out.contains("no-schema"), "{out}");
         std::fs::write(dir.join(".gsqlroot"), "").unwrap();
-        std::fs::write(dir.join("schema/bad.gsql"), "CREATE QUERY b() FOR GRAPH G {\n PRINT x;\n}\n").unwrap();
+        std::fs::write(
+            dir.join("schema/bad.gsql"),
+            "CREATE QUERY b() FOR GRAPH G {\n PRINT x;\n}\n",
+        )
+        .unwrap();
         let (out, _) = check(vec![dir.join("queries")]);
         std::fs::remove_dir_all(&dir).unwrap();
-        assert!(out.contains("no attribute `nme`") && !out.contains("no-schema"), "{out}");
+        assert!(
+            out.contains("no attribute `nme`") && !out.contains("no-schema"),
+            "{out}"
+        );
         // Only the files under the argument are reported.
         assert_eq!(out.lines().count(), 1, "{out}");
     }
@@ -351,7 +432,9 @@ mod tests {
     #[cfg(unix)]
     fn check_in(cwd: &Path, paths: Vec<PathBuf>) -> String {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let before = std::env::current_dir().unwrap();
         std::env::set_current_dir(cwd).unwrap();
         let (out, _) = check(paths);
@@ -364,9 +447,16 @@ mod tests {
     fn a_project_root_is_not_a_duplicate_of_itself_under_any_spelling() {
         let dir = std::fs::canonicalize(project("spelling")).unwrap();
         std::fs::write(dir.join(".gsqlroot"), "").unwrap();
-        std::fs::write(dir.join("schema/s.gsql"), "CREATE VERTEX P (PRIMARY_ID id STRING)\n").unwrap();
+        std::fs::write(
+            dir.join("schema/s.gsql"),
+            "CREATE VERTEX P (PRIMARY_ID id STRING)\n",
+        )
+        .unwrap();
         std::fs::remove_file(dir.join("queries/q.gsql")).unwrap();
-        let link = dir.with_file_name(format!("{}-link", dir.file_name().unwrap().to_string_lossy()));
+        let link = dir.with_file_name(format!(
+            "{}-link",
+            dir.file_name().unwrap().to_string_lossy()
+        ));
         let _ = std::fs::remove_file(&link);
         std::os::unix::fs::symlink(&dir, &link).unwrap();
         let sub = dir.join("queries");
@@ -397,8 +487,17 @@ mod tests {
         std::fs::write(dir.join("schema/s.gsql"), schema).unwrap();
         let (out, summary) = check(vec![dir.join("queries")]);
         std::fs::remove_dir_all(&dir).unwrap();
-        assert!(out.contains("no attribute `nme`") && !out.contains("no-schema"), "{out}");
-        assert_eq!(summary, Summary { problems: 0, unreadable: 0 });
+        assert!(
+            out.contains("no attribute `nme`") && !out.contains("no-schema"),
+            "{out}"
+        );
+        assert_eq!(
+            summary,
+            Summary {
+                problems: 0,
+                unreadable: 0
+            }
+        );
     }
 
     #[test]
@@ -412,13 +511,19 @@ mod tests {
     #[test]
     fn unreadable_paths_are_counted_and_the_rest_is_checked() {
         let dir = project("missing");
-        let (out, summary) = check(vec![dir.join("nonexistent.gsql"), dir.join("queries/q.gsql")]);
+        let (out, summary) = check(vec![
+            dir.join("nonexistent.gsql"),
+            dir.join("queries/q.gsql"),
+        ]);
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(summary.unreadable, 1);
         assert!(out.contains("q.gsql:1:"), "{out}");
         assert!(!out.contains("cannot read"), "errors go to stderr: {out}");
-        let options =
-            Options { paths: vec![dir.join("nonexistent.gsql")], errors_only: false, format: OutputFormat::Json };
+        let options = Options {
+            paths: vec![dir.join("nonexistent.gsql")],
+            errors_only: false,
+            format: OutputFormat::Json,
+        };
         let mut json = Vec::new();
         assert_eq!(run(&options, &mut json).unwrap().unreadable, 1);
         assert_eq!(String::from_utf8(json).unwrap().trim(), "[]");

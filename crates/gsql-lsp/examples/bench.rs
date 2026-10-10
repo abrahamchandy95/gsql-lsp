@@ -1,7 +1,7 @@
 //! Times each analysis phase on a file:
 //! `cargo run --release --example bench -- path/to/file.gsql`
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gsql_lsp::features::{self, Config, Snapshot};
 use gsql_lsp::text::{PositionEncoding, SourceText};
@@ -9,38 +9,58 @@ use gsql_lsp::workspace::{FileIndex, Workspace};
 use gsql_lsp::{analysis, syntax};
 
 fn main() {
-    // Same large stack as the server, for deeply nested input.
-    std::thread::Builder::new().stack_size(gsql_lsp::STACK_SIZE).spawn(run).unwrap().join().unwrap();
+    // allocate a large stack on the server
+    std::thread::Builder::new()
+        .stack_size(gsql_lsp::STACK_SIZE)
+        .spawn(run)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+fn timed<T>(f: impl FnOnce() -> T) -> (T, Duration) {
+    let start = Instant::now();
+    let res = f();
+    (res, start.elapsed())
 }
 
 fn run() {
-    let path = std::env::args().nth(1).expect("usage: bench <file.gsql>");
-    let text = std::fs::read_to_string(path).expect("readable file");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: bench <file.gsql>");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read '{path}': {e}"));
+    println!("Benchmarking: {path} ({} bytes)", text.len());
+    println!("{:-<40}", "");
+
+    let started = Instant::now();
     let mut parser = syntax::new_parser();
 
-    let start = Instant::now();
-    let tree = syntax::parse(&mut parser, &text, None);
-    println!("parse        {:?}", start.elapsed());
+    let (tree, d) = timed(|| syntax::parse(&mut parser, &text, None));
+    println!("{:<12} {:?}", "parse", d);
 
-    let start = Instant::now();
-    let analysis = analysis::analyze(&tree, &text);
+    let (analysis, d) =
+        timed(|| analysis::Analysis::from_tree(&tree, &text, None));
     println!(
-        "analyze      {:?} ({} references, {} scopes)",
-        start.elapsed(),
+        "{:<12} {:?} ({} refs, {} scopes)",
+        "analyze",
+        d,
         analysis.references.len(),
         analysis.scopes.len()
     );
 
-    let source = SourceText::new(text.clone());
+    let source = SourceText::new(text);
     let uri = "file:///bench.gsql";
-    let start = Instant::now();
-    let index = FileIndex::build(uri, &analysis, &source, PositionEncoding::Utf16);
-    println!("index        {:?}", start.elapsed());
+
+    let (index, d) = timed(|| {
+        FileIndex::build(uri, &analysis, &source, PositionEncoding::Utf16)
+    });
+    println!("{:<12} {:?}", "index", d);
 
     let mut workspace = Workspace::default();
     workspace.update(index);
     let config = Config::default();
-    let snapshot = Snapshot {
+    let current_state = Snapshot {
         uri,
         source: &source,
         tree: &tree,
@@ -49,16 +69,28 @@ fn run() {
         encoding: PositionEncoding::Utf16,
         config: &config,
     };
-    let start = Instant::now();
-    let diagnostics = features::diagnostics::diagnostics(&snapshot);
-    println!("diagnostics  {:?} ({})", start.elapsed(), diagnostics.len());
-    let start = Instant::now();
-    let tokens = features::semantic_tokens::semantic_tokens(&snapshot, None);
-    println!("tokens       {:?} ({})", start.elapsed(), tokens.len() / 5);
-    let start = Instant::now();
-    let folds = features::folding::folding_ranges(&snapshot);
-    println!("folding      {:?} ({})", start.elapsed(), folds.len());
-    let start = Instant::now();
-    let symbols = features::symbols::document_symbols(&snapshot);
-    println!("symbols      {:?} ({})", start.elapsed(), symbols.len());
+
+    let (diagnostics, d) =
+        timed(|| features::diagnostics::diagnostics(&current_state));
+    println!(
+        "{:<12} {:?} ({} items)",
+        "diagnostics",
+        d,
+        diagnostics.len()
+    );
+
+    let (tokens, d) = timed(|| {
+        features::semantic_tokens::semantic_tokens(&current_state, None)
+    });
+    println!("{:<12} {:?} ({} tokens)", "tokens", d, tokens.len() / 5);
+
+    let (folds, d) =
+        timed(|| features::folding::folding_ranges(&current_state));
+    println!("{:<12} {:?} ({} ranges)", "folding", d, folds.len());
+
+    let (symbols, d) =
+        timed(|| features::symbols::document_symbols(&current_state));
+    println!("{:<12} {:?} ({} symbols)", "symbols", d, symbols.len());
+    println!("{:-<40}", "");
+    println!("{:<12} {:?}", "total", started.elapsed());
 }

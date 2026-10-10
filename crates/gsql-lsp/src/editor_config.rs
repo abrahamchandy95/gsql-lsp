@@ -8,7 +8,8 @@ use std::io::{self, Write};
 
 use serde_json::{Map, Value, json};
 
-use crate::features::{Config, KeywordCase};
+use crate::features::Config;
+use crate::text::is_identifier;
 
 /// Repository the snippets refer to (grammar sources, Neovim plugin). The one
 /// place to change it; `--repo URL` overrides it per invocation.
@@ -23,12 +24,20 @@ const ROOT_MARKERS: [&str; 2] = [".gsqlroot", ".git"];
 
 /// Editor, its variants (the first is the default) and a description.
 const EDITORS: &[(&str, &[&str], &str)] = &[
-    ("neovim", &["lazy", "lsp-config"], "lazy.nvim spec; vim.lsp.config without the plugin"),
+    (
+        "neovim",
+        &["lazy", "lsp-config"],
+        "lazy.nvim spec; vim.lsp.config without the plugin",
+    ),
     ("vscode", &["settings"], "settings.json"),
     ("helix", &["languages"], "languages.toml"),
     ("zed", &["settings"], "settings.json"),
     ("emacs", &["eglot", "lsp-mode"], "Eglot; lsp-mode"),
-    ("vim", &["vim-lsp", "vim9lsp", "coc"], "vim-lsp; yegappan/lsp; coc.nvim"),
+    (
+        "vim",
+        &["vim-lsp", "vim9lsp", "coc"],
+        "vim-lsp; yegappan/lsp; coc.nvim",
+    ),
 ];
 
 pub const HELP: &str = "\
@@ -73,11 +82,7 @@ pub fn settings_json(config: &Config) -> Value {
             "duplicateDefinitions": diagnostics_duplicate_definitions,
             "style": diagnostics_style,
         },
-        "format": { "keywordCase": match format_keyword_case {
-            KeywordCase::Preserve => "preserve",
-            KeywordCase::Upper => "upper",
-            KeywordCase::Lower => "lower",
-        } },
+        "format": { "keywordCase": format_keyword_case.as_str() },
         "inlayHints": { "enabled": inlay_hints },
         "semanticTokens": { "lexical": semantic_tokens_lexical },
     })
@@ -89,7 +94,11 @@ fn defaults() -> Value {
 
 /// `{"diagnostics": {"unused": true}}` to `[(["diagnostics", "unused"], true)]`.
 pub fn leaves(value: &Value) -> Vec<(Vec<String>, Value)> {
-    fn walk(value: &Value, path: &mut Vec<String>, out: &mut Vec<(Vec<String>, Value)>) {
+    fn walk(
+        value: &Value,
+        path: &mut Vec<String>,
+        out: &mut Vec<(Vec<String>, Value)>,
+    ) {
         match value {
             Value::Object(map) => {
                 for (key, child) in map {
@@ -116,12 +125,6 @@ fn pretty(value: &Value) -> String {
     serde_json::to_string_pretty(value).expect("JSON serializes")
 }
 
-fn is_identifier(key: &str) -> bool {
-    !key.is_empty()
-        && !key.starts_with(|c: char| c.is_ascii_digit())
-        && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
 fn lua_string(s: &str) -> String {
     format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
 }
@@ -132,7 +135,11 @@ fn lua(value: &Value, depth: usize) -> String {
             let pad = "  ".repeat(depth + 1);
             let mut out = String::from("{\n");
             for (key, child) in map {
-                let key = if is_identifier(key) { key.clone() } else { format!("[{}]", lua_string(key)) };
+                let key = if is_identifier(key) {
+                    key.clone()
+                } else {
+                    format!("[{}]", lua_string(key))
+                };
                 out += &format!("{pad}{key} = {},\n", lua(child, depth + 1));
             }
             out + &"  ".repeat(depth) + "}"
@@ -147,7 +154,11 @@ fn toml_string(s: &str) -> String {
 }
 
 fn toml_key(key: &str) -> String {
-    if !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+    if !key.is_empty()
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
         key.to_string()
     } else {
         toml_string(key)
@@ -157,8 +168,10 @@ fn toml_key(key: &str) -> String {
 fn toml_inline(value: &Value) -> String {
     match value {
         Value::Object(map) => {
-            let fields: Vec<String> =
-                map.iter().map(|(k, v)| format!("{} = {}", toml_key(k), toml_inline(v))).collect();
+            let fields: Vec<String> = map
+                .iter()
+                .map(|(k, v)| format!("{} = {}", toml_key(k), toml_inline(v)))
+                .collect();
             format!("{{ {} }}", fields.join(", "))
         }
         Value::String(s) => toml_string(s),
@@ -174,7 +187,10 @@ fn elisp_string(s: &str) -> String {
 fn elisp_plist(value: &Value) -> String {
     match value {
         Value::Object(map) => {
-            let fields: Vec<String> = map.iter().map(|(k, v)| format!(":{k} {}", elisp_plist(v))).collect();
+            let fields: Vec<String> = map
+                .iter()
+                .map(|(k, v)| format!(":{k} {}", elisp_plist(v)))
+                .collect();
             format!("({})", fields.join(" "))
         }
         Value::String(s) => elisp_string(s),
@@ -192,7 +208,10 @@ fn vim_string(s: &str) -> String {
 fn vim_dict(value: &Value) -> String {
     match value {
         Value::Object(map) => {
-            let fields: Vec<String> = map.iter().map(|(k, v)| format!("{}: {}", vim_string(k), vim_dict(v))).collect();
+            let fields: Vec<String> = map
+                .iter()
+                .map(|(k, v)| format!("{}: {}", vim_string(k), vim_dict(v)))
+                .collect();
             format!("{{{}}}", fields.join(", "))
         }
         Value::String(s) => vim_string(s),
@@ -207,14 +226,23 @@ fn indent_tail(text: &str, spaces: usize) -> String {
 }
 
 fn join_quoted(items: &[&str], quote: fn(&str) -> String) -> String {
-    items.iter().map(|m| quote(m)).collect::<Vec<_>>().join(", ")
+    items
+        .iter()
+        .map(|m| quote(m))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// `https://github.com/owner/name(.git)` to `owner/name`, which lazy.nvim takes
 /// as a GitHub shorthand; other URLs are kept whole.
 fn repo_slug(repo: &str) -> String {
-    let trimmed = repo.trim_end_matches('/').trim_end_matches(".git");
-    trimmed.strip_prefix("https://github.com/").unwrap_or(repo).to_string()
+    let trimmed = repo
+        .trim_end_matches('/')
+        .trim_end_matches(".git");
+    trimmed
+        .strip_prefix("https://github.com/")
+        .unwrap_or(repo)
+        .to_string()
 }
 
 // ---- snippets --------------------------------------------------------------
@@ -237,7 +265,11 @@ pub struct Snippet {
 }
 
 fn snippet(variant: &'static str, target: &str, body: String) -> Snippet {
-    Snippet { variant, target: target.to_string(), body }
+    Snippet {
+        variant,
+        target: target.to_string(),
+        body,
+    }
 }
 
 /// The canonical editor name for an alias, or `None`.
@@ -255,7 +287,11 @@ pub fn canonical_editor(name: &str) -> Option<&'static str> {
 
 /// The snippets of `editor` (a canonical name), default variant first.
 /// `command` is the server command or path.
-pub fn snippets(editor: &str, options: &Options, command: &str) -> Vec<Snippet> {
+pub fn snippets(
+    editor: &str,
+    options: &Options,
+    command: &str,
+) -> Vec<Snippet> {
     let settings = defaults();
     let repo = options.repo.unwrap_or(REPOSITORY);
     let only = options.settings_only;
@@ -264,8 +300,16 @@ pub fn snippets(editor: &str, options: &Options, command: &str) -> Vec<Snippet> 
         "neovim" => {
             let table = lua(&wrapped(settings), 0);
             if only {
-                out.push(snippet("lazy", "the `settings` field of the `lsp` option of setup()", table.clone()));
-                out.push(snippet("lsp-config", "the `settings` field of vim.lsp.config('gsql_lsp', ...)", table));
+                out.push(snippet(
+                    "lazy",
+                    "the `settings` field of the `lsp` option of setup()",
+                    table.clone(),
+                ));
+                out.push(snippet(
+                    "lsp-config",
+                    "the `settings` field of vim.lsp.config('gsql_lsp', ...)",
+                    table,
+                ));
                 return out;
             }
             // Without --absolute the plugin finds `gsql-lsp` itself (PATH, then the usual install folders).
@@ -284,8 +328,14 @@ pub fn snippets(editor: &str, options: &Options, command: &str) -> Vec<Snippet> 
                 "a lazy.nvim spec file, e.g. ~/.config/nvim/lua/plugins/gsql.lua (inside the returned list)",
                 body,
             ));
-            let mut markers: Vec<String> = ROOT_MARKERS.iter().map(|m| format!("{{ {} }}", lua_string(m))).collect();
-            markers.push(format!("{{ {} }}", join_quoted(&["README.md", "README"], lua_string)));
+            let mut markers: Vec<String> = ROOT_MARKERS
+                .iter()
+                .map(|m| format!("{{ {} }}", lua_string(m)))
+                .collect();
+            markers.push(format!(
+                "{{ {} }}",
+                join_quoted(&["README.md", "README"], lua_string)
+            ));
             let body = format!(
                 "vim.filetype.add({{ extension = {{ gsql = 'gsql', gsq = 'gsql' }} }})\nvim.lsp.config('gsql_lsp', {{\n  cmd = {{ {} }},\n  filetypes = {{ 'gsql' }},\n  root_markers = {{ {} }},\n  settings = {},\n}})\nvim.lsp.enable('gsql_lsp')",
                 lua_string(command),
@@ -301,7 +351,10 @@ pub fn snippets(editor: &str, options: &Options, command: &str) -> Vec<Snippet> 
         "vscode" => {
             let mut flat = Map::new();
             if options.absolute && !only {
-                flat.insert("gsql.server.path".into(), Value::String(command.to_string()));
+                flat.insert(
+                    "gsql.server.path".into(),
+                    Value::String(command.to_string()),
+                );
             }
             for (path, value) in leaves(&settings) {
                 flat.insert(format!("gsql.{}", path.join(".")), value);
@@ -314,12 +367,21 @@ pub fn snippets(editor: &str, options: &Options, command: &str) -> Vec<Snippet> 
         }
         "helix" => {
             let mut groups = String::new();
-            for (key, value) in settings.as_object().expect("settings object") {
-                groups += &format!("{} = {}\n", toml_key(key), toml_inline(value));
+            for (key, value) in settings
+                .as_object()
+                .expect("settings object")
+            {
+                groups +=
+                    &format!("{} = {}\n", toml_key(key), toml_inline(value));
             }
-            let server_settings = format!("[language-server.gsql-lsp.config.gsql]\n{groups}");
+            let server_settings =
+                format!("[language-server.gsql-lsp.config.gsql]\n{groups}");
             if only {
-                out.push(snippet("languages", "~/.config/helix/languages.toml", server_settings));
+                out.push(snippet(
+                    "languages",
+                    "~/.config/helix/languages.toml",
+                    server_settings,
+                ));
                 return out;
             }
             let body = format!(
@@ -375,17 +437,33 @@ pub fn snippets(editor: &str, options: &Options, command: &str) -> Vec<Snippet> 
             let body = format!(
                 "{load}\n(with-eval-after-load 'eglot\n  (add-to-list 'eglot-server-programs '(gsql-ts-mode . ({cmd}))))\n(setq-default eglot-workspace-configuration\n              '{plist})\n(add-hook 'gsql-ts-mode-hook #'eglot-ensure)"
             );
-            out.push(snippet("eglot", "init.el, after loading gsql-ts-mode.el from editors/emacs", body));
+            out.push(snippet(
+                "eglot",
+                "init.el, after loading gsql-ts-mode.el from editors/emacs",
+                body,
+            ));
             let body = format!(
                 "{load}\n(with-eval-after-load 'lsp-mode\n  (add-to-list 'lsp-language-id-configuration '(gsql-ts-mode . \"gsql\"))\n  (lsp-register-client\n   (make-lsp-client\n    :new-connection (lsp-stdio-connection '({cmd}))\n    :activation-fn (lsp-activate-on \"gsql\")\n    :initialization-options (lambda () '{plist})\n    :server-id 'gsql-lsp)))\n(add-hook 'gsql-ts-mode-hook #'lsp-deferred)"
             );
-            out.push(snippet("lsp-mode", "init.el, after loading gsql-ts-mode.el from editors/emacs", body));
+            out.push(snippet(
+                "lsp-mode",
+                "init.el, after loading gsql-ts-mode.el from editors/emacs",
+                body,
+            ));
         }
         "vim" => {
             let dict = vim_dict(&wrapped(settings.clone()));
             if only {
-                out.push(snippet("vim-lsp", "the `initialization_options` of the server entry", dict.clone()));
-                out.push(snippet("vim9lsp", "the `initializationOptions` of the server entry", dict));
+                out.push(snippet(
+                    "vim-lsp",
+                    "the `initialization_options` of the server entry",
+                    dict.clone(),
+                ));
+                out.push(snippet(
+                    "vim9lsp",
+                    "the `initializationOptions` of the server entry",
+                    dict,
+                ));
                 out.push(snippet(
                     "coc",
                     "the `initializationOptions` of the server in coc-settings.json",
@@ -393,13 +471,18 @@ pub fn snippets(editor: &str, options: &Options, command: &str) -> Vec<Snippet> 
                 ));
                 return out;
             }
-            let ft = "autocmd BufNewFile,BufRead *.gsql,*.gsq setfiletype gsql";
+            let ft =
+                "autocmd BufNewFile,BufRead *.gsql,*.gsq setfiletype gsql";
             let cmd = vim_string(command);
             let markers = join_quoted(&ROOT_MARKERS, vim_string);
             let body = format!(
                 "{ft}\nfunction! s:GsqlRoot() abort\n  let l:dir = lsp#utils#find_nearest_parent_file_directory(lsp#utils#get_buffer_path(), [{markers}])\n  return empty(l:dir) ? expand('%:p:h') : l:dir\nendfunction\naugroup gsql_lsp\n  autocmd!\n  autocmd User lsp_setup call lsp#register_server({{\n        \\ 'name': 'gsql-lsp',\n        \\ 'cmd': {{server_info -> [{cmd}]}},\n        \\ 'allowlist': ['gsql'],\n        \\ 'root_uri': {{server_info -> lsp#utils#path_to_uri(s:GsqlRoot())}},\n        \\ 'initialization_options': {dict},\n        \\ }})\naugroup END"
             );
-            out.push(snippet("vim-lsp", "vimrc (prabirshrestha/vim-lsp)", body));
+            out.push(snippet(
+                "vim-lsp",
+                "vimrc (prabirshrestha/vim-lsp)",
+                body,
+            ));
             let body = format!(
                 "{ft}\nautocmd User LspSetup call LspAddServer([{{\n      \\ 'name': 'gsql-lsp',\n      \\ 'filetype': ['gsql'],\n      \\ 'path': {cmd},\n      \\ 'args': [],\n      \\ 'initializationOptions': {dict},\n      \\ }}])"
             );
@@ -422,14 +505,22 @@ pub fn snippets(editor: &str, options: &Options, command: &str) -> Vec<Snippet> 
 
 // ---- command line ----------------------------------------------------------
 
-/// Runs `gsql-lsp config ...` (`args` excludes the word `config`). Snippets go
-/// to `out`, instructions to `err`. The error is a usage message.
 /// The value of an option: present, and not the next option.
-fn value<'a>(arg: Option<&'a String>, usage: &str) -> Result<&'a String, String> {
-    arg.filter(|v| !v.starts_with('-')).ok_or_else(|| usage.to_string())
+fn value<'a>(
+    arg: Option<&'a String>,
+    usage: &str,
+) -> Result<&'a String, String> {
+    arg.filter(|v| !v.starts_with('-'))
+        .ok_or_else(|| usage.to_string())
 }
 
-pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Result<(), String> {
+/// Runs `gsql-lsp config ...` (`args` excludes the word `config`). Snippets go
+/// to `out`, instructions to `err`. The error is a usage message.
+pub fn run(
+    args: &[String],
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<(), String> {
     let mut editor: Option<&'static str> = None;
     let mut options = Options::default();
     let mut list = false;
@@ -440,36 +531,55 @@ pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Result<
             "--settings" => options.settings_only = true,
             "--absolute" => options.absolute = true,
             "--all" => options.all = true,
-            "--variant" => options.variant = Some(value(rest.next(), "--variant takes a name")?),
-            "--repo" => options.repo = Some(value(rest.next(), "--repo takes a URL")?),
-            flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
+            "--variant" => {
+                options.variant =
+                    Some(value(rest.next(), "--variant takes a name")?)
+            }
+            "--repo" => {
+                options.repo = Some(value(rest.next(), "--repo takes a URL")?)
+            }
+            flag if flag.starts_with('-') => {
+                return Err(format!("unknown option {flag}"));
+            }
             name => {
                 if editor.is_some() {
                     return Err(format!("unexpected argument {name}"));
                 }
-                editor = Some(
-                    canonical_editor(name)
-                        .ok_or_else(|| format!("unknown editor {name} (see `gsql-lsp config --list`)"))?,
-                );
+                editor = Some(canonical_editor(name).ok_or_else(|| {
+                    format!(
+                        "unknown editor {name} (see `gsql-lsp config --list`)"
+                    )
+                })?);
             }
         }
     }
     let io_err = |e: io::Error| e.to_string();
     if list {
         for (name, variants, what) in EDITORS {
-            writeln!(out, "{name}\tvariants: {}\t{what}", variants.join(", ")).map_err(io_err)?;
+            writeln!(
+                out,
+                "{name}\tvariants: {}\t{what}",
+                variants.join(", ")
+            )
+            .map_err(io_err)?;
         }
         return Ok(());
     }
     let Some(editor) = editor else {
         if options.settings_only {
-            writeln!(out, "{}", pretty(&wrapped(defaults()))).map_err(io_err)?;
+            writeln!(out, "{}", pretty(&wrapped(defaults())))
+                .map_err(io_err)?;
             return Ok(());
         }
-        return Err("config takes an editor name, --list or --settings".into());
+        return Err(
+            "config takes an editor name, --list or --settings".into()
+        );
     };
     let command = if options.absolute {
-        std::env::current_exe().map_err(|e| format!("cannot find this executable: {e}"))?.to_string_lossy().into_owned()
+        std::env::current_exe()
+            .map_err(|e| format!("cannot find this executable: {e}"))?
+            .to_string_lossy()
+            .into_owned()
     } else {
         COMMAND.to_string()
     };
@@ -477,9 +587,15 @@ pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Result<
     let names: Vec<&str> = all.iter().map(|s| s.variant).collect();
     let chosen: Vec<&Snippet> = match options.variant {
         Some(name) => {
-            let found: Vec<&Snippet> = all.iter().filter(|s| s.variant == name).collect();
+            let found: Vec<&Snippet> = all
+                .iter()
+                .filter(|s| s.variant == name)
+                .collect();
             if found.is_empty() {
-                return Err(format!("{editor} has no variant {name} (variants: {})", names.join(", ")));
+                return Err(format!(
+                    "{editor} has no variant {name} (variants: {})",
+                    names.join(", ")
+                ));
             }
             found
         }
@@ -491,9 +607,11 @@ pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Result<
             if i > 0 {
                 writeln!(out).map_err(io_err)?;
             }
-            writeln!(out, "=== {editor}: {} ===", s.variant).map_err(io_err)?;
+            writeln!(out, "=== {editor}: {} ===", s.variant)
+                .map_err(io_err)?;
         }
-        writeln!(err, "{editor} ({}): put this in {}", s.variant, s.target).map_err(io_err)?;
+        writeln!(err, "{editor} ({}): put this in {}", s.variant, s.target)
+            .map_err(io_err)?;
         writeln!(out, "{}", s.body.trim_end()).map_err(io_err)?;
     }
     if options.repo.is_none() && matches!(editor, "neovim" | "helix") {
@@ -504,7 +622,12 @@ pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Result<
         .map_err(io_err)?;
     }
     if names.len() > 1 && options.variant.is_none() && !options.all {
-        writeln!(err, "other variants: {} (--variant NAME, or --all)", names[1..].join(", ")).map_err(io_err)?;
+        writeln!(
+            err,
+            "other variants: {} (--variant NAME, or --all)",
+            names[1..].join(", ")
+        )
+        .map_err(io_err)?;
     }
     Ok(())
 }

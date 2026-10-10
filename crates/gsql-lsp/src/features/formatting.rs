@@ -8,8 +8,9 @@
 use tree_sitter::Node;
 
 use crate::features::{KeywordCase, Snapshot};
-use crate::lsp::types::{FormattingOptions, Position, Range, TextEdit};
+use crate::lsp::types::{FormattingOptions, Range, TextEdit};
 use crate::syntax;
+use crate::text::Span;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Rule {
@@ -57,7 +58,9 @@ impl Planner<'_> {
     fn starts_line(&self, node: Node) -> bool {
         let row = node.start_position().row;
         let line_start = self.lines.line_start(row);
-        self.source[line_start..node.start_byte()].trim().is_empty()
+        self.source[line_start..node.start_byte()]
+            .trim()
+            .is_empty()
     }
 
     fn set(&mut self, row: usize, rule: Rule) {
@@ -74,12 +77,20 @@ impl Planner<'_> {
 
     /// Lines after the first line of `node` (up to `end_row`) keep their
     /// indentation relative to `anchor`, unless a nested rule assigns them.
-    fn continuation(&mut self, anchor: usize, from_row: usize, end_row: usize) {
+    fn continuation(
+        &mut self,
+        anchor: usize,
+        from_row: usize,
+        end_row: usize,
+    ) {
         for row in from_row..=end_row {
             if let Some(slot) = self.rules.get_mut(row)
                 && slot.is_none()
             {
-                *slot = Some(Rule::Continuation { anchor, aligned: false });
+                *slot = Some(Rule::Continuation {
+                    anchor,
+                    aligned: false,
+                });
             }
         }
     }
@@ -99,9 +110,13 @@ impl Planner<'_> {
             return;
         };
         for clause in syntax::named_children(select) {
-            if SELECT_CLAUSES.contains(&clause.kind()) && self.starts_line(clause) {
+            if SELECT_CLAUSES.contains(&clause.kind())
+                && self.starts_line(clause)
+            {
                 let row = clause.start_position().row;
-                if let Some(Some(Rule::Continuation { aligned, .. })) = self.rules.get_mut(row) {
+                if let Some(Some(Rule::Continuation { aligned, .. })) =
+                    self.rules.get_mut(row)
+                {
                     *aligned = true;
                 }
                 self.align_comments_above(clause);
@@ -115,7 +130,8 @@ impl Planner<'_> {
         let mut previous = clause.prev_sibling();
         while let Some(comment) = previous.filter(|c| c.kind() == "comment") {
             let row = comment.start_position().row;
-            if !self.starts_line(comment) || row != comment.end_position().row {
+            if !self.starts_line(comment) || row != comment.end_position().row
+            {
                 break;
             }
             if let Some(slot) = self.rules.get_mut(row)
@@ -131,7 +147,9 @@ impl Planner<'_> {
         for child in syntax::children(node) {
             match child.kind() {
                 "{" | ";" | "," => {}
-                "}" => self.set_if_starts_line(child, level.saturating_sub(1)),
+                "}" => {
+                    self.set_if_starts_line(child, level.saturating_sub(1))
+                }
                 _ => self.statement(child, level),
             }
         }
@@ -146,11 +164,15 @@ impl Planner<'_> {
             "query_definition"
             | "interpret_query_statement"
             | "loading_job_definition"
-            | "schema_change_job_definition" => match node.child_by_field_name("body") {
+            | "schema_change_job_definition" => match node
+                .child_by_field_name("body")
+            {
                 Some(body) if body.kind() != "opencypher_body" => {
                     let brace_row = body.start_position().row;
                     // A `{` on its own line lines up with the statement, like its `}`.
-                    if brace_row > first && self.starts_line(body) && self.source[body.start_byte()..].starts_with('{')
+                    if brace_row > first
+                        && self.starts_line(body)
+                        && self.source[body.start_byte()..].starts_with('{')
                     {
                         self.set(brace_row, Rule::Level(level));
                         self.continuation(anchor, first + 1, brace_row - 1);
@@ -188,7 +210,8 @@ impl Planner<'_> {
                 for child in syntax::children(node) {
                     match child.kind() {
                         "block" => self.block(child, level + 1),
-                        "when_clause" | "exception_handler" | "else_clause" => {
+                        "when_clause" | "exception_handler"
+                        | "else_clause" => {
                             self.set_if_starts_line(child, level + 1);
                             for part in syntax::children(child) {
                                 if part.kind() == "block" {
@@ -201,7 +224,9 @@ impl Planner<'_> {
                                 child.end_position().row,
                             );
                         }
-                        "EXCEPTION" | "END" => self.set_if_starts_line(child, level),
+                        "EXCEPTION" | "END" => {
+                            self.set_if_starts_line(child, level)
+                        }
                         _ => {}
                     }
                 }
@@ -227,46 +252,102 @@ impl Planner<'_> {
         let mut constructs = Vec::new();
         syntax::walk(node, |n| {
             let multiline = n.start_position().row < n.end_position().row;
-            if n != node && multiline && (listed.contains(&n.id()) || is_control_flow(n)) {
+            if n != node
+                && multiline
+                && (listed.contains(&n.id()) || is_control_flow(n))
+            {
                 constructs.push(n);
             }
-            if matches!(n.kind(), "accum_clause" | "post_accum_clause" | "block") {
-                listed.extend(syntax::named_children(n).into_iter().filter(|c| c.kind() != "comment").map(|c| c.id()));
+            if matches!(
+                n.kind(),
+                "accum_clause" | "post_accum_clause" | "block"
+            ) {
+                listed.extend(
+                    syntax::code_children(n)
+                        .into_iter()
+                        .map(|c| c.id()),
+                );
             }
         });
         // Outer nodes come first, so inner ones override their lines.
         for construct in constructs {
             let row = construct.start_position().row;
             for line in row + 1..=construct.end_position().row {
-                self.set(line, Rule::Continuation { anchor: row, aligned: false });
+                self.set(
+                    line,
+                    Rule::Continuation {
+                        anchor: row,
+                        aligned: false,
+                    },
+                );
             }
             if !is_control_flow(construct) {
                 continue;
             }
             for child in syntax::children(construct) {
-                let (child_row, child_end) = (child.start_position().row, child.end_position().row);
+                let (child_row, child_end) =
+                    (child.start_position().row, child.end_position().row);
                 match child.kind() {
-                    "END" if self.starts_line(child) => self.set(child_row, Rule::Under { anchor: row, depth: 0 }),
-                    "else_if_clause" | "else_clause" if construct.kind() == "if_statement" => {
+                    "END" if self.starts_line(child) => self.set(
+                        child_row,
+                        Rule::Under {
+                            anchor: row,
+                            depth: 0,
+                        },
+                    ),
+                    "else_if_clause" | "else_clause"
+                        if construct.kind() == "if_statement" =>
+                    {
                         if self.starts_line(child) {
-                            self.set(child_row, Rule::Under { anchor: row, depth: 0 });
+                            self.set(
+                                child_row,
+                                Rule::Under {
+                                    anchor: row,
+                                    depth: 0,
+                                },
+                            );
                         }
                     }
                     "when_clause" | "else_clause" => {
                         if self.starts_line(child) {
-                            self.set(child_row, Rule::Under { anchor: row, depth: 1 });
+                            self.set(
+                                child_row,
+                                Rule::Under {
+                                    anchor: row,
+                                    depth: 1,
+                                },
+                            );
                         }
                         for line in child_row + 1..=child_end {
-                            self.set(line, Rule::Continuation { anchor: child_row, aligned: false });
+                            self.set(
+                                line,
+                                Rule::Continuation {
+                                    anchor: child_row,
+                                    aligned: false,
+                                },
+                            );
                         }
-                        if !self.starts_line(child) && self.starts_line(construct) {
+                        if !self.starts_line(child)
+                            && self.starts_line(construct)
+                        {
                             // `CASE WHEN c THEN` on one line: its body is
                             // as deep as the bodies of the branches below
                             // (not after `ACCUM CASE`, whose layout is the user's).
-                            for body in syntax::children(child).into_iter().filter(|b| b.kind() == "block") {
+                            for body in syntax::children(child)
+                                .into_iter()
+                                .filter(|b| b.kind() == "block")
+                            {
                                 for stmt in syntax::named_children(body) {
-                                    if stmt.start_position().row > child_row && self.starts_line(stmt) {
-                                        self.set(stmt.start_position().row, Rule::Under { anchor: row, depth: 2 });
+                                    if stmt.start_position().row > child_row
+                                        && self.starts_line(stmt)
+                                    {
+                                        self.set(
+                                            stmt.start_position().row,
+                                            Rule::Under {
+                                                anchor: row,
+                                                depth: 2,
+                                            },
+                                        );
                                     }
                                 }
                             }
@@ -291,7 +372,10 @@ impl Planner<'_> {
 /// that begin inside a string literal, a backtick-quoted name or a block
 /// comment (their text is data and is kept as written), and the rows that
 /// end inside a string (their trailing whitespace is data too).
-fn cypher_protected_rows(text: &str, first: usize) -> (Vec<usize>, Vec<usize>) {
+fn cypher_protected_rows(
+    text: &str,
+    first: usize,
+) -> (Vec<usize>, Vec<usize>) {
     #[derive(PartialEq, Clone, Copy)]
     enum State {
         Code,
@@ -376,40 +460,70 @@ fn breakable_lists(root: Node, source: &str) -> Vec<List> {
     syntax::walk(root, |node| {
         let (list, open, close, item_kind) = match node.kind() {
             "typedef_statement" => (node, "<", ">", "tuple_field"),
-            _ => match node.child_by_field_name("parameters").filter(|p| p.kind() == "parameter_list") {
+            _ => match node
+                .child_by_field_name("parameters")
+                .filter(|p| p.kind() == "parameter_list")
+            {
                 Some(parameters) => (parameters, "(", ")", "parameter"),
                 None => return,
             },
         };
         let tokens = syntax::children(list);
-        let (Some(open), Some(close)) =
-            (tokens.iter().find(|t| t.kind() == open), tokens.iter().rev().find(|t| t.kind() == close))
-        else {
+        let (Some(open), Some(close)) = (
+            tokens.iter().find(|t| t.kind() == open),
+            tokens
+                .iter()
+                .rev()
+                .find(|t| t.kind() == close),
+        ) else {
             return;
         };
-        let items: Vec<(usize, usize)> =
-            tokens.iter().filter(|t| t.kind() == item_kind).map(|t| (t.start_byte(), t.end_byte())).collect();
+        let items: Vec<(usize, usize)> = tokens
+            .iter()
+            .filter(|t| t.kind() == item_kind)
+            .map(|t| (t.start_byte(), t.end_byte()))
+            .collect();
         let mut strings = Vec::new();
         let mut safe = !items.is_empty();
         syntax::walk(list, |n| match n.kind() {
             "comment" => safe = false,
-            "string" if n.start_position().row != n.end_position().row => safe = false,
+            "string" if n.start_position().row != n.end_position().row => {
+                safe = false
+            }
             "string" => strings.push((n.start_byte(), n.end_byte())),
             _ => {}
         });
-        let (open_row, close_row) = (open.start_position().row, close.start_position().row);
+        let (open_row, close_row) =
+            (open.start_position().row, close.start_position().row);
         let statement_row = node.start_position().row;
         let parent = node.parent().map(|p| p.id());
         let line_start = node.start_byte() - node.start_position().column;
-        let starts_line = source[line_start..node.start_byte()].trim().is_empty();
-        let follows_sibling =
-            lists.last().is_some_and(|l| l.close_row == statement_row && l.parent == parent && parent.is_some());
-        let shares_row = lists.last().is_some_and(|l| l.close_row >= open_row);
-        if !safe || !(starts_line || follows_sibling) || (shares_row && !follows_sibling) {
-            if close_row > open_row && lists.last().is_some_and(|l| l.close_row == open_row) {
+        let starts_line = source[line_start..node.start_byte()]
+            .trim()
+            .is_empty();
+        let follows_sibling = lists.last().is_some_and(|l| {
+            l.close_row == statement_row
+                && l.parent == parent
+                && parent.is_some()
+        });
+        let shares_row = lists
+            .last()
+            .is_some_and(|l| l.close_row >= open_row);
+        if !safe
+            || !(starts_line || follows_sibling)
+            || (shares_row && !follows_sibling)
+        {
+            if close_row > open_row
+                && lists
+                    .last()
+                    .is_some_and(|l| l.close_row == open_row)
+            {
                 // Drop the chain that ends on this row.
                 while let Some(dropped) = lists.pop() {
-                    if lists.last().is_none_or(|l| l.close_row != dropped.statement_row) {
+                    if lists
+                        .last()
+                        .is_none_or(|l| l.close_row != dropped.statement_row)
+                    {
                         break;
                     }
                 }
@@ -432,11 +546,17 @@ fn breakable_lists(root: Node, source: &str) -> Vec<List> {
 
 /// Whitespace runs (newlines too) outside the string literals of `text`,
 /// which starts at byte `offset`, become single spaces.
-fn collapse_whitespace(text: &str, offset: usize, strings: &[(usize, usize)]) -> String {
+fn collapse_whitespace(
+    text: &str,
+    offset: usize,
+    strings: &[(usize, usize)],
+) -> String {
     let mut out = String::new();
     let mut in_space = false;
     for (i, c) in text.char_indices() {
-        let in_string = strings.iter().any(|&(start, end)| start <= offset + i && offset + i < end);
+        let in_string = strings
+            .iter()
+            .any(|&(start, end)| start <= offset + i && offset + i < end);
         if c.is_whitespace() && !in_string {
             in_space = true;
             continue;
@@ -451,7 +571,13 @@ fn collapse_whitespace(text: &str, offset: usize, strings: &[(usize, usize)]) ->
 }
 
 fn is_control_flow(node: Node) -> bool {
-    matches!(node.kind(), "if_statement" | "case_statement" | "while_statement" | "foreach_statement")
+    matches!(
+        node.kind(),
+        "if_statement"
+            | "case_statement"
+            | "while_statement"
+            | "foreach_statement"
+    )
 }
 
 /// The width of a line's indentation in columns, with tab stops every `tab`
@@ -459,7 +585,13 @@ fn is_control_flow(node: Node) -> bool {
 fn indentation(line: &str, tab: usize) -> usize {
     line.chars()
         .take_while(|c| *c == ' ' || *c == '\t')
-        .fold(0, |column, c| if c == '\t' { (column / tab + 1) * tab } else { column + 1 })
+        .fold(0, |column, c| {
+            if c == '\t' {
+                (column / tab + 1) * tab
+            } else {
+                column + 1
+            }
+        })
 }
 
 fn render_indent(columns: usize, options: &FormattingOptions) -> String {
@@ -467,21 +599,38 @@ fn render_indent(columns: usize, options: &FormattingOptions) -> String {
         " ".repeat(columns)
     } else {
         let tab = options.tab_size.max(1) as usize;
-        format!("{}{}", "\t".repeat(columns / tab), " ".repeat(columns % tab))
+        format!(
+            "{}{}",
+            "\t".repeat(columns / tab),
+            " ".repeat(columns % tab)
+        )
     }
 }
 
 /// Formats the document (or only the lines of `range`), returning line edits.
-pub fn format(snapshot: &Snapshot, options: &FormattingOptions, range: Option<Range>) -> Vec<TextEdit> {
+pub fn format(
+    snapshot: &Snapshot,
+    options: &FormattingOptions,
+    range: Option<Range>,
+) -> Vec<TextEdit> {
     let root = snapshot.root();
     // The planner works on tree-sitter rows, which a lone `\r` does not end.
-    if root.has_error() || snapshot.source.lines.has_lone_carriage_returns() {
+    if root.has_error()
+        || snapshot
+            .source
+            .lines
+            .has_lone_carriage_returns()
+    {
         return Vec::new();
     }
     let source = snapshot.text();
     let lines = &snapshot.source.lines;
     let line_count = lines.line_count();
-    let mut planner = Planner { source, lines, rules: vec![None; line_count] };
+    let mut planner = Planner {
+        source,
+        lines,
+        rules: vec![None; line_count],
+    };
     planner.container(root, 0);
     // Lines that end inside a string literal keep their trailing whitespace.
     let mut open_string = vec![false; line_count];
@@ -489,30 +638,43 @@ pub fn format(snapshot: &Snapshot, options: &FormattingOptions, range: Option<Ra
     // Never touch lines that start inside a string literal, and keep the
     // layout of block comments.
     syntax::walk(root, |node| {
-        let (first, last) = (node.start_position().row, node.end_position().row);
+        let (first, last) =
+            (node.start_position().row, node.end_position().row);
         if first == last {
             return;
         }
         match node.kind() {
             "string" => {
                 open_string[first] = true;
-                (first + 1..=last).for_each(|row| planner.set(row, Rule::Keep));
+                (first + 1..=last)
+                    .for_each(|row| planner.set(row, Rule::Keep));
             }
-            "comment" => (first + 1..=last).for_each(|row| planner.set(row, Rule::Relative { anchor: first })),
+            "comment" => (first + 1..=last).for_each(|row| {
+                planner.set(row, Rule::Relative { anchor: first })
+            }),
             "opencypher_body" => {
-                let (kept, open) = cypher_protected_rows(&source[node.start_byte()..node.end_byte()], first);
-                kept.into_iter().for_each(|row| planner.set(row, Rule::Keep));
-                open.into_iter().for_each(|row| open_string[row] = true);
+                let (kept, open) = cypher_protected_rows(
+                    &source[node.start_byte()..node.end_byte()],
+                    first,
+                );
+                kept.into_iter()
+                    .for_each(|row| planner.set(row, Rule::Keep));
+                open.into_iter()
+                    .for_each(|row| open_string[row] = true);
             }
             _ => {}
         }
     });
 
     let unit = options.tab_size.max(1) as usize;
-    let keyword_edits = keyword_case_edits(snapshot, snapshot.config.format_keyword_case);
-    let original: Vec<&str> =
-        (0..line_count).map(|row| &source[lines.line_start(row)..lines.line_end(source, row)]).collect();
-    let newline = if source.contains("\r\n") { "\r\n" } else { "\n" };
+    let keyword_edits =
+        keyword_case_edits(snapshot, snapshot.config.format_keyword_case);
+    let original: Vec<&str> = (0..line_count)
+        .map(|row| {
+            &source[lines.line_start(row)..lines.line_end(source, row)]
+        })
+        .collect();
+    let newline = snapshot.source.newline();
     // The text of `start..end` with the keyword-case edits inside it applied.
     let cased = |start: usize, end: usize| {
         let mut text = source[start..end].to_string();
@@ -526,9 +688,13 @@ pub fn format(snapshot: &Snapshot, options: &FormattingOptions, range: Option<Ra
         text
     };
     let in_range = |first: usize, last: usize| {
-        range.is_none_or(|r| (r.start.line as usize) <= last && first <= (r.end.line as usize))
+        range.is_none_or(|r| {
+            (r.start.line as usize) <= last && first <= (r.end.line as usize)
+        })
     };
-    let mut lists = breakable_lists(root, source).into_iter().peekable();
+    let mut lists = breakable_lists(root, source)
+        .into_iter()
+        .peekable();
     let mut new_indent: Vec<usize> = vec![0; line_count];
     let mut edits = Vec::new();
     let mut skip_to = 0;
@@ -541,16 +707,34 @@ pub fn format(snapshot: &Snapshot, options: &FormattingOptions, range: Option<Ra
         let is_blank = content.trim().is_empty();
         // A comment above a clause is indented as that clause is.
         let (rule, source_row) = match planner.rules[row] {
-            Some(Rule::SameAs { row: target }) if target > row => (planner.rules[target], target),
+            Some(Rule::SameAs { row: target }) if target > row => {
+                (planner.rules[target], target)
+            }
             rule => (rule, row),
         };
         let indent = match rule {
+            Some(Rule::Keep) => {
+                // As written, blank lines too, except keyword case after a string.
+                new_indent[row] = indentation(line, unit);
+                let span = Span::new(
+                    lines.line_start(row),
+                    lines.line_end(source, row),
+                );
+                let text = cased(span.start, span.end);
+                if text != line && in_range(row, row) {
+                    edits.push(snapshot.edit(span, text));
+                }
+                continue;
+            }
             _ if is_blank => 0,
             Some(Rule::Level(level)) => level * unit,
             Some(Rule::Continuation { anchor, aligned }) if anchor < row => {
                 let shown = original[source_row];
-                let relative = indentation(shown, unit) as isize - indentation(original[anchor], unit) as isize;
-                let closes = shown.trim_start_matches([' ', '\t']).starts_with([')', ']', '}']);
+                let relative = indentation(shown, unit) as isize
+                    - indentation(original[anchor], unit) as isize;
+                let closes = shown
+                    .trim_start_matches([' ', '\t'])
+                    .starts_with([')', ']', '}']);
                 let relative = if closes || (aligned && relative == 0) {
                     relative.max(0)
                 } else if relative <= 0 {
@@ -560,20 +744,20 @@ pub fn format(snapshot: &Snapshot, options: &FormattingOptions, range: Option<Ra
                 };
                 (new_indent[anchor] as isize + relative).max(0) as usize
             }
-            Some(Rule::Under { anchor, depth }) if anchor < row => new_indent[anchor] + depth * unit,
-            Some(Rule::Relative { anchor }) if anchor < row => {
-                let relative = indentation(line, unit) as isize - indentation(original[anchor], unit) as isize;
-                (new_indent[anchor] as isize + relative).max(0) as usize
+            Some(Rule::Under { anchor, depth }) if anchor < row => {
+                new_indent[anchor] + depth * unit
             }
-            Some(Rule::Keep) => {
-                new_indent[row] = indentation(line, unit);
-                continue;
+            Some(Rule::Relative { anchor }) if anchor < row => {
+                let relative = indentation(line, unit) as isize
+                    - indentation(original[anchor], unit) as isize;
+                (new_indent[anchor] as isize + relative).max(0) as usize
             }
             _ => indentation(line, unit),
         };
         new_indent[row] = indent;
         while lists.next_if(|l| l.open_row < row).is_some() {}
-        let content_start = lines.line_start(row) + (line.len() - content.len());
+        let content_start =
+            lines.line_start(row) + (line.len() - content.len());
         let long = indent + content.trim_end().chars().count() > MAX_LINE;
         // The first list on this line that spans lines, or any if the line is long.
         let mut first = None;
@@ -587,38 +771,63 @@ pub fn format(snapshot: &Snapshot, options: &FormattingOptions, range: Option<Ra
             // One item per line, one level past this line; the closing bracket
             // and the rest of its line at this line's indent. A sibling's list
             // that opens on that line is laid out the same way, in the same edit.
-            let mut text = format!("{}{}", render_indent(indent, options), cased(content_start, list.open_end));
+            let mut text = format!(
+                "{}{}",
+                render_indent(indent, options),
+                cased(content_start, list.open_end)
+            );
             loop {
                 let last = list.items.len() - 1;
                 for (i, &(start, end)) in list.items.iter().enumerate() {
                     let mut item = cased(start, end);
                     if item.contains('\n') {
-                        item = collapse_whitespace(&item, start, &list.strings);
+                        item =
+                            collapse_whitespace(&item, start, &list.strings);
                     }
                     let comma = if i < last { "," } else { "" };
-                    text.push_str(&format!("{newline}{}{item}{comma}", render_indent(indent + unit, options)));
+                    text.push_str(&format!(
+                        "{newline}{}{item}{comma}",
+                        render_indent(indent + unit, options)
+                    ));
                 }
                 if list.close_row > list.open_row {
-                    new_indent[list.open_row + 1..list.close_row].fill(indent + unit);
+                    new_indent[list.open_row + 1..list.close_row]
+                        .fill(indent + unit);
                     new_indent[list.close_row] = indent;
                 }
                 let close_line_end = lines.line_end(source, list.close_row);
                 let rest = cased(list.close_start + 1, close_line_end);
-                let rest = if open_string[list.close_row] { rest.trim_start() } else { rest.trim() };
+                let rest = if open_string[list.close_row] {
+                    rest.trim_start()
+                } else {
+                    rest.trim()
+                };
                 let separator = if rest.is_empty() { "" } else { " " };
-                let close = format!("{}{separator}", &source[list.close_start..list.close_start + 1]);
-                let long = indent + close.len() + rest.chars().count() > MAX_LINE;
+                let close = format!(
+                    "{}{separator}",
+                    &source[list.close_start..list.close_start + 1]
+                );
+                let long =
+                    indent + close.len() + rest.chars().count() > MAX_LINE;
                 let mut next = None;
-                while let Some(candidate) = lists.next_if(|l| l.open_row == list.close_row) {
+                while let Some(candidate) =
+                    lists.next_if(|l| l.open_row == list.close_row)
+                {
                     if candidate.close_row > candidate.open_row || long {
                         next = Some(candidate);
                         break;
                     }
                 }
-                text.push_str(&format!("{newline}{}{close}", render_indent(indent, options)));
+                text.push_str(&format!(
+                    "{newline}{}{close}",
+                    render_indent(indent, options)
+                ));
                 match next {
                     Some(candidate) => {
-                        text.push_str(cased(list.close_start + 1, candidate.open_end).trim_start());
+                        text.push_str(
+                            cased(list.close_start + 1, candidate.open_end)
+                                .trim_start(),
+                        );
                         list = candidate;
                     }
                     None => {
@@ -629,28 +838,31 @@ pub fn format(snapshot: &Snapshot, options: &FormattingOptions, range: Option<Ra
             }
             skip_to = list.close_row + 1;
             let end = lines.line_end(source, list.close_row);
-            if text != source[lines.line_start(row)..end] && in_range(row, list.close_row) {
-                edits.push(TextEdit {
-                    range: Range::new(snapshot.position(lines.line_start(row)), snapshot.position(end)),
-                    new_text: text,
-                });
+            if text != source[lines.line_start(row)..end]
+                && in_range(row, list.close_row)
+            {
+                edits.push(
+                    snapshot
+                        .edit(Span::new(lines.line_start(row), end), text),
+                );
             }
             continue;
         }
-        let mut body = if open_string[row] { content.to_string() } else { content.trim_end().to_string() };
-        // Apply keyword-case edits that fall on this line (right to left).
-        let line_start = lines.line_start(row);
-        for (start, end, replacement) in keyword_edits.iter().rev() {
-            if *start >= content_start && *end <= content_start + body.len() {
-                body.replace_range(start - content_start..end - content_start, replacement);
-            }
-        }
-        let formatted = if is_blank { String::new() } else { format!("{}{}", render_indent(indent, options), body) };
+        let body = if open_string[row] {
+            content
+        } else {
+            content.trim_end()
+        };
+        let formatted = if is_blank {
+            String::new()
+        } else {
+            let body = cased(content_start, content_start + body.len());
+            format!("{}{}", render_indent(indent, options), body)
+        };
         if formatted != line && in_range(row, row) {
-            edits.push(TextEdit {
-                range: Range::new(snapshot.position(line_start), snapshot.position(lines.line_end(source, row))),
-                new_text: formatted,
-            });
+            let span =
+                Span::new(lines.line_start(row), lines.line_end(source, row));
+            edits.push(snapshot.edit(span, formatted));
         }
     }
     if range.is_none() {
@@ -661,31 +873,31 @@ pub fn format(snapshot: &Snapshot, options: &FormattingOptions, range: Option<Ra
             let start = lines.line_end(source, last_line);
             if &source[start..] != newline {
                 edits.retain(|e| e.range.start.line as usize <= last_line);
-                edits.push(TextEdit {
-                    range: Range::new(snapshot.position(start), end_position(snapshot)),
-                    new_text: newline.into(),
-                });
+                edits.push(
+                    snapshot.edit(Span::new(start, source.len()), newline),
+                );
             }
         }
     }
     edits
 }
 
-fn end_position(snapshot: &Snapshot) -> Position {
-    snapshot.position(snapshot.text().len())
-}
-
 /// (start, end, replacement) for the keywords whose case differs from `case`.
 /// Reserved words that are literals (`TRUE`, `FALSE`, `NULL`) count as keywords.
 /// The `keyword-case` style hint uses this too, so it and the formatter agree.
-pub(crate) fn keyword_case_edits(snapshot: &Snapshot, case: KeywordCase) -> Vec<(usize, usize, String)> {
+pub(crate) fn keyword_case_edits(
+    snapshot: &Snapshot,
+    case: KeywordCase,
+) -> Vec<(usize, usize, String)> {
     if case == KeywordCase::Preserve {
         return Vec::new();
     }
     let source = snapshot.text();
     let mut edits = Vec::new();
     syntax::walk(snapshot.root(), |node| {
-        if !(syntax::is_keyword(node) || matches!(node.kind(), "boolean" | "null")) {
+        if !(syntax::is_keyword(node)
+            || matches!(node.kind(), "boolean" | "null"))
+        {
             return;
         }
         let text = syntax::text(node, source);
@@ -706,29 +918,21 @@ pub(crate) fn keyword_case_edits(snapshot: &Snapshot, case: KeywordCase) -> Vec<
 mod tests {
     use super::*;
     use crate::features::test_support::Fixture;
+    use crate::lsp::types::Position;
+    use crate::text::{PositionEncoding, SourceText};
 
     fn apply(text: &str, edits: &[TextEdit]) -> String {
-        let source = crate::text::SourceText::new(text.to_string());
-        let mut result = text.to_string();
-        let mut spans: Vec<(usize, usize, &str)> = edits
-            .iter()
-            .map(|e| {
-                let start = source.offset(e.range.start, crate::text::PositionEncoding::Utf16);
-                let end = source.offset(e.range.end, crate::text::PositionEncoding::Utf16);
-                (start, end, e.new_text.as_str())
-            })
-            .collect();
-        spans.sort_by_key(|s| std::cmp::Reverse(s.0));
-        for (start, end, new_text) in spans {
-            result.replace_range(start..end, new_text);
-        }
-        result
+        SourceText::new(text.to_string())
+            .apply_edits(edits, PositionEncoding::Utf16)
     }
 
     /// The layout rules do not depend on the width, so these tests use 2 and
     /// keep their inputs short; the default width has its own test.
     fn two_spaces() -> FormattingOptions {
-        FormattingOptions { tab_size: 2, ..FormattingOptions::default() }
+        FormattingOptions {
+            tab_size: 2,
+            ..FormattingOptions::default()
+        }
     }
 
     fn format_text(text: &str, case: KeywordCase) -> String {
@@ -745,7 +949,8 @@ mod tests {
         let input = "CREATE QUERY hello(VERTEX<Person> p) {\nStart = {p};\nIF TRUE THEN\nPRINT Start;\nEND;\n}\n";
         let expected = "CREATE QUERY hello(VERTEX<Person> p) {\n    Start = {p};\n    IF TRUE THEN\n        PRINT Start;\n    END;\n}\n";
         let fixture = Fixture::new(input);
-        let edits = format(&fixture.snapshot(), &FormattingOptions::default(), None);
+        let edits =
+            format(&fixture.snapshot(), &FormattingOptions::default(), None);
         assert_eq!(apply(input, &edits), expected);
     }
 
@@ -758,17 +963,19 @@ mod tests {
             "CREATE QUERY activity_align (INT activity_threshold) FOR GRAPH Social_Net {\n    SumAccum<INT> @activity_amount;\n    start = {Person.*};\n    result =\n        SELECT v\n        FROM start:v -(:e)- Post:tgt\n        ACCUM v.@activity_amount +=1;\n    PRINT result;\n}\n",
         ] {
             let fixture = Fixture::new(text);
-            let edits = format(&fixture.snapshot(), &FormattingOptions::default(), None);
+            let edits = format(
+                &fixture.snapshot(),
+                &FormattingOptions::default(),
+                None,
+            );
             assert!(edits.is_empty(), "{edits:?}");
         }
     }
 
     #[test]
     fn reindents_blocks() {
-        let input =
-            "CREATE QUERY q() {\nINT x = 1;\n      IF x > 0 THEN\nPRINT x;\n   ELSE\n PRINT 0;\n        END;\n}\n";
-        let expected =
-            "CREATE QUERY q() {\n  INT x = 1;\n  IF x > 0 THEN\n    PRINT x;\n  ELSE\n    PRINT 0;\n  END;\n}\n";
+        let input = "CREATE QUERY q() {\nINT x = 1;\n      IF x > 0 THEN\nPRINT x;\n   ELSE\n PRINT 0;\n        END;\n}\n";
+        let expected = "CREATE QUERY q() {\n  INT x = 1;\n  IF x > 0 THEN\n    PRINT x;\n  ELSE\n    PRINT 0;\n  END;\n}\n";
         assert_eq!(format_text(input, KeywordCase::Preserve), expected);
     }
 
@@ -781,13 +988,15 @@ mod tests {
 
     #[test]
     fn indents_flush_continuations_and_closing_parens() {
-        let input = "CREATE VERTEX Person (\nPRIMARY_ID id STRING,\nname STRING\n)\n";
+        let input =
+            "CREATE VERTEX Person (\nPRIMARY_ID id STRING,\nname STRING\n)\n";
         let expected = "CREATE VERTEX Person (\n  PRIMARY_ID id STRING,\n  name STRING\n)\n";
         assert_eq!(format_text(input, KeywordCase::Preserve), expected);
     }
 
     #[test]
-    fn leaves_multiline_strings_and_block_comments_in_opencypher_bodies_alone() {
+    fn leaves_multiline_strings_and_block_comments_in_opencypher_bodies_alone()
+     {
         let input = "CREATE OPENCYPHER QUERY q() FOR GRAPH g {\nMATCH (u:P)\nWHERE u.name = \"a\nb  c\"   \n   AND u.k = 'x\n  y'\n/* note\n   more */\nRETURN u // it's\n}\n";
         let expected = "CREATE OPENCYPHER QUERY q() FOR GRAPH g {\n  MATCH (u:P)\n  WHERE u.name = \"a\nb  c\"   \n   AND u.k = 'x\n  y'\n  /* note\n   more */\n  RETURN u // it's\n}\n";
         let once = format_text(input, KeywordCase::Preserve);
@@ -835,15 +1044,68 @@ mod tests {
     }
 
     #[test]
+    fn keyword_case_applies_on_the_line_where_a_multi_line_string_ends() {
+        let input = "create query q() {\n  print true;\n  print \"a \nb\", true and false;\n}\n";
+        let expected = "CREATE QUERY q() {\n  PRINT TRUE;\n  PRINT \"a \nb\", TRUE AND FALSE;\n}\n";
+        let once = format_text(input, KeywordCase::Upper);
+        assert_eq!(once, expected);
+        assert_eq!(
+            format_text(&once, KeywordCase::Upper),
+            once,
+            "second pass"
+        );
+        // The `keyword-case` style hint agrees.
+        let fixture = Fixture::new(&once);
+        assert!(
+            keyword_case_edits(&fixture.snapshot(), KeywordCase::Upper)
+                .is_empty()
+        );
+        assert_eq!(format_text(expected, KeywordCase::Lower), input);
+    }
+
+    #[test]
+    fn whitespace_only_lines_inside_a_multi_line_string_are_kept() {
+        let input = "CREATE QUERY q() {\n  print \"a\n   \nb\", true;\n}\n";
+        let expected =
+            "CREATE QUERY q() {\n  PRINT \"a\n   \nb\", TRUE;\n}\n";
+        let once = format_text(input, KeywordCase::Upper);
+        assert_eq!(once, expected);
+        assert_eq!(
+            format_text(&once, KeywordCase::Upper),
+            once,
+            "second pass"
+        );
+        // In an openCypher body too.
+        let input = "CREATE OPENCYPHER QUERY q() FOR GRAPH g {\nMATCH (u:P)\n\
+                     WHERE u.name = \"a\n   \nb\"\nRETURN u\n}\n";
+        let expected = "CREATE OPENCYPHER QUERY q() FOR GRAPH g {\n  MATCH (u:P)\n  \
+                        WHERE u.name = \"a\n   \nb\"\n  RETURN u\n}\n";
+        let once = format_text(input, KeywordCase::Preserve);
+        assert_eq!(once, expected);
+        assert_eq!(
+            format_text(&once, KeywordCase::Preserve),
+            once,
+            "second pass"
+        );
+    }
+
+    #[test]
     fn formatting_with_tabs_is_stable() {
         for tab_size in [2, 4, 8] {
-            let options = FormattingOptions { tab_size, insert_spaces: false, ..FormattingOptions::default() };
+            let options = FormattingOptions {
+                tab_size,
+                insert_spaces: false,
+                ..FormattingOptions::default()
+            };
             let mut text =
                 "CREATE QUERY q() {\n\tR = SELECT s FROM P:s\n\t\tWHERE s.x > 1;\n\tPRINT R;\n}\n".to_string();
             let mut passes = Vec::new();
             for _ in 0..3 {
                 let fixture = Fixture::new(&text);
-                text = apply(&text, &format(&fixture.snapshot(), &options, None));
+                text = apply(
+                    &text,
+                    &format(&fixture.snapshot(), &options, None),
+                );
                 passes.push(text.clone());
             }
             assert_eq!(passes[0], passes[2], "tab size {tab_size}");
@@ -853,7 +1115,10 @@ mod tests {
     #[test]
     fn refuses_to_format_broken_files() {
         let fixture = Fixture::new("CREATE QUERY q() {\n PRINT ;\n}\n");
-        assert!(format(&fixture.snapshot(), &FormattingOptions::default(), None).is_empty());
+        assert!(
+            format(&fixture.snapshot(), &FormattingOptions::default(), None)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -880,7 +1145,11 @@ mod tests {
     fn assert_formats(input: &str, expected: &str) {
         let once = format_text(input, KeywordCase::Preserve);
         assert_eq!(once, expected);
-        assert_eq!(format_text(&once, KeywordCase::Preserve), once, "second pass");
+        assert_eq!(
+            format_text(&once, KeywordCase::Preserve),
+            once,
+            "second pass"
+        );
     }
 
     #[test]
@@ -902,7 +1171,8 @@ mod tests {
 
     #[test]
     fn brace_on_its_own_line_lines_up_with_the_closing_brace() {
-        let input = "CREATE OR REPLACE QUERY q(INT a)\nFOR GRAPH g\n{\nPRINT 1;\n}\n";
+        let input =
+            "CREATE OR REPLACE QUERY q(INT a)\nFOR GRAPH g\n{\nPRINT 1;\n}\n";
         let expected = "CREATE OR REPLACE QUERY q(INT a)\n  FOR GRAPH g\n{\n  PRINT 1;\n}\n";
         assert_formats(input, expected);
         // The same-line brace is unchanged.
@@ -916,10 +1186,8 @@ mod tests {
         let expected = "CREATE QUERY q() FOR GRAPH g {\n  S = {Person.*};\n  R = SELECT s FROM S:s\n  // comment between clauses\n  WHERE s.x > 1 // trail\n  // another\n  ACCUM s.@c += 1;\n}\n";
         assert_formats(input, expected);
         // Clauses indented past the SELECT keep that, and so do their comments.
-        let deeper =
-            "CREATE QUERY q() FOR GRAPH g {\n  R = SELECT s FROM S:s\n        // c\n        WHERE s.x > 1;\n}\n";
-        let expected =
-            "CREATE QUERY q() FOR GRAPH g {\n  R = SELECT s FROM S:s\n        // c\n        WHERE s.x > 1;\n}\n";
+        let deeper = "CREATE QUERY q() FOR GRAPH g {\n  R = SELECT s FROM S:s\n        // c\n        WHERE s.x > 1;\n}\n";
+        let expected = "CREATE QUERY q() FOR GRAPH g {\n  R = SELECT s FROM S:s\n        // c\n        WHERE s.x > 1;\n}\n";
         assert_formats(deeper, expected);
     }
 
@@ -936,12 +1204,26 @@ mod tests {
         assert_formats(input, expected);
         // A closing bracket alone on its line, and a long line with the default width.
         let input = "CREATE QUERY q(INT a, INT b\n) {\n  PRINT a;\n}\n";
-        assert_formats(input, "CREATE QUERY q(\n  INT a,\n  INT b\n) {\n  PRINT a;\n}\n");
-        let long = format!("CREATE QUERY q(INT a, STRING {}) {{\n    PRINT a;\n}}\n", "b".repeat(60));
+        assert_formats(
+            input,
+            "CREATE QUERY q(\n  INT a,\n  INT b\n) {\n  PRINT a;\n}\n",
+        );
+        let long = format!(
+            "CREATE QUERY q(INT a, STRING {}) {{\n    PRINT a;\n}}\n",
+            "b".repeat(60)
+        );
         let fixture = Fixture::new(&long);
-        let once = apply(&long, &format(&fixture.snapshot(), &FormattingOptions::default(), None));
+        let once = apply(
+            &long,
+            &format(&fixture.snapshot(), &FormattingOptions::default(), None),
+        );
         let b = "b".repeat(60);
-        assert_eq!(once, format!("CREATE QUERY q(\n    INT a,\n    STRING {b}\n) {{\n    PRINT a;\n}}\n"));
+        assert_eq!(
+            once,
+            format!(
+                "CREATE QUERY q(\n    INT a,\n    STRING {b}\n) {{\n    PRINT a;\n}}\n"
+            )
+        );
     }
 
     #[test]
@@ -976,18 +1258,29 @@ mod tests {
     fn range_formatting_lays_out_the_whole_list_or_none_of_it() {
         let input = "CREATE QUERY q(INT a,\nINT b,\nINT c) {\nPRINT a;\nPRINT b;\n}\n";
         let fixture = Fixture::new(input);
-        let line = |l: u32| Some(Range::new(Position::new(l, 0), Position::new(l, 1)));
+        let line = |l: u32| {
+            Some(Range::new(Position::new(l, 0), Position::new(l, 1)))
+        };
         // A range on the middle item lays out the whole list, in one edit.
         let edits = format(&fixture.snapshot(), &two_spaces(), line(1));
         assert_eq!(edits.len(), 1, "{edits:?}");
-        assert_eq!(apply(input, &edits), "CREATE QUERY q(\n  INT a,\n  INT b,\n  INT c\n) {\nPRINT a;\nPRINT b;\n}\n");
+        assert_eq!(
+            apply(input, &edits),
+            "CREATE QUERY q(\n  INT a,\n  INT b,\n  INT c\n) {\nPRINT a;\nPRINT b;\n}\n"
+        );
         // A range below the list leaves it alone.
         let edits = format(&fixture.snapshot(), &two_spaces(), line(4));
-        assert_eq!(apply(input, &edits), "CREATE QUERY q(INT a,\nINT b,\nINT c) {\nPRINT a;\n  PRINT b;\n}\n");
+        assert_eq!(
+            apply(input, &edits),
+            "CREATE QUERY q(INT a,\nINT b,\nINT c) {\nPRINT a;\n  PRINT b;\n}\n"
+        );
         // A range over the whole text gives the same as formatting the document.
         let all = Some(Range::new(Position::new(0, 0), Position::new(6, 0)));
         let edits = format(&fixture.snapshot(), &two_spaces(), all);
-        assert_eq!(apply(input, &edits), format_text(input, KeywordCase::Preserve));
+        assert_eq!(
+            apply(input, &edits),
+            format_text(input, KeywordCase::Preserve)
+        );
     }
 
     #[test]
@@ -996,8 +1289,11 @@ mod tests {
         let expected = "CREATE QUERY q() FOR GRAPH g {\n  TYPEDEF TUPLE<\n    a INT,\n    b INT\n  > T; TYPEDEF TUPLE<\n    c INT,\n    d INT\n  > U;\n  PRINT 1;\n}\n";
         assert_formats(input, expected);
         let fixture = Fixture::new(input);
-        let edits =
-            format(&fixture.snapshot(), &two_spaces(), Some(Range::new(Position::new(3, 0), Position::new(3, 1))));
+        let edits = format(
+            &fixture.snapshot(),
+            &two_spaces(),
+            Some(Range::new(Position::new(3, 0), Position::new(3, 1))),
+        );
         assert_eq!(edits.len(), 1, "{edits:?}");
         // A short list before a multi-line one on the same line stays inline.
         let input = "CREATE QUERY q() FOR GRAPH g {\n  TYPEDEF TUPLE<a INT> A; TYPEDEF TUPLE<b INT,\n c INT> B;\n  PRINT 1;\n}\n";
@@ -1019,12 +1315,13 @@ mod tests {
 
     #[test]
     fn lists_whose_statement_does_not_start_the_line_are_left_alone() {
-        let long =
-            format!("CREATE QUERY q() FOR GRAPH g {{ TYPEDEF TUPLE<{} INT, b INT> T; PRINT 1; }}\n", "a".repeat(60));
+        let long = format!(
+            "CREATE QUERY q() FOR GRAPH g {{ TYPEDEF TUPLE<{} INT, b INT> T; PRINT 1; }}\n",
+            "a".repeat(60)
+        );
         assert_formats(&long, &long);
         // Nor is a list ending on the line where such a list starts to span lines.
-        let input =
-            "CREATE QUERY q(INT a,\n  INT b) FOR GRAPH g { TYPEDEF TUPLE<x INT,\n    y INT> T;\n  PRINT a;\n}\n";
+        let input = "CREATE QUERY q(INT a,\n  INT b) FOR GRAPH g { TYPEDEF TUPLE<x INT,\n    y INT> T;\n  PRINT a;\n}\n";
         assert_formats(input, input);
         // Or where a list with a comment does.
         let input = "CREATE QUERY q() FOR GRAPH g {\n  TYPEDEF TUPLE<a INT,\n    b INT> A; TYPEDEF TUPLE<c INT, // c\n      d INT> B;\n}\n";
@@ -1034,24 +1331,48 @@ mod tests {
     #[test]
     fn lists_go_one_level_past_the_line_they_open_on() {
         let input = "CREATE OR REPLACE QUERY\n    q(INT a,\n  INT b) FOR GRAPH g {\n  PRINT a;\n}\n";
-        let expected =
-            "CREATE OR REPLACE QUERY\n    q(\n      INT a,\n      INT b\n    ) FOR GRAPH g {\n  PRINT a;\n}\n";
+        let expected = "CREATE OR REPLACE QUERY\n    q(\n      INT a,\n      INT b\n    ) FOR GRAPH g {\n  PRINT a;\n}\n";
         assert_formats(input, expected);
         let input = "CREATE QUERY q\n  (INT a,\n   INT b) {\n  PRINT a;\n}\n";
-        assert_formats(input, "CREATE QUERY q\n  (\n    INT a,\n    INT b\n  ) {\n  PRINT a;\n}\n");
+        assert_formats(
+            input,
+            "CREATE QUERY q\n  (\n    INT a,\n    INT b\n  ) {\n  PRINT a;\n}\n",
+        );
     }
 
     #[test]
     fn list_layout_with_tabs_and_crlf() {
         let input = "CREATE QUERY q(INT a,\r\n INT b) {\r\nTYPEDEF TUPLE<x INT,\r\n y INT> T;\r\nPRINT a;\r\n}\r\n";
         let fixture = Fixture::new(input);
-        let tabs = FormattingOptions { tab_size: 4, insert_spaces: false, ..FormattingOptions::default() };
+        let tabs = FormattingOptions {
+            tab_size: 4,
+            insert_spaces: false,
+            ..FormattingOptions::default()
+        };
         let once = apply(input, &format(&fixture.snapshot(), &tabs, None));
         assert_eq!(
             once,
             "CREATE QUERY q(\r\n\tINT a,\r\n\tINT b\r\n) {\r\n\tTYPEDEF TUPLE<\r\n\t\tx INT,\r\n\t\ty INT\r\n\t> T;\r\n\tPRINT a;\r\n}\r\n"
         );
-        assert!(format(&Fixture::new(&once).snapshot(), &tabs, None).is_empty());
+        assert!(
+            format(&Fixture::new(&once).snapshot(), &tabs, None).is_empty()
+        );
+    }
+
+    #[test]
+    fn mixed_line_endings_take_the_newline_code_actions_use() {
+        // The first line break is `\n`.
+        let input = "CREATE QUERY q(INT a,\n INT b) {\r\nPRINT a;\r\n}\r\n";
+        assert_eq!(
+            Fixture::new(input)
+                .snapshot()
+                .source
+                .newline(),
+            "\n"
+        );
+        let expected =
+            "CREATE QUERY q(\n  INT a,\n  INT b\n) {\r\n  PRINT a;\r\n}\n";
+        assert_eq!(format_text(input, KeywordCase::Preserve), expected);
     }
 
     #[test]
