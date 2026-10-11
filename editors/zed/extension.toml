@@ -8,7 +8,7 @@ repository = "https://github.com/abrahamchandy95/gsql-lsp"
 
 [grammars.gsql]
 repository = "https://github.com/abrahamchandy95/gsql-lsp"
-rev = "24583eee7084f29f4ea5cc791aeaa6fede507076"
+rev = "a9f65d38cf0faef55605d7f367232909555dd07a"
 path = "tree-sitter-gsql"
 
 [language_servers.gsql-lsp]

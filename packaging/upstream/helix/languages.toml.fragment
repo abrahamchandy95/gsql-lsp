@@ -22,7 +22,7 @@ grammar = "gsql"
 
 [[grammar]]
 name = "gsql"
-source = { git = "https://github.com/abrahamchandy95/gsql-lsp", rev = "24583eee7084f29f4ea5cc791aeaa6fede507076", subpath = "tree-sitter-gsql" }
+source = { git = "https://github.com/abrahamchandy95/gsql-lsp", rev = "a9f65d38cf0faef55605d7f367232909555dd07a", subpath = "tree-sitter-gsql" }
 
 # Queries to add under runtime/queries/gsql/ (generated from tree-sitter-gsql/queries,
 # with Helix capture names, by scripts/sync_queries.py):
