@@ -1,6 +1,4 @@
-//! The reference pages of the built-in functions and methods (syntax,
-//! parameters with their types, return type, notes and examples), extracted
-//! from the TigerGraph documentation by `scripts/sync_builtin_docs.py`.
+//! Reference pages of the built-ins, from `scripts/sync_builtin_docs.py`.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -55,15 +53,16 @@ struct Data {
 /// The start of the description of a method that changes its accumulator.
 const MUTATOR: &str = "Modifies the accumulator. ";
 
+const DATA: &str = include_str!("../data/builtin-docs.json");
+
 fn docs() -> &'static HashMap<(String, String), Doc> {
     static DOCS: OnceLock<HashMap<(String, String), Doc>> = OnceLock::new();
     DOCS.get_or_init(|| {
-        let data: Data =
-            serde_json::from_str(include_str!("../data/builtin-docs.json"))
-                .unwrap_or(Data {
-                    entries: Vec::new(),
-                    accumulators: Vec::new(),
-                });
+        // A broken file fails `the_embedded_pages_parse`, not the server.
+        let data: Data = serde_json::from_str(DATA).unwrap_or(Data {
+            entries: Vec::new(),
+            accumulators: Vec::new(),
+        });
         let mut docs: HashMap<(String, String), Doc> = data
             .entries
             .into_iter()
@@ -200,8 +199,7 @@ pub fn accumulator_markdown(a: &Accumulator) -> String {
 }
 
 impl Doc {
-    /// The page as Markdown lines: description, syntax, parameters, result,
-    /// notes and examples.
+    /// The page as Markdown.
     pub fn markdown(&self) -> String {
         let mut out = String::new();
         for paragraph in &self.description {
@@ -247,6 +245,13 @@ impl Doc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_embedded_pages_parse() {
+        if let Err(err) = serde_json::from_str::<Data>(DATA) {
+            panic!("data/builtin-docs.json does not match `Data`: {err}");
+        }
+    }
 
     #[test]
     fn finds_functions_and_methods() {

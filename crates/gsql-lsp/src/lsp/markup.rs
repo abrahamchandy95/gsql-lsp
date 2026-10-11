@@ -1,14 +1,4 @@
 //! Which text formats the client accepts, and Markdown to plain text.
-//!
-//! Choice of format: the server writes Markdown. It switches to plain text
-//! only when the client declares a list of supported formats and `markdown` is
-//! not in it. A client that declares nothing at all (a minimal test client)
-//! keeps getting Markdown, as before. Every real editor (VS Code, Neovim,
-//! Helix, Zed, eglot, lsp-mode, vim-lsp) lists `markdown` and `plaintext`.
-//!
-//! Document symbols follow the specification instead: hierarchical symbols
-//! are sent only when `hierarchicalDocumentSymbolSupport` is `true`; the flat
-//! `SymbolInformation[]` form is the default, which every client supports.
 
 use serde_json::Value;
 
@@ -84,9 +74,7 @@ impl MarkupContent {
     }
 }
 
-/// Markdown as readable plain text: code fences dropped (the code stays),
-/// heading markers dropped, list items kept as `- item`, emphasis markers and backticks removed,
-/// links written as `text (url)`.
+/// Markdown as readable plain text; links become `text (url)`.
 pub fn to_plain(markdown: &str) -> String {
     let mut out: Vec<String> = Vec::new();
     let mut fence: Option<(char, usize)> = None;
@@ -143,6 +131,10 @@ pub fn to_plain(markdown: &str) -> String {
 
 /// Inline markup of one line.
 fn inline(line: &str) -> String {
+    // Most lines have no markup.
+    if !line.contains(['\\', '`', '[', '*', '_']) {
+        return line.to_string();
+    }
     let chars: Vec<char> = line.chars().collect();
     let mut out = String::new();
     let mut i = 0;
@@ -236,9 +228,7 @@ fn find_run(chars: &[char], from: usize, c: char, n: usize) -> Option<usize> {
     None
 }
 
-/// Closing marker of emphasis opened before `from`: `n` `c` characters, not
-/// preceded by whitespace and (for `_`) not followed by a letter or digit.
-/// Code spans are skipped.
+/// Where emphasis opened before `from` closes; code spans are skipped.
 fn find_closer(
     chars: &[char],
     from: usize,

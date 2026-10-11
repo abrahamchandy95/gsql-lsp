@@ -91,6 +91,7 @@ pub fn run(
     let mut unreadable = 0;
     struct Parsed {
         path: PathBuf,
+        uri: String,
         source: SourceText,
         tree: tree_sitter::Tree,
         analysis: analysis::Analysis,
@@ -113,8 +114,9 @@ pub fn run(
         let tree = syntax::parse(&mut parser, &text, None);
         let analysis = analysis::Analysis::from_tree(&tree, &text, None);
         let source = SourceText::new(text);
+        let uri = uri::from_path(&path);
         workspace.update(FileIndex::of_document(
-            &uri::from_path(&path),
+            &uri,
             &tree,
             &analysis,
             &source,
@@ -123,18 +125,20 @@ pub fn run(
         ));
         parsed.push(Parsed {
             path,
+            uri,
             source,
             tree,
             analysis,
         });
     }
-    let indexed: std::collections::HashSet<String> = parsed
+    // Context files not checked, each once.
+    let mut indexed: std::collections::HashSet<String> = parsed
         .iter()
-        .map(|f| uri::key(&uri::from_path(&f.path)))
+        .map(|f| uri::key(&f.uri))
         .collect();
     let encoding = PositionEncoding::Utf32;
     for path in context {
-        if !indexed.contains(&uri::key(&uri::from_path(&path)))
+        if indexed.insert(uri::key(&uri::from_path(&path)))
             && let Some(index) = workspace::index_file(&path, encoding)
         {
             workspace.update(index);
@@ -152,9 +156,9 @@ pub fn run(
     let mut errors = 0;
     let mut json_items = Vec::new();
     for file in &parsed {
-        let uri = uri::from_path(&file.path);
+        let path = display(&file.path);
         let snapshot = Snapshot {
-            uri: &uri,
+            uri: &file.uri,
             source: &file.source,
             tree: &file.tree,
             analysis: &file.analysis,
@@ -169,8 +173,7 @@ pub fn run(
             }));
         let Ok(found) = found else {
             eprintln!(
-                "{}: error: internal error while checking this file (please report it)",
-                display(&file.path)
+                "{path}: error: internal error while checking this file (please report it)"
             );
             unreadable += 1;
             continue;
@@ -190,7 +193,6 @@ pub fn run(
                 severity::INFORMATION => "info",
                 _ => "hint",
             };
-            let path = display(&file.path);
             let (line, column) = (
                 diagnostic.range.start.line + 1,
                 diagnostic.range.start.character + 1,

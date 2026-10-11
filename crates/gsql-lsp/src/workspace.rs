@@ -534,11 +534,11 @@ pub fn scan_directory(dir: &Path) -> Vec<PathBuf> {
     };
     let mut files: Vec<PathBuf> = entries
         .flatten()
+        .filter(|e| is_gsql_file(Path::new(&e.file_name())))
         .map(|e| e.path())
         .filter(|p| {
-            is_gsql_file(p)
-                && std::fs::metadata(p)
-                    .is_ok_and(|m| m.is_file() && m.len() <= MAX_FILE_BYTES)
+            std::fs::metadata(p)
+                .is_ok_and(|m| m.is_file() && m.len() <= MAX_FILE_BYTES)
         })
         .collect();
     files.sort();
@@ -692,9 +692,10 @@ fn scan_with_limit(roots: &[PathBuf], max_files: usize) -> ScanReport {
     let mut report = ScanReport::default();
     // Each file with its folder depth below the root.
     let mut found: Vec<(usize, PathBuf)> = Vec::new();
-    let mut stack: Vec<(PathBuf, usize)> = roots
+    // Each folder with its canonical path and depth.
+    let mut stack: Vec<(PathBuf, PathBuf, usize)> = roots
         .iter()
-        .map(|r| (r.clone(), 0))
+        .map(|r| (r.clone(), canonical(r), 0))
         .collect();
     // Links to directories, scanned after the real ones.
     let mut linked: Vec<(PathBuf, usize)> = Vec::new();
@@ -703,23 +704,25 @@ fn scan_with_limit(roots: &[PathBuf], max_files: usize) -> ScanReport {
     let mut seen: std::collections::HashSet<PathBuf> =
         root_paths.iter().cloned().collect();
     let mut visited = 0;
-    'walk: while let Some((dir, depth)) = stack.pop().or_else(|| {
-        // Only now, with every real folder known, which links lead somewhere new.
-        while let Some((link, depth)) = linked.pop() {
-            let target = canonical(&link);
-            // A link up to a folder that holds a root would take in the neighbours of the project.
-            if root_paths
-                .iter()
-                .any(|root| root.starts_with(&target))
-            {
-                continue;
+    'walk: while let Some((dir, real_dir, depth)) =
+        stack.pop().or_else(|| {
+            // With every real folder known: which links lead somewhere new.
+            while let Some((link, depth)) = linked.pop() {
+                let target = canonical(&link);
+                // A link to a folder above a root would add its neighbours.
+                if root_paths
+                    .iter()
+                    .any(|root| root.starts_with(&target))
+                {
+                    continue;
+                }
+                if seen.insert(target.clone()) {
+                    return Some((link, target, depth));
+                }
             }
-            if seen.insert(target) {
-                return Some((link, depth));
-            }
-        }
-        None
-    }) {
+            None
+        })
+    {
         visited += 1;
         if visited > MAX_DIRECTORIES {
             report.dropped_directories = 1 + stack.len() + linked.len();
@@ -729,33 +732,40 @@ fn scan_with_limit(roots: &[PathBuf], max_files: usize) -> ScanReport {
             continue;
         };
         for entry in entries.flatten() {
-            let path = entry.path();
-            let name = entry
-                .file_name()
-                .to_string_lossy()
-                .into_owned();
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
-            let linked_dir = file_type.is_symlink()
-                && std::fs::metadata(&path).is_ok_and(|m| m.is_dir());
+            let name = entry.file_name();
+            // A link is what it points to: read that once.
+            let target = file_type
+                .is_symlink()
+                .then(|| std::fs::metadata(entry.path()));
+            let linked_dir = matches!(&target, Some(Ok(m)) if m.is_dir());
             if file_type.is_dir() || linked_dir {
-                if name.starts_with('.')
-                    || SKIPPED_DIRS.contains(&name.as_str())
+                let text = name.to_string_lossy();
+                if text.starts_with('.')
+                    || SKIPPED_DIRS.contains(&text.as_ref())
                     || depth >= MAX_DEPTH
                 {
                     continue;
                 }
+                let path = entry.path();
                 if linked_dir {
                     linked.push((path, depth + 1));
-                } else if seen.insert(canonical(&path)) {
-                    stack.push((path, depth + 1));
+                } else {
+                    // A folder (not a link) in a canonical folder: no need
+                    // to ask the file system.
+                    let real = real_dir.join(&name);
+                    if seen.insert(real.clone()) {
+                        stack.push((path, real, depth + 1));
+                    }
                 }
             // Symbolic links to files count.
             } else if (file_type.is_file() || file_type.is_symlink())
-                && is_gsql_file(&path)
+                && is_gsql_file(Path::new(&name))
             {
-                match std::fs::metadata(&path) {
+                let path = entry.path();
+                match target.unwrap_or_else(|| std::fs::metadata(&path)) {
                     Ok(m) if m.is_file() && m.len() <= MAX_FILE_BYTES => {
                         found.push((depth, path));
                         if found.len() >= MAX_COLLECTED {

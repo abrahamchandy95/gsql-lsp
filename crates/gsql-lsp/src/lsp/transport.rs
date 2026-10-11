@@ -2,6 +2,7 @@
 
 use std::io::{self, BufRead, Read, Write};
 
+use serde::ser::{Serialize, SerializeMap, Serializer};
 use serde_json::{Value, json};
 
 /// A decoded JSON-RPC message.
@@ -53,28 +54,55 @@ impl Message {
             )),
         }
     }
+}
 
-    pub fn to_value(&self) -> Value {
+/// Written without copying the payload into a new `Value`. Keys are in the
+/// order a `Value` map sorts them.
+impl Serialize for Message {
+    fn serialize<S: Serializer>(
+        &self,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(None)?;
         match self {
             Message::Request { id, method, params } => {
-                json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
+                map.serialize_entry("id", id)?;
+                map.serialize_entry("jsonrpc", "2.0")?;
+                map.serialize_entry("method", method)?;
+                map.serialize_entry("params", params)?;
             }
             Message::Notification { method, params } => {
-                json!({ "jsonrpc": "2.0", "method": method, "params": params })
+                map.serialize_entry("jsonrpc", "2.0")?;
+                map.serialize_entry("method", method)?;
+                map.serialize_entry("params", params)?;
+            }
+            Message::Response {
+                id,
+                error: Some(error),
+                ..
+            } => {
+                map.serialize_entry("error", error)?;
+                map.serialize_entry("id", id)?;
+                map.serialize_entry("jsonrpc", "2.0")?;
+            }
+            Message::Response {
+                id,
+                result,
+                error: None,
+            } => {
+                map.serialize_entry("id", id)?;
+                map.serialize_entry("jsonrpc", "2.0")?;
+                let result = result.as_ref().unwrap_or(&Value::Null);
+                map.serialize_entry("result", result)?;
             }
             Message::Invalid { id, code, message } => {
-                json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
-            }
-            Message::Response { id, result, error } => {
-                let mut value = json!({ "jsonrpc": "2.0", "id": id });
-                if let Some(error) = error {
-                    value["error"] = error.clone();
-                } else {
-                    value["result"] = result.clone().unwrap_or(Value::Null);
-                }
-                value
+                let error = json!({ "code": code, "message": message });
+                map.serialize_entry("error", &error)?;
+                map.serialize_entry("id", id)?;
+                map.serialize_entry("jsonrpc", "2.0")?;
             }
         }
+        map.end()
     }
 }
 
@@ -164,8 +192,9 @@ pub fn write_message(
     writer: &mut impl Write,
     message: &Message,
 ) -> io::Result<()> {
-    let body = serde_json::to_string(&message.to_value())?;
-    write!(writer, "Content-Length: {}\r\n\r\n{}", body.len(), body)?;
+    let body = serde_json::to_vec(message)?;
+    write!(writer, "Content-Length: {}\r\n\r\n", body.len())?;
+    writer.write_all(&body)?;
     writer.flush()
 }
 
