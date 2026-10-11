@@ -16,7 +16,7 @@ available when this was written.
   [gsql]
   submodule = "extensions/gsql"
   path = "editors/zed"   # the extension lives in a subdirectory of this repository
-  version = "0.1.0"      # must equal `version` in extension.toml
+  version = "1.0.0"      # must equal `version` in extension.toml
   ```
 - `extension.toml` with `id`, `name`, `version`, `schema_version`, `authors`,
   `description`, `repository`. The `id` must not contain `zed` or `extension`
@@ -41,7 +41,7 @@ available when this was written.
 - There is no `editors/zed/LICENSE`. The repository root has an MIT `LICENSE`;
   if the registry wants the file beside `extension.toml`, copy or symlink it
   (not done here: `editors/zed` belongs to another task).
-- `version` in `extension.toml` (0.1.0) must be bumped together with the
+- `version` in `extension.toml` (1.0.0) must be bumped together with the
   `extensions.toml` entry on every update; Zed does not read the release tags
   of this repository.
 - `editors/zed/Cargo.toml` declares `license = "MIT"`; the crate is built by

@@ -16,7 +16,7 @@ categories:
 
 source:
   # Release tags are v-prefixed.
-  id: pkg:github/abrahamchandy95/gsql-lsp@v0.1.0
+  id: pkg:github/abrahamchandy95/gsql-lsp@v1.0.0
   asset:
     - target: darwin_x64
       file: gsql-lsp-x86_64-apple-darwin.tar.gz

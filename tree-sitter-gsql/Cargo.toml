@@ -10,7 +10,7 @@ name = "tree-sitter-gsql"
 readme = "README.md"
 repository = "https://github.com/abrahamchandy95/gsql-lsp"
 rust-version = "1.85"
-version = "0.1.0-rc.1"
+version = "1.0.0"
 
 build = "bindings/rust/build.rs"
 include = [
