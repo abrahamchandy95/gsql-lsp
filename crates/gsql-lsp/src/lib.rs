@@ -1,4 +1,4 @@
-//! A language server for TigerGraph GSQL, built on the tree-sitter-gsql grammar.
+//! A language server for TigerGraph GSQL.
 
 pub mod analysis;
 pub mod builtin_docs;
@@ -16,13 +16,10 @@ pub mod uri;
 pub(crate) mod util;
 pub mod workspace;
 
-/// Stack size for threads that analyze GSQL. Deeply nested input (e.g.
-/// generated expressions with tens of thousands of terms) produces deep syntax
-/// trees that the analysis walks recursively; a large stack keeps that from
-/// aborting the process. Only the pages actually used are committed.
+/// Stack size for analysis threads, which walk deep syntax trees recursively.
 pub const STACK_SIZE: usize = 256 * 1024 * 1024;
 
-/// The message of a caught panic payload (empty when it is not a string).
+/// The message of a caught panic, or empty.
 pub fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     match payload.downcast::<String>() {
         Ok(message) => *message,
