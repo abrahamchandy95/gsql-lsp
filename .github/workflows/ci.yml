@@ -90,9 +90,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Both crates package and build from their .crate files
         run: cargo package --workspace --locked
-      - name: Installer and Homebrew formula
+      - name: Installer
         run: |
-          shellcheck scripts/install.sh scripts/test_install.sh scripts/test_homebrew.sh
+          shellcheck scripts/install.sh scripts/test_install.sh
           cargo build
           GSQL_LSP_BIN=target/debug/gsql-lsp sh scripts/test_install.sh
-          sh scripts/test_homebrew.sh

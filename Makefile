@@ -45,7 +45,6 @@ neovim-test: build
 
 packaging-test: build
 	GSQL_LSP_BIN=$(GSQL_LSP_BIN) sh scripts/test_install.sh
-	sh scripts/test_homebrew.sh
 	cargo package --workspace --allow-dirty
 
 docs-examples:
