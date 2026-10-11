@@ -4,9 +4,10 @@
     scripts/set_version.py 0.2.0
 
 Updates the Cargo workspace, the tree-sitter grammar (tree-sitter.json,
-Cargo.toml, package.json, pyproject.toml), the grammar dependency of
-crates/gsql-lsp, the VS Code and Zed extensions, and
-the workspace entries of Cargo.lock. Then tag the release: `git tag v0.2.0`.
+Cargo.toml, package.json, pyproject.toml, CMakeLists.txt, Makefile and the
+version in src/parser.c), the grammar dependency of crates/gsql-lsp, the VS
+Code, Zed and Emacs packages, and the workspace entries of both Cargo.lock
+files. Then tag the release: `git tag v0.2.0`.
 """
 
 import re
@@ -44,8 +45,18 @@ def main():
     # The grammar dependency of the server also names its version (crates.io).
     dep = r'(tree-sitter-gsql = \{ path = "[^"]+", version = ")([^"]+)(")'
     replace_first(ROOT / "crates" / "gsql-lsp" / "Cargo.toml", dep, version)
-    # Refresh the workspace members' entries in Cargo.lock (no network needed).
-    subprocess.run(["cargo", "update", "--workspace", "--offline"], cwd=ROOT, check=True)
+    # These take numbers only (CMake rejects `-rc.1`), as `tree-sitter generate` does.
+    numbers = version.split("-")[0]
+    grammar = ROOT / "tree-sitter-gsql"
+    replace_first(grammar / "CMakeLists.txt", r'^(\s*VERSION\s+")([^"]+)(")', numbers)
+    replace_first(grammar / "Makefile", r"^(VERSION\s*:=\s*)(\S+)()", numbers)
+    replace_first(ROOT / "editors" / "emacs" / "gsql-ts-mode.el", r"^(;; Version:\s*)(\S+)()", numbers)
+    # What `tree-sitter generate` writes, so CI's up-to-date check passes.
+    for part, number in zip(("major", "minor", "patch"), numbers.split(".")):
+        replace_first(grammar / "src" / "parser.c", rf"^(\s*\.{part}_version = )(\d+)(,)", number)
+    # Refresh the workspace members' entries in both Cargo.lock files (no network needed).
+    for workspace in (ROOT, ROOT / "editors" / "zed"):
+        subprocess.run(["cargo", "update", "--workspace", "--offline"], cwd=workspace, check=True)
     print(f"version set to {version}; commit, then `git tag v{version}` and push the tag")
 
 
