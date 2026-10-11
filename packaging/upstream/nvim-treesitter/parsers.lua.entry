@@ -3,7 +3,7 @@
   gsql = {
     install_info = {
       location = 'tree-sitter-gsql',
-      revision = '8b3ddc7f73bf8dd5f31e7d0cfd4f6768cc5351d6',
+      revision = '24583eee7084f29f4ea5cc791aeaa6fede507076',
       url = 'https://github.com/abrahamchandy95/gsql-lsp',
     },
     tier = 2,
