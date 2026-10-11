@@ -1,5 +1,6 @@
 //! The language server: message loop, document store and request dispatch.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -63,6 +64,8 @@ pub struct Server<W: Write> {
     config: Config,
     encoding: PositionEncoding,
     snippet_support: bool,
+    /// The client asks for the edit of a code action once it is picked.
+    resolve_code_actions: bool,
     formats: ClientFormats,
     watch_registration: bool,
     /// The client can be asked to re-request semantic tokens / inlay hints.
@@ -157,6 +160,7 @@ impl<W: Write> Server<W> {
             config: Config::default(),
             encoding: PositionEncoding::Utf16,
             snippet_support: false,
+            resolve_code_actions: false,
             formats: ClientFormats::default(),
             watch_registration: false,
             refresh_semantic_tokens: false,
@@ -319,6 +323,16 @@ impl<W: Write> Server<W> {
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
         };
+        self.resolve_code_actions =
+            flag("/textDocument/codeAction/dataSupport")
+                && capabilities
+                    .pointer(
+                        "/textDocument/codeAction/resolveSupport/properties",
+                    )
+                    .and_then(Value::as_array)
+                    .is_some_and(|properties| {
+                        properties.iter().any(|p| p == "edit")
+                    });
         self.watch_registration =
             flag("/workspace/didChangeWatchedFiles/dynamicRegistration");
         self.refresh_semantic_tokens =
@@ -370,7 +384,10 @@ impl<W: Write> Server<W> {
                 "documentHighlightProvider": true,
                 "documentSymbolProvider": true,
                 "workspaceSymbolProvider": true,
-                "codeActionProvider": { "codeActionKinds": ["quickfix", "source.fixAll"] },
+                "codeActionProvider": {
+                    "codeActionKinds": ["quickfix", "source.fixAll"],
+                    "resolveProvider": true,
+                },
                 "documentFormattingProvider": true,
                 "documentRangeFormattingProvider": true,
                 "renameProvider": { "prepareProvider": true },
@@ -849,6 +866,26 @@ impl<W: Write> Server<W> {
         self.notify("textDocument/publishDiagnostics", params);
     }
 
+    /// The diagnostics of a document: those last published, when they are
+    /// current.
+    fn document_diagnostics(
+        &self,
+        uri: &str,
+        snapshot: &Snapshot,
+    ) -> Cow<'_, [Diagnostic]> {
+        self.documents
+            .get(uri)
+            .and_then(|open| {
+                open.diagnostics
+                    .as_ref()
+                    .filter(|(v, _)| *v == open.document.version)
+            })
+            .map_or_else(
+                || Cow::Owned(features::diagnostics::diagnostics(snapshot)),
+                |(_, d)| Cow::Borrowed(d.as_slice()),
+            )
+    }
+
     fn snapshot<'a>(
         &'a self,
         uri: &'a str,
@@ -1060,25 +1097,45 @@ impl<W: Write> Server<W> {
                 let p: CodeActionParams = parse(params)?;
                 let snapshot = self.snapshot(&p.text_document.uri)?;
                 let only = p.context.only.as_deref();
-                // Reuse the published diagnostics when they are current.
-                let cached = self
-                    .documents
-                    .get(&p.text_document.uri)
-                    .and_then(|open| {
-                        open.diagnostics
-                            .as_ref()
-                            .filter(|(v, _)| *v == open.document.version)
-                    })
-                    .map(|(_, d)| d.clone());
-                let all = cached
-                    .unwrap_or_else(|| diagnostics::diagnostics(&snapshot));
+                let all = self
+                    .document_diagnostics(&p.text_document.uri, &snapshot);
                 to_value(code_actions::code_actions(
                     &snapshot,
                     p.range,
                     &p.context.diagnostics,
                     only,
                     &all,
+                    self.resolve_code_actions,
                 ))
+            }
+            "codeAction/resolve" => {
+                let mut action = params;
+                if !action.is_object() {
+                    return Err(RequestError::invalid_params(
+                        "expected a code action",
+                    ));
+                }
+                let uri = action
+                    .pointer("/data/uri")
+                    .and_then(Value::as_str)
+                    .map(String::from);
+                if let Some(uri) = uri
+                    && action["kind"] == "source.fixAll"
+                {
+                    // Closed since: what the action would fix is gone.
+                    let snapshot =
+                        self.snapshot(&uri)
+                            .map_err(|_| RequestError {
+                                code: error_code::CONTENT_MODIFIED,
+                                message: format!("{uri} is closed"),
+                            })?;
+                    let all = self.document_diagnostics(&uri, &snapshot);
+                    action["edit"] = serde_json::to_value(
+                        code_actions::fix_all_edit(&snapshot, &all),
+                    )
+                    .expect("protocol types serialize");
+                }
+                Ok(action)
             }
             "textDocument/inlayHint" => {
                 let p: RangeParams = parse(params)?;

@@ -7,7 +7,7 @@ use serde_json::json;
 use tree_sitter::Node;
 
 use crate::analysis::{
-    Context, FILE_SCOPE, Param, Role, ScopeKind, SymbolKind, Ty,
+    Context, FILE_SCOPE, Param, Role, ScopeKind, Symbol, SymbolKind, Ty,
 };
 use crate::builtin_docs;
 use crate::builtins;
@@ -17,7 +17,7 @@ use crate::lsp::types::{
     Diagnostic, Location, Range, RelatedInformation, TextEdit,
     diagnostic_tag, severity,
 };
-use crate::syntax;
+use crate::syntax::{self, field, keyword, kind};
 use crate::text::{
     Span, is_word_char, starts_with_ignore_ascii_case, word_offsets,
 };
@@ -126,7 +126,7 @@ pub fn syntax_errors(snapshot: &Snapshot) -> Vec<Diagnostic> {
 /// node (as reported) and each MISSING node.
 fn error_lines(tree_root: Node) -> HashSet<u32> {
     let mut lines = HashSet::new();
-    syntax::walk(tree_root, |n| {
+    syntax::walk_errors(tree_root, |n| {
         if n.is_missing() {
             lines.insert(n.start_position().row as u32);
         } else if n.is_error() {
@@ -153,17 +153,31 @@ fn error_lines(tree_root: Node) -> HashSet<u32> {
 /// `CREATE` or `INTERPRET` token (the parser may have nested the pieces of an
 /// earlier definition's error around it).
 fn last_definition_start(root: Node) -> Option<usize> {
-    let mut start = None;
-    syntax::walk(root, |n| {
-        if n.child_count() == 0 && matches!(n.kind(), "CREATE" | "INTERPRET")
-        {
-            start =
-                Some(start.map_or(n.start_byte(), |s: usize| {
-                    s.max(n.start_byte())
-                }));
+    last_leaf(root, |n| {
+        matches!(n.kind_id(), keyword::CREATE | keyword::INTERPRET)
+    })
+    .map(|n| n.start_byte())
+}
+
+/// The last leaf that `accept` takes, searched from the end of the tree:
+/// each node, then its children from the last. (Stepping back to a previous
+/// sibling would make tree-sitter count the siblings before it again.)
+fn last_leaf<'t>(
+    root: Node<'t>,
+    accept: impl Fn(Node<'t>) -> bool,
+) -> Option<Node<'t>> {
+    let mut cursor = root.walk();
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if node.child_count() == 0 {
+            if accept(node) {
+                return Some(node);
+            }
+        } else {
+            stack.extend(node.children(&mut cursor));
         }
-    });
-    start
+    }
+    None
 }
 
 /// The last token of a definition (`CREATE ...`, `INTERPRET ...`) that the
@@ -202,8 +216,9 @@ fn unfinished_at<'t>(
         }
     });
     let last = last?;
-    let starts_definition =
-        first.is_some_and(|f| matches!(f.kind(), "CREATE" | "INTERPRET"));
+    let starts_definition = first.is_some_and(|f| {
+        matches!(f.kind_id(), keyword::CREATE | keyword::INTERPRET)
+    });
     (starts_definition
         && last.end_byte() == document_end
         && (braces > 0 || parens > 0))
@@ -224,12 +239,8 @@ fn last_code_end(root: Node) -> usize {
     {
         return found;
     }
-    let mut found = 0;
-    syntax::walk(root, |n| {
-        if syntax::is_code_token(n) {
-            found = found.max(n.end_byte());
-        }
-    });
+    let found =
+        last_leaf(root, syntax::is_code_token).map_or(0, |n| n.end_byte());
     LAST.set(Some((root.id(), root.end_byte(), found)));
     found
 }
@@ -751,35 +762,37 @@ fn loose_keyword_typos(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
     };
     for statement in syntax::named_children(snapshot.root()) {
         let children = syntax::children(statement);
-        match statement.kind() {
-            "grant_statement" | "revoke_statement" => {
+        match statement.kind_id() {
+            kind::GRANT_STATEMENT | kind::REVOKE_STATEMENT => {
                 let Some(on) = children
                     .iter()
-                    .position(|c| c.kind() == "ON")
+                    .position(|c| c.kind_id() == keyword::ON)
                 else {
                     continue;
                 };
                 for pair in children[on + 1..].windows(2) {
                     let names = |n: &Node| {
                         matches!(
-                            n.kind(),
-                            "identifier" | "qualified_identifier"
+                            n.kind_id(),
+                            kind::IDENTIFIER | kind::QUALIFIED_IDENTIFIER
                         )
                     };
-                    if pair[0].kind() == "identifier" && names(&pair[1]) {
+                    if pair[0].kind_id() == kind::IDENTIFIER
+                        && names(&pair[1])
+                    {
                         report(pair[0]);
                     }
                 }
             }
-            "shell_command" => {
-                let starts = children
-                    .first()
-                    .is_some_and(|c| matches!(c.kind(), "EXPORT" | "IMPORT"));
+            kind::SHELL_COMMAND => {
+                let starts = children.first().is_some_and(|c| {
+                    matches!(c.kind_id(), keyword::EXPORT | keyword::IMPORT)
+                });
                 if let (true, Some(first)) = (
                     starts,
                     children
                         .get(1)
-                        .filter(|c| c.kind() == "identifier"),
+                        .filter(|c| c.kind_id() == kind::IDENTIFIER),
                 ) {
                     report(*first);
                 }
@@ -838,8 +851,8 @@ fn missing(snapshot: &Snapshot, node: Node) -> Diagnostic {
     if kind == "global_accumulator"
         && let Some(declaration) = parent
             .and_then(|p| p.parent())
-            .filter(|d| d.kind() == "accumulator_declaration")
-        && let Some(ty) = declaration.child_by_field_name("type")
+            .filter(|d| d.kind_id() == kind::ACCUMULATOR_DECLARATION)
+        && let Some(ty) = declaration.child_by_field_id(field::TYPE)
         && syntax::text(ty, snapshot.text()).eq_ignore_ascii_case("END")
     {
         let message =
@@ -853,7 +866,7 @@ fn missing(snapshot: &Snapshot, node: Node) -> Diagnostic {
                 .to_string()
         }
         ";" => "missing `;` after this statement".to_string(),
-        "-" | "->" if parent.is_some_and(|p| p.kind() == "edge_step") => {
+        "-" | "->" if parent.is_some_and(|p| p.kind_id() == kind::EDGE_STEP) => {
             MALFORMED_EDGE_STEP.to_string()
         }
         "}" => match parent.map(|p| p.kind()) {
@@ -995,17 +1008,20 @@ fn follows_accum_clause(node: Node) -> bool {
     let Some(previous) = syntax::prev_non_comment_sibling(node) else {
         return false;
     };
-    let select = match previous.kind() {
-        "select_statement" => Some(previous),
-        "assignment_statement" => previous
-            .child_by_field_name("right")
-            .filter(|r| r.kind() == "select_statement"),
+    let select = match previous.kind_id() {
+        kind::SELECT_STATEMENT => Some(previous),
+        kind::ASSIGNMENT_STATEMENT => previous
+            .child_by_field_id(field::RIGHT)
+            .filter(|r| r.kind_id() == kind::SELECT_STATEMENT),
         _ => None,
     };
     select
         .and_then(syntax::last_code_child)
         .is_some_and(|last| {
-            matches!(last.kind(), "accum_clause" | "post_accum_clause")
+            matches!(
+                last.kind_id(),
+                kind::ACCUM_CLAUSE | kind::POST_ACCUM_CLAUSE
+            )
         })
 }
 
@@ -1094,10 +1110,12 @@ fn unexpected(snapshot: &Snapshot, node: Node) -> Diagnostic {
         } else if contains_kind(node, "edge_pattern") {
             // The error may start at the `CREATE` of a definition it swallowed:
             // the squiggle belongs on the pattern.
-            if matches!(first.kind(), "CREATE" | "INTERPRET") {
+            if matches!(first.kind_id(), keyword::CREATE | keyword::INTERPRET)
+            {
                 let mut pattern = None;
                 syntax::walk(node, |n| {
-                    if n.kind() == "edge_pattern" && pattern.is_none() {
+                    if n.kind_id() == kind::EDGE_PATTERN && pattern.is_none()
+                    {
                         pattern = Some(n);
                     }
                 });
@@ -1283,7 +1301,7 @@ fn unterminated_string(error: Node, source: &str) -> Option<Span> {
     let children: Vec<Node> = error.children(&mut cursor).collect();
     children.iter().find_map(|child| {
         // String content runs up to the closing quote; without one it runs to the end.
-        let unterminated = child.kind() == "string_content"
+        let unterminated = child.kind_id() == kind::STRING_CONTENT
             && !source[child.end_byte()..].starts_with('"');
         unterminated.then(|| {
             Span::new(
@@ -1295,22 +1313,19 @@ fn unterminated_string(error: Node, source: &str) -> Option<Span> {
 }
 
 fn contains_kind(node: Node, kind: &str) -> bool {
-    let mut found = false;
-    syntax::walk(node, |n| found |= n.kind() == kind);
-    found
+    syntax::find(node, |n| n.kind() == kind).is_some()
 }
 
 /// The SELECT keyword of a SELECT statement without FROM inside an error.
 fn select_without_from(error: Node) -> Option<Node> {
     let mut select = None;
-    let mut from = false;
-    syntax::walk(error, |n| {
-        if n.kind() == "SELECT" && select.is_none() {
-            select = Some(n);
+    let from = syntax::find(error, |n| {
+        if n.kind_id() == keyword::SELECT {
+            select.get_or_insert(n);
         }
-        from |= n.kind() == "FROM";
+        n.kind_id() == keyword::FROM
     });
-    select.filter(|_| !from)
+    select.filter(|_| from.is_none())
 }
 
 /// A block keyword at the start of an error without a matching END.
@@ -1326,11 +1341,14 @@ fn unclosed_block(error: Node, first: Node) -> Option<String> {
         if n.child_count() > 0 {
             return;
         }
-        match n.kind() {
+        match n.kind_id() {
             // `ELSE IF` continues an IF rather than opening a new one.
-            "IF" if previous != "ELSE" => openers += 1,
-            "WHILE" | "FOREACH" | "CASE" | "TRY" => openers += 1,
-            "END" => ends += 1,
+            keyword::IF if previous != "ELSE" => openers += 1,
+            keyword::WHILE
+            | keyword::FOREACH
+            | keyword::CASE
+            | keyword::TRY => openers += 1,
+            keyword::END => ends += 1,
             _ => {}
         }
         previous = n.kind();
@@ -1350,7 +1368,7 @@ fn insert_end(
     let source = snapshot.text();
     let body = error
         .parent()
-        .filter(|p| matches!(p.kind(), "query_body" | "block"))?;
+        .filter(|p| matches!(p.kind_id(), kind::QUERY_BODY | kind::BLOCK))?;
     let close = body
         .end_byte()
         .checked_sub(1)
@@ -1379,21 +1397,21 @@ fn insert_end(
 
 fn context_of(node: Node) -> Option<&'static str> {
     for ancestor in syntax::ancestors(node) {
-        let context = match ancestor.kind() {
-            "accum_clause" => "in ACCUM clause",
-            "post_accum_clause" => "in POST-ACCUM clause",
-            "where_clause" => "in WHERE clause",
-            "from_clause" => "in FROM clause",
-            "select_statement" => "in SELECT statement",
-            "parameter_list" => "in parameter list",
-            "argument_list" => "in argument list",
-            "query_body" => "in query body",
-            "loading_job_body" => "in loading job",
-            "schema_change_body" => "in schema change job",
-            "vertex_attribute_list" | "edge_attribute_list" => {
+        let context = match ancestor.kind_id() {
+            kind::ACCUM_CLAUSE => "in ACCUM clause",
+            kind::POST_ACCUM_CLAUSE => "in POST-ACCUM clause",
+            kind::WHERE_CLAUSE => "in WHERE clause",
+            kind::FROM_CLAUSE => "in FROM clause",
+            kind::SELECT_STATEMENT => "in SELECT statement",
+            kind::PARAMETER_LIST => "in parameter list",
+            kind::ARGUMENT_LIST => "in argument list",
+            kind::QUERY_BODY => "in query body",
+            kind::LOADING_JOB_BODY => "in loading job",
+            kind::SCHEMA_CHANGE_BODY => "in schema change job",
+            kind::VERTEX_ATTRIBUTE_LIST | kind::EDGE_ATTRIBUTE_LIST => {
                 "in attribute list"
             }
-            "source_file" => return None,
+            kind::SOURCE_FILE => return None,
             _ => continue,
         };
         return Some(context);
@@ -1422,15 +1440,18 @@ fn semantic(snapshot: &Snapshot) -> Vec<Diagnostic> {
         unknown_types(snapshot, &mut diagnostics);
         unknown_graphs(snapshot, &mut diagnostics);
     }
+    // Built once, by the first check that needs it.
+    let unclosed =
+        std::cell::LazyCell::new(|| UnclosedLists::new(snapshot.root()));
     if snapshot
         .config
         .diagnostics_unknown_attributes
     {
-        unknown_attributes(snapshot, &mut diagnostics);
+        unknown_attributes(snapshot, &unclosed, &mut diagnostics);
     }
     if snapshot.config.diagnostics_undefined_names {
         undefined_names(snapshot, &mut diagnostics);
-        misspelled_names(snapshot, &mut diagnostics);
+        misspelled_names(snapshot, &unclosed, &mut diagnostics);
     }
     if snapshot.config.diagnostics_unused {
         unused_declarations(snapshot, &mut diagnostics);
@@ -1518,7 +1539,7 @@ fn duplicate_declarations(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
     use SymbolKind as K;
     let analysis = snapshot.analysis;
     for (scope_id, scope) in analysis.scopes.iter().enumerate() {
-        let mut seen: HashSet<(String, u8)> = HashSet::new();
+        let mut seen: HashSet<(&str, u8)> = HashSet::new();
         for symbol in analysis.scope_symbols(scope_id) {
             if symbol.in_error {
                 continue;
@@ -1535,7 +1556,7 @@ fn duplicate_declarations(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
                 K::FilenameVariable | K::Header | K::LineFilter => 3,
                 _ => continue,
             };
-            if !seen.insert((symbol.name.clone(), namespace)) {
+            if !seen.insert((&symbol.name, namespace)) {
                 out.push(diagnostic(
                     snapshot,
                     symbol.name_span,
@@ -1560,62 +1581,98 @@ fn duplicate_declarations(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
 /// a workspace may hold alternative versions of a schema.
 fn duplicate_definitions(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
     use SymbolKind as K;
-    let own_key = crate::uri::key(snapshot.uri);
-    let workspace = snapshot.workspace;
-    for symbol in &snapshot.analysis.symbols {
-        if !symbol.strict_create
-            || symbol.in_error
-            || symbol.scope != FILE_SCOPE
-            || !matches!(
-                symbol.kind,
+    /// What the definitions of a name come after.
+    enum Earlier {
+        /// A DROP removes the name somewhere, so they are not judged.
+        Dropped,
+        /// The first definition in a file whose URI sorts before this one.
+        Elsewhere(Location),
+        /// Only the definitions in this file.
+        Here,
+    }
+    // A CREATE that fails if the name exists, and so makes a later one fail.
+    let strict = |s: &Symbol| {
+        s.strict_create
+            && !s.in_error
+            && s.scope == FILE_SCOPE
+            && matches!(
+                s.kind,
                 K::VertexType | K::EdgeType | K::Graph | K::Query
             )
+    };
+    // Definitions clash when kind and name agree, and for queries the graph.
+    fn clash(s: &Symbol) -> (SymbolKind, &str, Option<&str>) {
+        let graph = match s.kind {
+            SymbolKind::Query => s.graph.as_deref(),
+            _ => None,
+        };
+        (s.kind, &s.name, graph)
+    }
+    let symbols = &snapshot.analysis.symbols;
+    // The first definition of each name in this file, and what comes before
+    // it, looked up once at its first judged definition.
+    let mut names: HashMap<_, (&Symbol, Option<Earlier>)> = HashMap::new();
+    for symbol in symbols.iter().filter(|s| strict(s)) {
+        let (first, _) = names
+            .entry(clash(symbol))
+            .or_insert((symbol, None));
+        if symbol.name_span.start < first.name_span.start {
+            *first = symbol;
+        }
+    }
+    let workspace = snapshot.workspace;
+    let own_key = crate::uri::key(snapshot.uri);
+    // File keys by URI: computing one reads the file system.
+    let mut keys: HashMap<&str, String> = HashMap::new();
+    for symbol in symbols {
+        if !strict(symbol)
             || (symbol.kind == K::Query && symbol.graph.is_none())
-            || workspace.is_dropped(symbol.kind, &symbol.name)
         {
             continue;
         }
-        let same = |other_graph: &Option<String>| {
-            symbol.kind != K::Query || *other_graph == symbol.graph
-        };
-        // (file key, offset) of every earlier definition.
-        let mut first: Option<(String, usize, Location)> = None;
-        let mut consider =
-            |key: String, offset: usize, location: Location| {
-                if first
-                    .as_ref()
-                    .is_none_or(|(k, o, _)| (&key, offset) < (k, *o))
-                {
-                    first = Some((key, offset, location));
-                }
-            };
-        for other in &snapshot.analysis.symbols {
-            if other.kind == symbol.kind
-                && other.name == symbol.name
-                && other.strict_create
-                && !other.in_error
-                && other.scope == FILE_SCOPE
-                && other.name_span.start < symbol.name_span.start
-                && same(&other.graph)
-            {
-                let location = snapshot.location(other.name_span);
-                consider(own_key.clone(), other.name_span.start, location);
-            }
-        }
-        for other in workspace.find(symbol.kind, &symbol.name) {
-            let key = crate::uri::key(&other.uri);
-            if key < own_key
-                && other.strict_create
-                && !other.in_error
-                && same(&other.graph)
-            {
-                consider(key, 0, other.location());
-            }
-        }
-        let Some((key, _, location)) = first else {
+        let Some((first, earlier)) = names.get_mut(&clash(symbol)) else {
             continue;
         };
-        let elsewhere = key != own_key;
+        let earlier = earlier.get_or_insert_with(|| {
+            if workspace.is_dropped(symbol.kind, &symbol.name) {
+                return Earlier::Dropped;
+            }
+            let mut found: Option<(String, Location)> = None;
+            for other in workspace.find(symbol.kind, &symbol.name) {
+                // This file's own entries have its key, which never sorts
+                // before itself.
+                if other.uri == snapshot.uri
+                    || !other.strict_create
+                    || other.in_error
+                    || (symbol.kind == K::Query
+                        && other.graph != symbol.graph)
+                {
+                    continue;
+                }
+                let key: &String = keys
+                    .entry(&other.uri)
+                    .or_insert_with(|| crate::uri::key(&other.uri));
+                if *key < own_key
+                    && found.as_ref().is_none_or(|(k, _)| key < k)
+                {
+                    found = Some((key.clone(), other.location()));
+                }
+            }
+            match found {
+                Some((_, location)) => Earlier::Elsewhere(location),
+                None => Earlier::Here,
+            }
+        });
+        let (location, elsewhere) = match earlier {
+            Earlier::Dropped => continue,
+            Earlier::Elsewhere(location) => (location.clone(), true),
+            Earlier::Here
+                if first.name_span.start < symbol.name_span.start =>
+            {
+                (snapshot.location(first.name_span), false)
+            }
+            Earlier::Here => continue,
+        };
         let place = if elsewhere {
             let file = crate::uri::file_name(&location.uri);
             format!("{file}:{}", location.range.start.line + 1)
@@ -1733,10 +1790,11 @@ fn no_schema_notice(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
         .into_iter()
         .flat_map(syntax::self_and_ancestors)
         .find_map(|node| {
-            node.child_by_field_name("name").filter(|_| {
-                node.kind().ends_with("_definition")
-                    || node.kind().contains("job")
-            })
+            node.child_by_field_id(field::NAME)
+                .filter(|_| {
+                    node.kind().ends_with("_definition")
+                        || node.kind().contains("job")
+                })
         });
     let line = snapshot.range(reference.span).start.line + 1;
     out.push(diagnostic(
@@ -1836,17 +1894,19 @@ fn unknown_graphs(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
         let Some(parent) = node.parent() else {
             continue;
         };
-        let checked = match parent.kind() {
-            "use_statement" => true,
-            "for_graph_clause" => parent.parent().is_some_and(|definition| {
-                matches!(
-                    definition.kind(),
-                    "query_definition"
-                        | "opencypher_query_definition"
-                        | "loading_job_definition"
-                        | "schema_change_job_definition"
-                )
-            }),
+        let checked = match parent.kind_id() {
+            kind::USE_STATEMENT => true,
+            kind::FOR_GRAPH_CLAUSE => {
+                parent.parent().is_some_and(|definition| {
+                    matches!(
+                        definition.kind_id(),
+                        kind::QUERY_DEFINITION
+                            | kind::OPENCYPHER_QUERY_DEFINITION
+                            | kind::LOADING_JOB_DEFINITION
+                            | kind::SCHEMA_CHANGE_JOB_DEFINITION
+                    )
+                })
+            }
             _ => false,
         };
         if !checked
@@ -1879,11 +1939,11 @@ fn graph_without_edges(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
     let workspace = snapshot.workspace;
     for definition in syntax::named_children(snapshot.root())
         .into_iter()
-        .filter(|n| n.kind() == "graph_definition")
+        .filter(|n| n.kind_id() == kind::GRAPH_DEFINITION)
     {
         if definition.has_error()
             || definition
-                .child_by_field_name("base")
+                .child_by_field_id(field::BASE)
                 .is_some()
         {
             continue;
@@ -1910,7 +1970,7 @@ fn graph_without_edges(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
             .collect();
         if kinds.iter().all(|k| *k == Some(false)) {
             let name = definition
-                .child_by_field_name("name")
+                .child_by_field_id(field::NAME)
                 .unwrap_or(definition);
             out.push(diagnostic(
                 snapshot,
@@ -1947,15 +2007,17 @@ fn schema_edit_checked(snapshot: &Snapshot, span: Span) -> bool {
     ) else {
         return false;
     };
-    match statement.kind() {
-        "alter_graph_statement" => syntax::has_child(statement, "ADD"),
+    match statement.kind_id() {
+        kind::ALTER_GRAPH_STATEMENT => syntax::has_child(statement, "ADD"),
         // `ALTER EDGE e DROP PAIR (FROM A, TO Gone)`: only the altered type has to exist.
-        "alter_type_statement" if syntax::has_child(statement, "DROP") => {
+        kind::ALTER_TYPE_STATEMENT
+            if syntax::has_child(statement, "DROP") =>
+        {
             statement
-                .child_by_field_name("name")
+                .child_by_field_id(field::NAME)
                 .is_some_and(|name| Span::of(name) == span)
         }
-        "drop_statement" => false,
+        kind::DROP_STATEMENT => false,
         _ => true,
     }
 }
@@ -1963,9 +2025,12 @@ fn schema_edit_checked(snapshot: &Snapshot, span: Span) -> bool {
 /// Attributes every vertex or edge has without declaring them.
 const IMPLICIT_ATTRIBUTES: &[&str] = &["type"];
 
-fn unknown_attributes(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
+fn unknown_attributes<'t>(
+    snapshot: &Snapshot<'t>,
+    unclosed: &UnclosedLists<'t>,
+    out: &mut Vec<Diagnostic>,
+) {
     let workspace = snapshot.workspace;
-    let unclosed = UnclosedLists::new(snapshot.root());
     for reference in &snapshot.analysis.references {
         let Role::Attribute(ty) = &reference.role else {
             continue;
@@ -2083,8 +2148,8 @@ fn primary_id_read(
     // Only reads in expressions: INSERT and LOAD column lists name the id legitimately.
     let node = snapshot.node_at(reference.span)?;
     let parent = node.parent()?;
-    if parent.kind() != "member_expression"
-        || parent.child_by_field_name("property") != Some(node)
+    if parent.kind_id() != kind::MEMBER_EXPRESSION
+        || parent.child_by_field_id(field::PROPERTY) != Some(node)
     {
         return None;
     }
@@ -2264,10 +2329,13 @@ fn undefined_names(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
 /// Calls of unknown functions and uses of unknown types that are spelled like
 /// a known one. Other unknown names stay quiet: they may be user-defined
 /// functions (written in C++) or types that exist only in the database.
-fn misspelled_names(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
+fn misspelled_names<'t>(
+    snapshot: &Snapshot<'t>,
+    unclosed: &UnclosedLists<'t>,
+    out: &mut Vec<Diagnostic>,
+) {
     let analysis = snapshot.analysis;
     let workspace = snapshot.workspace;
-    let unclosed = UnclosedLists::new(snapshot.root());
     for reference in analysis.unresolved_uses() {
         if reference.qualifier {
             continue;
@@ -2432,13 +2500,13 @@ fn declared_accumulator_receiver(
     )?;
     let member = property
         .parent()
-        .filter(|m| m.kind() == "member_expression")?;
-    let object = member.child_by_field_name("object")?;
-    let name = match object.kind() {
-        "global_accumulator" | "local_accumulator" => object,
-        "member_expression" => object
-            .child_by_field_name("property")
-            .filter(|p| p.kind() == "local_accumulator")?,
+        .filter(|m| m.kind_id() == kind::MEMBER_EXPRESSION)?;
+    let object = member.child_by_field_id(field::OBJECT)?;
+    let name = match object.kind_id() {
+        kind::GLOBAL_ACCUMULATOR | kind::LOCAL_ACCUMULATOR => object,
+        kind::MEMBER_EXPRESSION => object
+            .child_by_field_id(field::PROPERTY)
+            .filter(|p| p.kind_id() == kind::LOCAL_ACCUMULATOR)?,
         _ => return None,
     };
     let declared = snapshot
@@ -2450,12 +2518,15 @@ fn declared_accumulator_receiver(
 
 fn unused_declarations(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
     let analysis = snapshot.analysis;
-    let used: HashSet<usize> = analysis
-        .references
-        .iter()
-        .filter(|r| !r.declaration)
-        .filter_map(|r| r.target)
-        .collect();
+    // Symbol ids index `analysis.symbols`.
+    let mut used = vec![false; analysis.symbols.len()];
+    for reference in &analysis.references {
+        if let Some(id) = reference.target
+            && !reference.declaration
+        {
+            used[id] = true;
+        }
+    }
     for (id, symbol) in analysis.symbols.iter().enumerate() {
         let checked = match symbol.kind {
             kind if kind.is_accumulator() => true,
@@ -2464,7 +2535,7 @@ fn unused_declarations(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
         };
         if !checked
             || symbol.in_error
-            || used.contains(&id)
+            || used[id]
             || !in_query(snapshot, symbol.scope)
         {
             continue;
@@ -2499,7 +2570,7 @@ fn query_arity(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
         let values = syntax::code_children(arguments);
         // `RUN QUERY q({"name": "Emma", "age": 21})` passes parameters by
         // name; the others keep their default values.
-        if node.kind() != "call_expression"
+        if node.kind_id() != kind::CALL_EXPRESSION
             && let [object] = values.as_slice()
             && let Some(names) = parameter_names(*object, source)
             && !(query.params.len() == 1
@@ -2602,20 +2673,20 @@ fn argument_count(
 fn builtin_arity(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
     let source = snapshot.text();
     syntax::walk_with_errors(snapshot.root(), |node, in_error| {
-        if in_error || node.kind() != "call_expression" {
+        if in_error || node.kind_id() != kind::CALL_EXPRESSION {
             return;
         }
         let (Some(function), Some(arguments)) = (
-            node.child_by_field_name("function"),
-            node.child_by_field_name("arguments"),
+            node.child_by_field_id(field::FUNCTION),
+            node.child_by_field_id(field::ARGUMENTS),
         ) else {
             return;
         };
         if arguments.has_error() {
             return;
         }
-        let (name, params) = match function.kind() {
-            "identifier" => {
+        let (name, params) = match function.kind_id() {
+            kind::IDENTIFIER => {
                 let name = syntax::text(function, source);
                 // A query or tuple type of that name replaces the built-in.
                 let Some(resolve::Callee::Builtin(builtin)) =
@@ -2639,8 +2710,9 @@ fn builtin_arity(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
                 }
                 (builtin.name, builtin.params)
             }
-            "member_expression" => {
-                let Some(property) = function.child_by_field_name("property")
+            kind::MEMBER_EXPRESSION => {
+                let Some(property) =
+                    function.child_by_field_id(field::PROPERTY)
                 else {
                     return;
                 };
@@ -2686,19 +2758,21 @@ fn parameter_names<'t>(
     object: Node<'t>,
     source: &str,
 ) -> Option<Vec<(String, Span, Option<Node<'t>>)>> {
-    if object.kind() != "vertex_set_literal" {
+    if object.kind_id() != kind::VERTEX_SET_LITERAL {
         return None;
     }
     let mut names = Vec::new();
     for pair in syntax::code_children(object) {
         let key = pair
-            .child_by_field_name("key")
-            .filter(|k| pair.kind() == "pair" && k.kind() == "string")?;
+            .child_by_field_id(field::KEY)
+            .filter(|k| {
+                pair.kind_id() == kind::PAIR && k.kind_id() == kind::STRING
+            })?;
         let text = syntax::text(key, source);
         names.push((
             text.trim_matches('"').to_string(),
             Span::of(key),
-            pair.child_by_field_name("value"),
+            pair.child_by_field_id(field::VALUE),
         ));
     }
     Some(names)
@@ -2761,7 +2835,7 @@ fn stray_stubs(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
     }
     for node in syntax::named_children(snapshot.root())
         .into_iter()
-        .filter(|n| n.kind() == "stub_declaration")
+        .filter(|n| n.kind_id() == kind::STUB_DECLARATION)
     {
         out.push(diagnostic(
             snapshot,
@@ -2778,10 +2852,15 @@ fn stray_stubs(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
 /// and later); V2, the default, needs `==` and `!=`.
 fn v3_comparisons(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
     let source = snapshot.text();
+    // Inside code the parser gave up on, an assignment reads as one. The root
+    // is an ancestor of every expression; below the query, the walk tells.
+    if snapshot.root().is_error() {
+        return;
+    }
     for query in syntax::named_children(snapshot.root()) {
         if !matches!(
-            query.kind(),
-            "query_definition" | "interpret_query_statement"
+            query.kind_id(),
+            kind::QUERY_DEFINITION | kind::INTERPRET_QUERY_STATEMENT
         ) {
             continue;
         }
@@ -2789,15 +2868,16 @@ fn v3_comparisons(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
             .iter()
             .any(|version| version.eq_ignore_ascii_case("v3"));
         let Some(body) = query
-            .child_by_field_name("body")
+            .child_by_field_id(field::BODY)
             .filter(|_| !v3)
         else {
             continue;
         };
-        syntax::walk(body, |node| {
-            let Some(operator) = node
-                .child_by_field_name("operator")
-                .filter(|_| node.kind() == "binary_expression")
+        syntax::walk_with_errors(body, |node, in_error| {
+            if in_error || node.kind_id() != kind::BINARY_EXPRESSION {
+                return;
+            }
+            let Some(operator) = node.child_by_field_id(field::OPERATOR)
             else {
                 return;
             };
@@ -2806,10 +2886,6 @@ fn v3_comparisons(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
                 "<>" => "!=",
                 _ => return,
             };
-            // Inside code the parser gave up on, an assignment reads as one.
-            if syntax::self_and_ancestors(node).any(|a| a.is_error()) {
-                return;
-            }
             let mut d = diagnostic(
                 snapshot,
                 Span::of(operator),

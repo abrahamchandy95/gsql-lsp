@@ -1512,16 +1512,16 @@ pub fn missing_comma_at(
         return None;
     }
     let text = &source[start..end];
+    let before = statement_errors(text)?;
+    if before > MAX_ERRORS_FOR_COMMA {
+        return None;
+    }
     let mut parser = syntax::new_parser();
     let mut count = |text: &str| {
         parser
             .parse(text, None)
             .map(|tree| Outcome::of(tree.root_node()).errors)
     };
-    let before = count(text)?;
-    if before > MAX_ERRORS_FOR_COMMA {
-        return None;
-    }
     comma_offsets(root, anchor)
         .into_iter()
         .find(|&at| {
@@ -1537,6 +1537,40 @@ pub fn missing_comma_at(
             ))
             .is_some_and(|after| after < before)
         })
+}
+
+/// The number of syntax errors of `text` parsed by itself.
+fn errors_of(text: &str) -> Option<usize> {
+    syntax::new_parser()
+        .parse(text, None)
+        .map(|tree| Outcome::of(tree.root_node()).errors)
+}
+
+/// [`errors_of`] a statement. Every error of a broken statement asks about
+/// the same text, so the last answers are kept.
+fn statement_errors(text: &str) -> Option<usize> {
+    thread_local! {
+        static KNOWN: RefCell<Vec<(String, Option<usize>)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    const KEEP: usize = 8;
+    let known = KNOWN.with_borrow(|known| {
+        known
+            .iter()
+            .find(|(t, _)| t == text)
+            .map(|&(_, errors)| errors)
+    });
+    if let Some(errors) = known {
+        return errors;
+    }
+    let errors = errors_of(text);
+    KNOWN.with_borrow_mut(|known| {
+        if known.len() == KEEP {
+            known.remove(0);
+        }
+        known.push((text.to_string(), errors));
+    });
+    errors
 }
 
 /// Whether the statement around the `,` at `at` has fewer syntax errors
@@ -1573,15 +1607,9 @@ fn comma_removal(
         return None;
     }
     let text = &source[start..end];
-    let mut parser = syntax::new_parser();
-    let mut count = |text: &str| {
-        parser
-            .parse(text, None)
-            .map(|tree| Outcome::of(tree.root_node()).errors)
-    };
     let without =
         format!("{}{}", &text[..at - start], &text[at - start + 1..]);
-    match (count(text), count(&without)) {
+    match (statement_errors(text), errors_of(&without)) {
         (Some(before), Some(after)) if after < before => {
             Some((Span::new(start, end), after))
         }

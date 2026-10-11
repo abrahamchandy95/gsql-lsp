@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use tree_sitter::{Node, Tree};
 
 use super::model::*;
-use crate::syntax;
+use crate::syntax::{self, field, keyword, kind};
 use crate::text::{Span, starts_with_ignore_ascii_case};
 use crate::util::{extend_unique, push_unique};
 use crate::workspace::Workspace;
@@ -84,17 +84,17 @@ pub fn canonical_accumulator(name: &str) -> String {
 
 /// The static type described by a type node.
 pub fn type_of_type_node(node: Node, source: &str) -> Ty {
-    match node.kind() {
-        "primitive_type" => Ty::Primitive(
+    match node.kind_id() {
+        kind::PRIMITIVE_TYPE => Ty::Primitive(
             collapse_whitespace(syntax::text(node, source)).to_uppercase(),
         ),
-        "vertex_type" => Ty::Vertex(field_list(node, "type", source)),
-        "edge_type" => Ty::Edge(field_list(node, "type", source)),
-        "type_identifier" | "identifier" => {
+        kind::VERTEX_TYPE => Ty::Vertex(field_list(node, "type", source)),
+        kind::EDGE_TYPE => Ty::Edge(field_list(node, "type", source)),
+        kind::TYPE_IDENTIFIER | kind::IDENTIFIER => {
             Ty::Tuple(syntax::text(node, source).to_string())
         }
-        "file_type" => Ty::File,
-        "collection_type" => {
+        kind::FILE_TYPE => Ty::File,
+        kind::COLLECTION_TYPE => {
             let kind = syntax::field_text(node, "kind", source)
                 .unwrap_or("LIST")
                 .to_uppercase();
@@ -105,13 +105,13 @@ pub fn type_of_type_node(node: Node, source: &str) -> Ty {
                 .collect();
             Ty::Collection(kind, args)
         }
-        "accumulator_type" => {
+        kind::ACCUMULATOR_TYPE => {
             let kind = syntax::field_text(node, "kind", source).unwrap_or("");
             let args = syntax::children_by_field(node, "argument")
                 .into_iter()
-                .map(|arg| match arg.kind() {
-                    "group_by_field" => arg
-                        .child_by_field_name("type")
+                .map(|arg| match arg.kind_id() {
+                    kind::GROUP_BY_FIELD => arg
+                        .child_by_field_id(field::TYPE)
                         .map(|t| type_of_type_node(t, source))
                         .unwrap_or_default(),
                     _ => type_of_type_node(arg, source),
@@ -192,7 +192,7 @@ struct Builder<'s> {
 fn is_strict_create(node: Node) -> bool {
     if node
         .parent()
-        .is_none_or(|p| p.kind() != "source_file")
+        .is_none_or(|p| p.kind_id() != kind::SOURCE_FILE)
     {
         return false;
     }
@@ -200,8 +200,9 @@ fn is_strict_create(node: Node) -> bool {
     let mut children = node.children(&mut cursor);
     children
         .next()
-        .is_some_and(|c| c.kind() == "CREATE")
-        && !children.any(|c| matches!(c.kind(), "OR" | "FUNCTION"))
+        .is_some_and(|c| c.kind_id() == keyword::CREATE)
+        && !children
+            .any(|c| matches!(c.kind_id(), keyword::OR | keyword::FUNCTION))
 }
 
 /// `WITH primary_id_as_attribute` set to anything but false.
@@ -447,49 +448,49 @@ impl<'s> Builder<'s> {
     }
 
     fn declare_node(&mut self, node: Node) {
-        match node.kind() {
-            "ERROR" => {
+        match node.kind_id() {
+            kind::ERROR => {
                 self.error_depth += 1;
                 self.declare_children(node);
                 self.error_depth -= 1;
             }
-            "query_definition" | "opencypher_query_definition" => {
+            kind::QUERY_DEFINITION | kind::OPENCYPHER_QUERY_DEFINITION => {
                 self.declare_query(node)
             }
-            "interpret_query_statement" => {
-                if node.child_by_field_name("body").is_some() {
+            kind::INTERPRET_QUERY_STATEMENT => {
+                if node.child_by_field_id(field::BODY).is_some() {
                     self.push(ScopeKind::Query, node);
                     self.declare_parameters(node);
-                    if let Some(body) = node.child_by_field_name("body") {
+                    if let Some(body) = node.child_by_field_id(field::BODY) {
                         self.declare(body);
                     }
                     self.pop();
                 }
             }
-            "vertex_definition" => self.declare_vertex_type(node),
-            "edge_definition" => self.declare_edge_type(node, FILE_SCOPE),
-            "drop_statement" => self.record_drop(node),
+            kind::VERTEX_DEFINITION => self.declare_vertex_type(node),
+            kind::EDGE_DEFINITION => self.declare_edge_type(node, FILE_SCOPE),
+            kind::DROP_STATEMENT => self.record_drop(node),
             // A virtual edge type exists only while its query runs.
-            "virtual_edge_declaration" => {
+            kind::VIRTUAL_EDGE_DECLARATION => {
                 let scope = self.query_or_current();
                 self.declare_edge_type(node, scope);
             }
-            "graph_definition" => self.declare_graph(node),
-            "typedef_statement" => self.declare_typedef(node),
-            "loading_job_definition" => {
+            kind::GRAPH_DEFINITION => self.declare_graph(node),
+            kind::TYPEDEF_STATEMENT => self.declare_typedef(node),
+            kind::LOADING_JOB_DEFINITION => {
                 self.declare_job(node, SymbolKind::LoadingJob)
             }
-            "schema_change_job_definition" => {
+            kind::SCHEMA_CHANGE_JOB_DEFINITION => {
                 self.declare_job(node, SymbolKind::SchemaChangeJob)
             }
-            "alter_type_statement" => self.declare_added_attributes(node),
-            "data_source_definition" | "package_definition" => {
-                let kind = if node.kind() == "package_definition" {
+            kind::ALTER_TYPE_STATEMENT => self.declare_added_attributes(node),
+            kind::DATA_SOURCE_DEFINITION | kind::PACKAGE_DEFINITION => {
+                let kind = if node.kind_id() == kind::PACKAGE_DEFINITION {
                     SymbolKind::Package
                 } else {
                     SymbolKind::DataSource
                 };
-                if let Some(name) = node.child_by_field_name("name") {
+                if let Some(name) = node.child_by_field_id(field::NAME) {
                     self.define_declaration(
                         FILE_SCOPE,
                         kind,
@@ -499,17 +500,17 @@ impl<'s> Builder<'s> {
                     );
                 }
             }
-            "define_filename_statement"
-            | "define_header_statement"
-            | "define_input_line_filter_statement" => {
-                let kind = match node.kind() {
-                    "define_filename_statement" => {
+            kind::DEFINE_FILENAME_STATEMENT
+            | kind::DEFINE_HEADER_STATEMENT
+            | kind::DEFINE_INPUT_LINE_FILTER_STATEMENT => {
+                let kind = match node.kind_id() {
+                    kind::DEFINE_FILENAME_STATEMENT => {
                         SymbolKind::FilenameVariable
                     }
-                    "define_header_statement" => SymbolKind::Header,
+                    kind::DEFINE_HEADER_STATEMENT => SymbolKind::Header,
                     _ => SymbolKind::LineFilter,
                 };
-                if let Some(name) = node.child_by_field_name("name") {
+                if let Some(name) = node.child_by_field_id(field::NAME) {
                     let scope = self.current_scope();
                     self.define_declaration(
                         scope,
@@ -520,10 +521,10 @@ impl<'s> Builder<'s> {
                     );
                 }
             }
-            "load_destination" => {
+            kind::LOAD_DESTINATION => {
                 let is_temp_table = kind_of(node) == Some("TEMP_TABLE");
                 if let (true, Some(target)) =
-                    (is_temp_table, node.child_by_field_name("target"))
+                    (is_temp_table, node.child_by_field_id(field::TARGET))
                 {
                     let name = self.text(target);
                     let scope = self.current_scope();
@@ -543,12 +544,12 @@ impl<'s> Builder<'s> {
                         );
                         // The columns are declared with the table; a repeated `TO TEMP_TABLE t` adds none.
                         if let Some(columns) =
-                            node.child_by_field_name("columns")
+                            node.child_by_field_id(field::COLUMNS)
                         {
                             let table = self.text(target).to_string();
                             for column in syntax::code_children(columns)
                                 .into_iter()
-                                .filter(|c| c.kind() == "identifier")
+                                .filter(|c| c.kind_id() == kind::IDENTIFIER)
                             {
                                 let detail = format!(
                                     "{} (column of TEMP_TABLE {table})",
@@ -570,10 +571,10 @@ impl<'s> Builder<'s> {
                 }
                 self.declare_children(node);
             }
-            "accumulator_declaration" => self.declare_accumulators(node),
-            "variable_declaration" => self.declare_variables(node),
-            "file_declaration" => {
-                if let Some(name) = node.child_by_field_name("name") {
+            kind::ACCUMULATOR_DECLARATION => self.declare_accumulators(node),
+            kind::VARIABLE_DECLARATION => self.declare_variables(node),
+            kind::FILE_DECLARATION => {
+                if let Some(name) = node.child_by_field_id(field::NAME) {
                     let scope = self.current_scope();
                     let detail = format!("FILE {}", self.text(name));
                     self.define_named(
@@ -586,8 +587,8 @@ impl<'s> Builder<'s> {
                     );
                 }
             }
-            "exception_declaration" => {
-                if let Some(name) = node.child_by_field_name("name") {
+            kind::EXCEPTION_DECLARATION => {
+                if let Some(name) = node.child_by_field_id(field::NAME) {
                     let scope = self.query_or_current();
                     self.define_declaration(
                         scope,
@@ -598,20 +599,20 @@ impl<'s> Builder<'s> {
                     );
                 }
             }
-            "vertex_set_declaration" => {
-                if let Some(value) = node.child_by_field_name("value") {
+            kind::VERTEX_SET_DECLARATION => {
+                if let Some(value) = node.child_by_field_id(field::VALUE) {
                     self.declare(value);
                 }
-                if let Some(name) = node.child_by_field_name("name") {
-                    let types = match node.child_by_field_name("type") {
-                        Some(t) if t.kind() == "identifier" => {
+                if let Some(name) = node.child_by_field_id(field::NAME) {
+                    let types = match node.child_by_field_id(field::TYPE) {
+                        Some(t) if t.kind_id() == kind::IDENTIFIER => {
                             vec![self.text(t).to_string()]
                         }
                         _ => Vec::new(),
                     };
                     let scope = self.query_or_current();
                     let ty_name = node
-                        .child_by_field_name("type")
+                        .child_by_field_id(field::TYPE)
                         .map(|t| self.text(t))
                         .unwrap_or("ANY");
                     let detail = format!("{} ({ty_name})", self.text(name));
@@ -625,38 +626,40 @@ impl<'s> Builder<'s> {
                     );
                 }
             }
-            "assignment_statement" => self.declare_assignment(node),
-            "select_statement" => self.declare_select(node),
-            "delete_statement" | "update_statement" => {
+            kind::ASSIGNMENT_STATEMENT => self.declare_assignment(node),
+            kind::SELECT_STATEMENT => self.declare_select(node),
+            kind::DELETE_STATEMENT | kind::UPDATE_STATEMENT => {
                 self.push(ScopeKind::Block, node);
                 if let Some(from) = syntax::child_of_kind(node, "from_clause")
                 {
                     self.declare(from);
                 }
                 for child in syntax::code_children(node) {
-                    if child.kind() != "from_clause" {
+                    if child.kind_id() != kind::FROM_CLAUSE {
                         self.declare(child);
                     }
                 }
                 self.pop();
             }
-            "foreach_statement" => self.declare_foreach(node),
+            kind::FOREACH_STATEMENT => self.declare_foreach(node),
             // IF/WHILE/CASE/TRY bodies are scopes.
-            "block" => {
+            kind::BLOCK => {
                 self.push(ScopeKind::Block, node);
                 self.declare_children(node);
                 self.pop();
             }
-            "vertex_pattern" => self.declare_vertex_alias(node),
-            "edge_pattern" => self.declare_edge_alias(node),
-            "node_pattern" => self.declare_node_alias(node),
-            "relationship_detail" => self.declare_relationship_alias(node),
+            kind::VERTEX_PATTERN => self.declare_vertex_alias(node),
+            kind::EDGE_PATTERN => self.declare_edge_alias(node),
+            kind::NODE_PATTERN => self.declare_node_alias(node),
+            kind::RELATIONSHIP_DETAIL => {
+                self.declare_relationship_alias(node)
+            }
             _ => self.declare_children(node),
         }
     }
 
     fn declare_query(&mut self, node: Node) {
-        let Some(name_node) = node.child_by_field_name("name") else {
+        let Some(name_node) = node.child_by_field_id(field::NAME) else {
             return self.declare_children(node);
         };
         let detail = header_detail(node, self.source);
@@ -673,7 +676,7 @@ impl<'s> Builder<'s> {
         symbol.graph = for_graph(node, self.source);
         symbol.params = parameters(node, self.source);
         if let Some(returns) = syntax::child_of_kind(node, "returns_clause")
-            .and_then(|r| r.child_by_field_name("type"))
+            .and_then(|r| r.child_by_field_id(field::TYPE))
         {
             symbol.ty = type_of_type_node(returns, self.source);
             symbol.returns =
@@ -681,24 +684,24 @@ impl<'s> Builder<'s> {
         }
         self.push(ScopeKind::Query, node);
         self.declare_parameters(node);
-        if let Some(body) = node.child_by_field_name("body") {
+        if let Some(body) = node.child_by_field_id(field::BODY) {
             self.declare(body);
         }
         self.pop();
     }
 
     fn declare_parameters(&mut self, node: Node) {
-        let Some(list) = node.child_by_field_name("parameters") else {
+        let Some(list) = node.child_by_field_id(field::PARAMETERS) else {
             return;
         };
         let scope = self.current_scope();
         for parameter in syntax::code_children(list) {
-            if parameter.kind() != "parameter" {
+            if parameter.kind_id() != kind::PARAMETER {
                 continue;
             }
             let (Some(name), Some(ty)) = (
-                parameter.child_by_field_name("name"),
-                parameter.child_by_field_name("type"),
+                parameter.child_by_field_id(field::NAME),
+                parameter.child_by_field_id(field::TYPE),
             ) else {
                 continue;
             };
@@ -714,7 +717,7 @@ impl<'s> Builder<'s> {
     }
 
     fn declare_vertex_type(&mut self, node: Node) {
-        let Some(name) = node.child_by_field_name("name") else {
+        let Some(name) = node.child_by_field_id(field::NAME) else {
             return;
         };
         let type_name = self.text(name).to_string();
@@ -727,16 +730,16 @@ impl<'s> Builder<'s> {
         );
         self.analysis.symbols[id].strict_create = is_strict_create(node);
         let id_as_attribute = has_primary_id_as_attribute(node, self.source);
-        if let Some(list) = node.child_by_field_name("attributes") {
+        if let Some(list) = node.child_by_field_id(field::ATTRIBUTES) {
             for attribute in syntax::code_children(list) {
                 if matches!(
-                    attribute.kind(),
-                    "primary_id_definition" | "attribute_definition"
+                    attribute.kind_id(),
+                    kind::PRIMARY_ID_DEFINITION | kind::ATTRIBUTE_DEFINITION
                 ) {
                     let id = self
                         .declare_attribute(attribute, &type_name, FILE_SCOPE);
                     if let Some(id) = id.filter(|_| {
-                        attribute.kind() == "primary_id_definition"
+                        attribute.kind_id() == kind::PRIMARY_ID_DEFINITION
                             && !id_as_attribute
                     }) {
                         self.analysis.symbols[id].id_only = true;
@@ -753,8 +756,8 @@ impl<'s> Builder<'s> {
         scope: ScopeId,
     ) -> Option<SymbolId> {
         let (Some(name), Some(ty)) = (
-            attribute.child_by_field_name("name"),
-            attribute.child_by_field_name("type"),
+            attribute.child_by_field_id(field::NAME),
+            attribute.child_by_field_id(field::TYPE),
         ) else {
             return None;
         };
@@ -771,7 +774,7 @@ impl<'s> Builder<'s> {
     }
 
     fn declare_edge_type(&mut self, node: Node, scope: ScopeId) {
-        let Some(name) = node.child_by_field_name("name") else {
+        let Some(name) = node.child_by_field_id(field::NAME) else {
             return;
         };
         let type_name = self.text(name).to_string();
@@ -790,10 +793,10 @@ impl<'s> Builder<'s> {
                 .is_some_and(|d| d.eq_ignore_ascii_case("directed")),
             ..EdgeEnds::default()
         };
-        if let Some(list) = node.child_by_field_name("attributes") {
+        if let Some(list) = node.child_by_field_id(field::ATTRIBUTES) {
             for child in syntax::code_children(list) {
-                match child.kind() {
-                    "edge_pair" => {
+                match child.kind_id() {
+                    kind::EDGE_PAIR => {
                         for field in ["from", "to"] {
                             for endpoint in
                                 syntax::children_by_field(child, field)
@@ -809,12 +812,14 @@ impl<'s> Builder<'s> {
                             }
                         }
                     }
-                    "attribute_definition" => {
+                    kind::ATTRIBUTE_DEFINITION => {
                         self.declare_attribute(child, &type_name, scope);
                     }
-                    "discriminator" => {
+                    kind::DISCRIMINATOR => {
                         for attribute in syntax::code_children(child) {
-                            if attribute.kind() == "attribute_definition" {
+                            if attribute.kind_id()
+                                == kind::ATTRIBUTE_DEFINITION
+                            {
                                 self.declare_attribute(
                                     attribute, &type_name, scope,
                                 );
@@ -831,16 +836,16 @@ impl<'s> Builder<'s> {
         // `WITH REVERSE_EDGE="name"` declares a second edge type.
         for option in syntax::code_children(node)
             .into_iter()
-            .filter(|c| c.kind() == "with_clause")
+            .filter(|c| c.kind_id() == kind::WITH_CLAUSE)
             .flat_map(syntax::code_children)
         {
             let key =
                 syntax::field_text(option, "key", self.source).unwrap_or("");
-            let Some(value) = option.child_by_field_name("value") else {
+            let Some(value) = option.child_by_field_id(field::VALUE) else {
                 continue;
             };
             if !key.eq_ignore_ascii_case("reverse_edge")
-                || value.kind() != "string"
+                || value.kind_id() != kind::STRING
             {
                 continue;
             }
@@ -889,7 +894,7 @@ impl<'s> Builder<'s> {
     }
 
     fn declare_graph(&mut self, node: Node) {
-        let Some(name) = node.child_by_field_name("name") else {
+        let Some(name) = node.child_by_field_id(field::NAME) else {
             return;
         };
         let id = self.define_declaration(
@@ -905,11 +910,11 @@ impl<'s> Builder<'s> {
     }
 
     fn declare_typedef(&mut self, node: Node) {
-        let Some(name) = node.child_by_field_name("name") else {
+        let Some(name) = node.child_by_field_id(field::NAME) else {
             return;
         };
         let scope = self.query_or_current();
-        if let Some(accumulator) = node.child_by_field_name("type") {
+        if let Some(accumulator) = node.child_by_field_id(field::TYPE) {
             let ty = type_of_type_node(accumulator, self.source);
             self.define_declaration(
                 scope,
@@ -929,12 +934,12 @@ impl<'s> Builder<'s> {
             Ty::Tuple(tuple.clone()),
         );
         for field in syntax::code_children(node) {
-            if field.kind() != "tuple_field" {
+            if field.kind_id() != kind::TUPLE_FIELD {
                 continue;
             }
             let (Some(field_name), Some(ty)) = (
-                field.child_by_field_name("name"),
-                field.child_by_field_name("type"),
+                field.child_by_field_id(field::NAME),
+                field.child_by_field_id(field::TYPE),
             ) else {
                 continue;
             };
@@ -952,7 +957,7 @@ impl<'s> Builder<'s> {
 
     fn declare_job(&mut self, node: Node, kind: SymbolKind) {
         let mut job = None;
-        if let Some(name) = node.child_by_field_name("name") {
+        if let Some(name) = node.child_by_field_id(field::NAME) {
             let detail = header_detail(node, self.source);
             let id = self.define_named(
                 FILE_SCOPE,
@@ -966,7 +971,7 @@ impl<'s> Builder<'s> {
             job = Some(id);
         }
         let scope = self.push(ScopeKind::Job, node);
-        if let Some(body) = node.child_by_field_name("body") {
+        if let Some(body) = node.child_by_field_id(field::BODY) {
             self.declare(body);
         }
         self.pop();
@@ -1021,13 +1026,13 @@ impl<'s> Builder<'s> {
 
     fn declare_added_attributes(&mut self, node: Node) {
         let Some(owner) = node
-            .child_by_field_name("name")
+            .child_by_field_id(field::NAME)
             .map(|n| self.text(n).to_string())
         else {
             return;
         };
         for attribute in syntax::code_children(node) {
-            if attribute.kind() == "attribute_definition"
+            if attribute.kind_id() == kind::ATTRIBUTE_DEFINITION
                 && let Some(id) =
                     self.declare_attribute(attribute, &owner, FILE_SCOPE)
             {
@@ -1036,7 +1041,7 @@ impl<'s> Builder<'s> {
         }
         if syntax::has_child(node, "VECTOR")
             && syntax::has_child(node, "ADD")
-            && let Some(name) = node.child_by_field_name("attribute")
+            && let Some(name) = node.child_by_field_id(field::ATTRIBUTE)
         {
             let after_name = name.end_byte()..node.end_byte();
             let options = collapse_whitespace(
@@ -1059,14 +1064,14 @@ impl<'s> Builder<'s> {
     }
 
     fn declare_accumulators(&mut self, node: Node) {
-        let Some(type_node) = node.child_by_field_name("type") else {
+        let Some(type_node) = node.child_by_field_id(field::TYPE) else {
             return;
         };
         // Accumulators are block-scoped.
         let scope = self.current_scope();
-        let ty = match type_node.kind() {
+        let ty = match type_node.kind_id() {
             // A TYPEDEF'd accumulator type.
-            "type_identifier" => self.ty_of(self.lookup(
+            kind::TYPE_IDENTIFIER => self.ty_of(self.lookup(
                 self.text(type_node),
                 scope,
                 &[SymbolKind::AccumulatorType],
@@ -1081,14 +1086,15 @@ impl<'s> Builder<'s> {
             ""
         };
         for declarator in syntax::code_children(node) {
-            if declarator.kind() != "accumulator_declarator" {
+            if declarator.kind_id() != kind::ACCUMULATOR_DECLARATOR {
                 continue;
             }
-            let Some(name) = declarator.child_by_field_name("name") else {
+            let Some(name) = declarator.child_by_field_id(field::NAME) else {
                 continue;
             };
-            let kind =
-                SymbolKind::accumulator(name.kind() == "global_accumulator");
+            let kind = SymbolKind::accumulator(
+                name.kind_id() == kind::GLOBAL_ACCUMULATOR,
+            );
             let prefix = if is_static { "STATIC " } else { "" };
             let detail = format!(
                 "{prefix}{type_text}{on_edges} {}",
@@ -1110,20 +1116,20 @@ impl<'s> Builder<'s> {
     }
 
     fn declare_variables(&mut self, node: Node) {
-        let Some(type_node) = node.child_by_field_name("type") else {
+        let Some(type_node) = node.child_by_field_id(field::TYPE) else {
             return;
         };
         let ty = type_of_type_node(type_node, self.source);
         let type_text = collapse_whitespace(self.text(type_node));
         let scope = self.current_scope();
         for declarator in syntax::code_children(node) {
-            if declarator.kind() != "variable_declarator" {
+            if declarator.kind_id() != kind::VARIABLE_DECLARATOR {
                 continue;
             }
-            if let Some(value) = declarator.child_by_field_name("value") {
+            if let Some(value) = declarator.child_by_field_id(field::VALUE) {
                 self.declare(value);
             }
-            let Some(name) = declarator.child_by_field_name("name") else {
+            let Some(name) = declarator.child_by_field_id(field::NAME) else {
                 continue;
             };
             let detail = format!("{type_text} {}", self.text(name));
@@ -1139,14 +1145,14 @@ impl<'s> Builder<'s> {
     }
 
     fn declare_assignment(&mut self, node: Node) {
-        let right = node.child_by_field_name("right");
+        let right = node.child_by_field_id(field::RIGHT);
         if let Some(right) = right {
             self.declare(right);
         }
-        let Some(left) = node.child_by_field_name("left") else {
+        let Some(left) = node.child_by_field_id(field::LEFT) else {
             return;
         };
-        if left.kind() != "identifier" {
+        if left.kind_id() != kind::IDENTIFIER {
             return self.declare(left);
         }
         let name = self.text(left);
@@ -1165,7 +1171,9 @@ impl<'s> Builder<'s> {
             Ty::VertexSet(types) | Ty::Vertex(types) => {
                 (SymbolKind::VertexSet, Ty::VertexSet(types))
             }
-            _ if right.is_some_and(|r| r.kind() == "select_statement") => {
+            _ if right
+                .is_some_and(|r| r.kind_id() == kind::SELECT_STATEMENT) =>
+            {
                 (SymbolKind::VertexSet, Ty::VertexSet(Vec::new()))
             }
             other => (SymbolKind::Variable, other),
@@ -1189,24 +1197,24 @@ impl<'s> Builder<'s> {
         // Aliases first: the result list and clauses refer to them.
         for child in children
             .iter()
-            .filter(|c| c.kind() == "from_clause")
+            .filter(|c| c.kind_id() == kind::FROM_CLAUSE)
         {
             self.declare(*child);
         }
         // `SELECT COUNT(f) AS n ... HAVING n > 3`: result aliases name columns.
         for result in syntax::children_by_field(node, "result") {
             if let (Some(value), Some(alias)) = (
-                result.child_by_field_name("value"),
-                result.child_by_field_name("alias"),
+                result.child_by_field_id(field::VALUE),
+                result.child_by_field_id(field::ALIAS),
             ) {
                 let ty = self.expression_type(value, self.current_scope());
                 self.declare_alias(result, alias, ty);
             }
         }
         for child in &children {
-            match child.kind() {
-                "from_clause" => {}
-                "into_clause" => {
+            match child.kind_id() {
+                kind::FROM_CLAUSE => {}
+                kind::INTO_CLAUSE => {
                     for table in syntax::children_by_field(*child, "table") {
                         if self
                             .lookup(
@@ -1236,7 +1244,7 @@ impl<'s> Builder<'s> {
     }
 
     fn declare_foreach(&mut self, node: Node) {
-        let collection = node.child_by_field_name("collection");
+        let collection = node.child_by_field_id(field::COLLECTION);
         if let Some(collection) = collection {
             self.declare(collection);
         }
@@ -1245,8 +1253,8 @@ impl<'s> Builder<'s> {
             .unwrap_or_default();
         self.push(ScopeKind::Block, node);
         let scope = self.current_scope();
-        match node.child_by_field_name("variable") {
-            Some(variable) if variable.kind() == "identifier" => {
+        match node.child_by_field_id(field::VARIABLE) {
+            Some(variable) if variable.kind_id() == kind::IDENTIFIER => {
                 let ty = collection_ty.element();
                 let detail =
                     format!("{}: {}", self.text(variable), ty.display());
@@ -1283,7 +1291,7 @@ impl<'s> Builder<'s> {
             }
             None => {}
         }
-        if let Some(body) = node.child_by_field_name("body") {
+        if let Some(body) = node.child_by_field_id(field::BODY) {
             self.declare(body);
         }
         self.pop();
@@ -1291,12 +1299,12 @@ impl<'s> Builder<'s> {
 
     /// Type of a FOREACH iterable.
     fn iterable_type(&self, node: Node, scope: ScopeId) -> Ty {
-        match node.kind() {
-            "range_expression" => Ty::Collection(
+        match node.kind_id() {
+            kind::RANGE_EXPRESSION => Ty::Collection(
                 "LIST".into(),
                 vec![Ty::Primitive("INT".into())],
             ),
-            "list_literal" | "tuple" => {
+            kind::LIST_LITERAL | kind::TUPLE => {
                 let mut element: Option<Ty> = None;
                 for item in syntax::code_children(node) {
                     let Some(primitive) = literal_type(item.kind()) else {
@@ -1331,11 +1339,11 @@ impl<'s> Builder<'s> {
     }
 
     fn declare_vertex_alias(&mut self, node: Node) {
-        let Some(alias) = node.child_by_field_name("alias") else {
+        let Some(alias) = node.child_by_field_id(field::ALIAS) else {
             return;
         };
         let scope = self.current_scope();
-        let types = match node.child_by_field_name("type") {
+        let types = match node.child_by_field_id(field::TYPE) {
             Some(t) => self.vertex_source_types(t, scope),
             None => self
                 .edge_step_target(node, scope)
@@ -1397,15 +1405,18 @@ impl<'s> Builder<'s> {
     ) -> Option<Vec<String>> {
         let step = node
             .parent()
-            .filter(|p| p.kind() == "edge_step")?;
+            .filter(|p| p.kind_id() == kind::EDGE_STEP)?;
         let pattern = syntax::child_of_kind(step, "edge_pattern")?;
         let closes_directed = syntax::has_child(step, "->");
-        let spec = pattern.child_by_field_name("type")?;
-        let atoms: Vec<Node> = match spec.kind() {
-            "edge_atom" => vec![spec],
-            "edge_alternation" => {
+        let spec = pattern.child_by_field_id(field::TYPE)?;
+        let atoms: Vec<Node> = match spec.kind_id() {
+            kind::EDGE_ATOM => vec![spec],
+            kind::EDGE_ALTERNATION => {
                 let atoms = syntax::code_children(spec);
-                if atoms.iter().any(|a| a.kind() != "edge_atom") {
+                if atoms
+                    .iter()
+                    .any(|a| a.kind_id() != kind::EDGE_ATOM)
+                {
                     return None;
                 }
                 atoms
@@ -1415,8 +1426,8 @@ impl<'s> Builder<'s> {
         let mut types: Vec<String> = Vec::new();
         for atom in atoms {
             let name = atom
-                .child_by_field_name("name")
-                .filter(|n| n.kind() == "identifier")?;
+                .child_by_field_id(field::NAME)
+                .filter(|n| n.kind_id() == kind::IDENTIFIER)?;
             let mut cursor = atom.walk();
             let (first, last) = first_last_kinds(atom.children(&mut cursor));
             let incoming = first == Some("<");
@@ -1442,7 +1453,7 @@ impl<'s> Builder<'s> {
         scope: ScopeId,
     ) -> Option<Vec<String>> {
         let relationship = syntax::prev_non_comment_sibling(node)
-            .filter(|p| p.kind() == "relationship_pattern")?;
+            .filter(|p| p.kind_id() == kind::RELATIONSHIP_PATTERN)?;
         let mut cursor = relationship.walk();
         let (first, last) =
             first_last_kinds(relationship.children(&mut cursor));
@@ -1472,8 +1483,8 @@ impl<'s> Builder<'s> {
 
     /// Vertex types denoted by the vertex position of a FROM pattern.
     fn vertex_source_types(&self, node: Node, scope: ScopeId) -> Vec<String> {
-        match node.kind() {
-            "identifier" => {
+        match node.kind_id() {
+            kind::IDENTIFIER => {
                 let name = self.text(node);
                 match self.lookup(name, scope, VERTEX_SOURCE_VALUES) {
                     Some(id) => self.analysis.symbols[id]
@@ -1482,7 +1493,7 @@ impl<'s> Builder<'s> {
                     None => vec![name.to_string()],
                 }
             }
-            "global_accumulator" => self
+            kind::GLOBAL_ACCUMULATOR => self
                 .lookup(
                     self.text(node),
                     scope,
@@ -1494,7 +1505,7 @@ impl<'s> Builder<'s> {
                         .member_vertex_types()
                 })
                 .unwrap_or_default(),
-            "vertex_type_alternation" => self
+            kind::VERTEX_TYPE_ALTERNATION => self
                 .vertex_alternation_types(syntax::code_children(node), scope),
             _ => Vec::new(),
         }
@@ -1518,17 +1529,17 @@ impl<'s> Builder<'s> {
     }
 
     fn declare_edge_alias(&mut self, node: Node) {
-        let Some(alias) = node.child_by_field_name("alias") else {
+        let Some(alias) = node.child_by_field_id(field::ALIAS) else {
             return;
         };
         let scope = self.current_scope();
         let mut types = Vec::new();
         let mut any = false;
-        if let Some(pattern) = node.child_by_field_name("type") {
+        if let Some(pattern) = node.child_by_field_id(field::TYPE) {
             syntax::walk(pattern, |n| {
-                if n.kind() == "edge_atom" {
-                    match n.child_by_field_name("name") {
-                        Some(name) if name.kind() == "identifier" => {
+                if n.kind_id() == kind::EDGE_ATOM {
+                    match n.child_by_field_id(field::NAME) {
+                        Some(name) if name.kind_id() == kind::IDENTIFIER => {
                             let text = self.text(name);
                             if self
                                 .lookup(text, scope, EDGE_SOURCE_VALUES)
@@ -1551,7 +1562,7 @@ impl<'s> Builder<'s> {
     }
 
     fn declare_node_alias(&mut self, node: Node) {
-        let Some(alias) = node.child_by_field_name("alias") else {
+        let Some(alias) = node.child_by_field_id(field::ALIAS) else {
             return;
         };
         let types = self.node_pattern_types(node, self.current_scope());
@@ -1561,7 +1572,7 @@ impl<'s> Builder<'s> {
     /// Vertex types of a `(t:A|B)` node pattern; an unlabeled `(t)` takes the far
     /// end of the edge before it. The type may name a vertex set variable: `(t:workers)`.
     fn node_pattern_types(&self, node: Node, scope: ScopeId) -> Vec<String> {
-        if node.child_by_field_name("type").is_none() {
+        if node.child_by_field_id(field::TYPE).is_none() {
             return self
                 .relationship_target(node, scope)
                 .unwrap_or_default();
@@ -1573,7 +1584,7 @@ impl<'s> Builder<'s> {
     }
 
     fn declare_relationship_alias(&mut self, node: Node) {
-        let Some(alias) = node.child_by_field_name("alias") else {
+        let Some(alias) = node.child_by_field_id(field::ALIAS) else {
             return;
         };
         let types = self.relationship_types(node);
@@ -1586,7 +1597,7 @@ impl<'s> Builder<'s> {
         let labels = syntax::children_by_field(detail, "type");
         if labels
             .iter()
-            .any(|t| t.kind() != "identifier")
+            .any(|t| t.kind_id() != kind::IDENTIFIER)
         {
             return Vec::new();
         }
@@ -1595,31 +1606,31 @@ impl<'s> Builder<'s> {
 
     /// Best-effort static type of an expression (pass 1 and 2 share it).
     fn expression_type(&self, node: Node, scope: ScopeId) -> Ty {
-        match node.kind() {
-            "identifier" => self.ty_of(self.resolve_name(
+        match node.kind_id() {
+            kind::IDENTIFIER => self.ty_of(self.resolve_name(
                 self.text(node),
                 &Role::Value,
                 scope,
             )),
-            kind @ ("global_accumulator" | "local_accumulator") => {
+            kind @ (kind::GLOBAL_ACCUMULATOR | kind::LOCAL_ACCUMULATOR) => {
                 let accumulator =
-                    SymbolKind::accumulator(kind == "global_accumulator");
+                    SymbolKind::accumulator(kind == kind::GLOBAL_ACCUMULATOR);
                 self.ty_of(self.lookup(
                     self.text(node),
                     scope,
                     &[accumulator],
                 ))
             }
-            "member_expression" => {
-                let Some(property) = node.child_by_field_name("property")
+            kind::MEMBER_EXPRESSION => {
+                let Some(property) = node.child_by_field_id(field::PROPERTY)
                 else {
                     return Ty::Unknown;
                 };
-                if property.kind() == "local_accumulator" {
+                if property.kind_id() == kind::LOCAL_ACCUMULATOR {
                     return self.expression_type(property, scope);
                 }
                 let object_ty = node
-                    .child_by_field_name("object")
+                    .child_by_field_id(field::OBJECT)
                     .map(|o| self.expression_type(o, scope))
                     .unwrap_or_default();
                 match object_ty {
@@ -1632,13 +1643,13 @@ impl<'s> Builder<'s> {
                     _ => Ty::Unknown,
                 }
             }
-            "call_expression" => {
-                let Some(function) = node.child_by_field_name("function")
+            kind::CALL_EXPRESSION => {
+                let Some(function) = node.child_by_field_id(field::FUNCTION)
                 else {
                     return Ty::Unknown;
                 };
-                match function.kind() {
-                    "identifier" => {
+                match function.kind_id() {
+                    kind::IDENTIFIER => {
                         let name = self.text(function);
                         if let Some(id) =
                             self.lookup(name, scope, &[SymbolKind::TupleType])
@@ -1667,13 +1678,13 @@ impl<'s> Builder<'s> {
                             _ => Ty::Unknown,
                         }
                     }
-                    "member_expression" => {
+                    kind::MEMBER_EXPRESSION => {
                         let method = function
-                            .child_by_field_name("property")
+                            .child_by_field_id(field::PROPERTY)
                             .map(|p| self.text(p).to_ascii_lowercase())
                             .unwrap_or_default();
                         let object_ty = function
-                            .child_by_field_name("object")
+                            .child_by_field_id(field::OBJECT)
                             .map(|o| self.expression_type(o, scope))
                             .unwrap_or_default();
                         object_ty.method_result(&method)
@@ -1681,12 +1692,12 @@ impl<'s> Builder<'s> {
                     _ => Ty::Unknown,
                 }
             }
-            "range_expression" => Ty::Primitive("INT".into()),
-            "parenthesized_expression" => syntax::code_children(node)
+            kind::RANGE_EXPRESSION => Ty::Primitive("INT".into()),
+            kind::PARENTHESIZED_EXPRESSION => syntax::code_children(node)
                 .first()
                 .map(|e| self.expression_type(*e, scope))
                 .unwrap_or_default(),
-            "select_statement" => {
+            kind::SELECT_STATEMENT => {
                 let select_scope = self
                     .analysis
                     .scopes
@@ -1697,7 +1708,7 @@ impl<'s> Builder<'s> {
                     .unwrap_or(scope);
                 let result = syntax::children_by_field(node, "result");
                 match result.as_slice() {
-                    [single] if single.kind() == "identifier" => {
+                    [single] if single.kind_id() == kind::IDENTIFIER => {
                         match self.expression_type(*single, select_scope) {
                             Ty::Vertex(types) => Ty::VertexSet(types),
                             _ => Ty::VertexSet(Vec::new()),
@@ -1706,12 +1717,12 @@ impl<'s> Builder<'s> {
                     _ => Ty::VertexSet(Vec::new()),
                 }
             }
-            "vertex_set_literal" => {
+            kind::VERTEX_SET_LITERAL => {
                 let mut types = Vec::new();
                 for seed in syntax::code_children(node) {
-                    let more = match seed.kind() {
-                        "type_wildcard" => seed
-                            .child_by_field_name("type")
+                    let more = match seed.kind_id() {
+                        kind::TYPE_WILDCARD => seed
+                            .child_by_field_id(field::TYPE)
                             .map(|t| vec![self.text(t).to_string()])
                             .unwrap_or_default(),
                         _ => self
@@ -1725,16 +1736,16 @@ impl<'s> Builder<'s> {
                 }
                 Ty::VertexSet(types)
             }
-            "binary_expression" => {
+            kind::BINARY_EXPRESSION => {
                 let operator = node
-                    .child_by_field_name("operator")
+                    .child_by_field_id(field::OPERATOR)
                     .map(|o| o.kind())
                     .unwrap_or("");
                 let left = node
-                    .child_by_field_name("left")
+                    .child_by_field_id(field::LEFT)
                     .map(|l| self.expression_type(l, scope));
                 let right = node
-                    .child_by_field_name("right")
+                    .child_by_field_id(field::RIGHT)
                     .map(|r| self.expression_type(r, scope));
                 match operator {
                     "UNION" | "INTERSECT" | "MINUS" => match (left, right) {
@@ -1758,7 +1769,7 @@ impl<'s> Builder<'s> {
                     _ => Ty::Unknown,
                 }
             }
-            kind => literal_type(kind)
+            _ => literal_type(node.kind())
                 .map_or(Ty::Unknown, |t| Ty::Primitive(t.into())),
         }
     }
@@ -1780,17 +1791,17 @@ impl<'s> Builder<'s> {
             let frame = stack.last().expect("non-empty");
             let (node, context, in_error) =
                 (frame.node, frame.context, frame.in_error);
-            match node.kind() {
+            match node.kind_id() {
                 kind if syntax::is_name_kind(kind) => {
                     let path = Path { stack: &stack };
                     // Qualified names resolve as a whole.
                     if !path.parent().is_some_and(|p| {
-                        p.node().kind() == "qualified_identifier"
+                        p.node().kind_id() == kind::QUALIFIED_IDENTIFIER
                     }) {
                         self.resolve_occurrence(path, context, in_error);
                     }
                 }
-                "column_reference" => self.column_occurrence(
+                kind::COLUMN_REFERENCE => self.column_occurrence(
                     Path { stack: &stack },
                     context,
                     in_error,
@@ -1859,10 +1870,10 @@ impl<'s> Builder<'s> {
         let write = is_write(path);
         let qualifier = path.field() == Some("object")
             && path.parent().is_some_and(|member| {
-                member.node().kind() == "member_expression"
+                member.node().kind_id() == kind::MEMBER_EXPRESSION
                     && member.field() == Some("function")
                     && member.parent().is_some_and(|call| {
-                        call.node().kind() == "call_expression"
+                        call.node().kind_id() == kind::CALL_EXPRESSION
                     })
             });
         self.analysis.references.push(Reference {
@@ -1960,11 +1971,11 @@ impl<'s> Builder<'s> {
     /// `None` for names that refer to nothing (option keys, JSON keys, ...).
     fn role_of(&self, path: Path, scope: ScopeId) -> Option<Role> {
         let node = path.node();
-        match node.kind() {
-            "global_accumulator" => {
+        match node.kind_id() {
+            kind::GLOBAL_ACCUMULATOR => {
                 return Some(Role::GlobalAccumulator);
             }
-            "local_accumulator" => {
+            kind::LOCAL_ACCUMULATOR => {
                 return Some(Role::LocalAccumulator);
             }
             _ => {}
@@ -1972,9 +1983,9 @@ impl<'s> Builder<'s> {
         let parent_path = path.parent()?;
         let parent = parent_path.node();
         let field = path.field();
-        if node.kind() == "type_identifier" {
+        if node.kind_id() == kind::TYPE_IDENTIFIER {
             // `BitwiseOrAccum<len>`: the bit width may be a parameter.
-            let bit_width = parent.kind() == "accumulator_type"
+            let bit_width = parent.kind_id() == kind::ACCUMULATOR_TYPE
                 && syntax::field_text(parent, "kind", self.source)
                     .is_some_and(|k| {
                         starts_with_ignore_ascii_case(k, "bitwise")
@@ -1991,7 +2002,10 @@ impl<'s> Builder<'s> {
             }
             ("option_assignment", Some("value")) => {
                 let in_using = parent_path.ancestors().any(|a| {
-                    matches!(a.kind(), "using_clause" | "option_clause")
+                    matches!(
+                        a.kind_id(),
+                        kind::USING_CLAUSE | kind::OPTION_CLAUSE
+                    )
                 });
                 if in_using {
                     Role::JobLocal
@@ -2004,14 +2018,14 @@ impl<'s> Builder<'s> {
                 // `(p:Person {name: "Adam"})` constrains attributes of the pattern's types.
                 let pattern = parent_path
                     .parent()
-                    .filter(|p| p.node().kind() == "property_map")?
+                    .filter(|p| p.node().kind_id() == kind::PROPERTY_MAP)?
                     .parent()?
                     .node();
-                match pattern.kind() {
-                    "node_pattern" => Role::Attribute(Ty::Vertex(
+                match pattern.kind_id() {
+                    kind::NODE_PATTERN => Role::Attribute(Ty::Vertex(
                         self.node_pattern_types(pattern, scope),
                     )),
-                    "relationship_detail" => Role::Attribute(Ty::Edge(
+                    kind::RELATIONSHIP_DETAIL => Role::Attribute(Ty::Edge(
                         self.relationship_types(pattern),
                     )),
                     _ => return None,
@@ -2043,7 +2057,7 @@ impl<'s> Builder<'s> {
             ("tag_statement", _) => return None,
             // `SHOW JOB name`
             ("show_statement", None)
-                if node.kind() == "identifier"
+                if node.kind_id() == kind::IDENTIFIER
                     && kind_of(parent) == Some("JOB")
                     && !self.text(node).eq_ignore_ascii_case("all") =>
             {
@@ -2091,13 +2105,13 @@ impl<'s> Builder<'s> {
                 // `HeapAccum<T>(n, field DESC)`
                 let tuple = parent_path
                     .ancestors()
-                    .find(|a| a.kind() == "accumulator_type")
+                    .find(|a| a.kind_id() == kind::ACCUMULATOR_TYPE)
                     .and_then(|a| {
                         syntax::children_by_field(a, "argument")
                             .into_iter()
                             .next()
                     })
-                    .filter(|a| a.kind() == "type_identifier")
+                    .filter(|a| a.kind_id() == kind::TYPE_IDENTIFIER)
                     .map(|a| self.text(a).to_string())?;
                 Role::TupleField(tuple)
             }
@@ -2135,7 +2149,7 @@ impl<'s> Builder<'s> {
             ("insert_columns", _) => {
                 let insert = parent_path
                     .ancestors()
-                    .find(|a| a.kind() == "insert_statement");
+                    .find(|a| a.kind_id() == kind::INSERT_STATEMENT);
                 // Columns cut off from their INSERT by a parse error belong to no type.
                 Role::Attribute(insert.map_or_else(
                     || Ty::Vertex(vec![String::new()]),
@@ -2177,12 +2191,12 @@ impl<'s> Builder<'s> {
             ("loading_delete_statement", Some("source")) => Role::JobLocal,
             ("member_expression", Some("property")) => {
                 let object_ty = parent
-                    .child_by_field_name("object")
+                    .child_by_field_id(field::OBJECT)
                     .map(|o| self.expression_type(o, scope))
                     .unwrap_or_default();
                 let is_call = parent_path.field() == Some("function")
                     && parent_path.parent().is_some_and(|g| {
-                        g.node().kind() == "call_expression"
+                        g.node().kind_id() == kind::CALL_EXPRESSION
                     });
                 if is_call {
                     Role::Method(object_ty)
@@ -2205,11 +2219,11 @@ impl<'s> Builder<'s> {
             }
             ("qualified_identifier", _) => return None,
             _ => {
-                if node.kind() == "qualified_identifier" {
-                    match parent.kind() {
-                        "install_query_statement"
-                        | "run_query_statement"
-                        | "drop_statement" => Role::Query,
+                if node.kind_id() == kind::QUALIFIED_IDENTIFIER {
+                    match parent.kind_id() {
+                        kind::INSTALL_QUERY_STATEMENT
+                        | kind::RUN_QUERY_STATEMENT
+                        | kind::DROP_STATEMENT => Role::Query,
                         _ => return None,
                     }
                 } else {
@@ -2226,8 +2240,8 @@ impl Builder<'_> {
     fn run_job_of(&self, assignment: Path) -> Option<String> {
         let using = assignment.parent()?;
         let run = using.parent()?.node();
-        let is_loading = run.kind() == "run_job_statement"
-            && using.node().kind() == "using_clause"
+        let is_loading = run.kind_id() == kind::RUN_JOB_STATEMENT
+            && using.node().kind_id() == kind::USING_CLAUSE
             && syntax::has_child(run, "LOADING");
         if !is_loading {
             return None;
@@ -2255,7 +2269,7 @@ impl Builder<'_> {
         }
         let Some(load) = path
             .ancestors()
-            .find(|a| a.kind() == "load_statement")
+            .find(|a| a.kind_id() == kind::LOAD_STATEMENT)
         else {
             return;
         };
@@ -2291,13 +2305,15 @@ impl Builder<'_> {
 
     fn is_log_statement(&self, call: Path, node: Node) -> bool {
         if !self.text(node).eq_ignore_ascii_case("log")
-            || call
-                .parent()
-                .is_none_or(|p| p.node().kind() != "expression_statement")
+            || call.parent().is_none_or(|p| {
+                p.node().kind_id() != kind::EXPRESSION_STATEMENT
+            })
         {
             return false;
         }
-        let Some(arguments) = call.node().child_by_field_name("arguments")
+        let Some(arguments) = call
+            .node()
+            .child_by_field_id(field::ARGUMENTS)
         else {
             return false;
         };
@@ -2305,16 +2321,16 @@ impl Builder<'_> {
         args.len() >= 2
             || args
                 .first()
-                .is_some_and(|a| a.kind() == "boolean")
+                .is_some_and(|a| a.kind_id() == kind::BOOLEAN)
     }
 
     /// A name in `SHOW QUERY a, b` (same line, not `ALL`).
     fn is_shown_query(&self, node: Node) -> bool {
-        node.kind() == "identifier"
+        node.kind_id() == kind::IDENTIFIER
             && !self.text(node).eq_ignore_ascii_case("all")
             && node.prev_sibling().is_some_and(|p| {
                 p.kind() == ","
-                    || p.kind() == "QUERY"
+                    || p.kind_id() == keyword::QUERY
                         && p.end_position().row == node.start_position().row
             })
     }
@@ -2322,8 +2338,11 @@ impl Builder<'_> {
     fn is_select_vertex_type(&self, arguments: Path, node: Node) -> bool {
         let is_select_vertex = arguments
             .parent()
-            .filter(|call| call.node().kind() == "call_expression")
-            .and_then(|call| call.node().child_by_field_name("function"))
+            .filter(|call| call.node().kind_id() == kind::CALL_EXPRESSION)
+            .and_then(|call| {
+                call.node()
+                    .child_by_field_id(field::FUNCTION)
+            })
             .is_some_and(|function| {
                 self.text(function)
                     .eq_ignore_ascii_case("selectvertex")
@@ -2338,7 +2357,7 @@ impl Builder<'_> {
 
 /// The keyword in the `kind` field of a statement (`VERTEX`, `EDGE`, `QUERY`, ...).
 fn kind_of<'t>(node: Node<'t>) -> Option<&'t str> {
-    node.child_by_field_name("kind")
+    node.child_by_field_id(field::KIND)
         .map(|k| k.kind())
 }
 
@@ -2426,8 +2445,8 @@ impl<'a, 't> Path<'a, 't> {
 /// The vertex or edge type that encloses an attribute list item.
 fn owner_type(path: Path, source: &str) -> Ty {
     for ancestor in std::iter::once(path.node()).chain(path.ancestors()) {
-        match ancestor.kind() {
-            "vertex_definition" => {
+        match ancestor.kind_id() {
+            kind::VERTEX_DEFINITION => {
                 return Ty::Vertex(
                     syntax::field_text(ancestor, "name", source)
                         .into_iter()
@@ -2435,7 +2454,7 @@ fn owner_type(path: Path, source: &str) -> Ty {
                         .collect(),
                 );
             }
-            "edge_definition" | "virtual_edge_declaration" => {
+            kind::EDGE_DEFINITION | kind::VIRTUAL_EDGE_DECLARATION => {
                 return Ty::Edge(
                     syntax::field_text(ancestor, "name", source)
                         .into_iter()
@@ -2444,7 +2463,7 @@ fn owner_type(path: Path, source: &str) -> Ty {
                 );
             }
             // `INSERT INTO e (FROM, TO, DISCRIMINATOR(ts))`
-            "insert_statement" => {
+            kind::INSERT_STATEMENT => {
                 return insert_type(ancestor, source);
             }
             _ => {}
@@ -2463,7 +2482,7 @@ fn insert_type(insert: Node, source: &str) -> Ty {
     ];
     let edge = kind_of(insert) == Some("EDGE")
         || insert
-            .child_by_field_name("columns")
+            .child_by_field_id(field::COLUMNS)
             .is_some_and(|columns| syntax::has_child(columns, "FROM"));
     if edge {
         Ty::Edge(target)
@@ -2512,14 +2531,18 @@ fn enter(outer: Context, kind: &str) -> Context {
 fn is_write(path: Path) -> bool {
     let mut current = path;
     while let Some(parent) = current.parent() {
-        match parent.node().kind() {
-            "assignment_statement" => {
+        match parent.node().kind_id() {
+            kind::ASSIGNMENT_STATEMENT => {
                 return current.field() == Some("left");
             }
-            "member_expression" if current.field() == Some("property") => {
+            kind::MEMBER_EXPRESSION
+                if current.field() == Some("property") =>
+            {
                 current = parent
             }
-            "subscript_expression" if current.field() == Some("object") => {
+            kind::SUBSCRIPT_EXPRESSION
+                if current.field() == Some("object") =>
+            {
                 current = parent
             }
             _ => return false,
@@ -2531,7 +2554,7 @@ fn is_write(path: Path) -> bool {
 /// A query or job declaration up to its body, on one line.
 fn header_detail(node: Node, source: &str) -> String {
     let end = node
-        .child_by_field_name("body")
+        .child_by_field_id(field::BODY)
         .map_or(node.end_byte(), |b| b.start_byte());
     collapse_whitespace(
         source
@@ -2547,22 +2570,22 @@ fn for_graph(node: Node, source: &str) -> Option<String> {
 }
 
 fn parameters(node: Node, source: &str) -> Vec<Param> {
-    let Some(list) = node.child_by_field_name("parameters") else {
+    let Some(list) = node.child_by_field_id(field::PARAMETERS) else {
         return Vec::new();
     };
     syntax::code_children(list)
         .into_iter()
-        .filter(|p| p.kind() == "parameter")
+        .filter(|p| p.kind_id() == kind::PARAMETER)
         .map(|p| Param {
             name: syntax::field_text(p, "name", source)
                 .unwrap_or("")
                 .to_string(),
             ty: p
-                .child_by_field_name("type")
+                .child_by_field_id(field::TYPE)
                 .map(|t| collapse_whitespace(syntax::text(t, source)))
                 .unwrap_or_default(),
             default: p
-                .child_by_field_name("default")
+                .child_by_field_id(field::DEFAULT)
                 .map(|d| collapse_whitespace(syntax::text(d, source))),
         })
         .collect()
@@ -2584,8 +2607,8 @@ fn doc_comment(node: Node, source: &str) -> Option<String> {
     syntax::leading_comments(node, source).or_else(|| {
         let parent = node.parent()?;
         if matches!(
-            parent.kind(),
-            "variable_declaration" | "accumulator_declaration"
+            parent.kind_id(),
+            kind::VARIABLE_DECLARATION | kind::ACCUMULATOR_DECLARATION
         ) {
             syntax::leading_comments(parent, source)
         } else {

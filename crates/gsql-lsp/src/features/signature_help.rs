@@ -87,14 +87,6 @@ pub fn signature_help(
         (None, None) => return None,
     };
     let active = active_argument(text, open_paren, offset);
-    let parameters: Vec<ParameterInformation> = signature
-        .params
-        .iter()
-        .map(|p| ParameterInformation {
-            label: p.clone(),
-            documentation: None,
-        })
-        .collect();
     let active_parameter = if signature
         .params
         .last()
@@ -104,6 +96,12 @@ pub fn signature_help(
     } else {
         active
     };
+    let parameters = (signature.params.into_iter())
+        .map(|label| ParameterInformation {
+            label,
+            documentation: None,
+        })
+        .collect();
     Some(SignatureHelp {
         signatures: vec![SignatureInformation {
             label: signature.label,
@@ -162,8 +160,8 @@ enum CallForm {
 }
 
 /// A call found in the text.
-struct TextCall {
-    name: String,
+struct TextCall<'t> {
+    name: &'t str,
     name_start: usize,
     open_paren: usize,
     form: CallForm,
@@ -171,7 +169,7 @@ struct TextCall {
 
 /// The call whose `(` is the innermost unclosed one before `offset`. Looks
 /// back over at most a few lines, stopping at a statement end.
-fn call_in_text(text: &str, offset: usize) -> Option<TextCall> {
+fn call_in_text(text: &str, offset: usize) -> Option<TextCall<'_>> {
     let start = lookback_start(text, offset);
     let mut depth = 0i32;
     // Depth of closed `{..}` groups (a set or map literal argument) being skipped.
@@ -217,7 +215,6 @@ fn call_in_text(text: &str, offset: usize) -> Option<TextCall> {
                 } else {
                     CallForm::Plain
                 };
-                let name = name.to_string();
                 return Some(TextCall {
                     name,
                     name_start,
@@ -232,13 +229,13 @@ fn call_in_text(text: &str, offset: usize) -> Option<TextCall> {
     None
 }
 
-/// Where a backwards scan from `offset` stops: a few lines back.
+/// Where a backwards scan from `offset` stops: about 1500 bytes back.
 fn lookback_start(text: &str, offset: usize) -> usize {
-    text[..offset]
-        .char_indices()
-        .rev()
-        .nth(1500)
-        .map_or(0, |(i, _)| i)
+    let mut start = offset.saturating_sub(1501);
+    while !text.is_char_boundary(start) {
+        start -= 1;
+    }
+    start
 }
 
 /// The word that `text` ends with, after any whitespace, and where it starts.
@@ -345,7 +342,7 @@ fn runs_a_query(text: &str) -> bool {
 /// The signature of a call found in the text, resolved as the same call in the tree is.
 fn signature_by_name(
     snapshot: &Snapshot,
-    call: &TextCall,
+    call: &TextCall<'_>,
 ) -> Option<Signature> {
     let role = match call.form {
         CallForm::Plain => Role::Function,
@@ -366,7 +363,7 @@ fn signature_by_name(
     };
     let reference = Reference {
         span: Span::default(),
-        name: call.name.clone(),
+        name: call.name.to_string(),
         role,
         scope: 0,
         target: None,
@@ -377,7 +374,7 @@ fn signature_by_name(
         in_error: false,
     };
     let target = resolve::target(snapshot, &reference)?;
-    signature_of(snapshot, &target, &call.name)
+    signature_of(snapshot, &target, call.name)
 }
 
 /// Index of the argument containing `offset`: top-level commas since `(`.
@@ -386,20 +383,22 @@ fn active_argument(text: &str, open_paren: usize, offset: usize) -> u32 {
     let mut index = 0u32;
     let mut in_string = false;
     let mut escaped = false;
-    for c in text[open_paren + 1..offset.max(open_paren + 1)].chars() {
+    let arguments =
+        &text.as_bytes()[open_paren + 1..offset.max(open_paren + 1)];
+    for &b in arguments {
         if in_string {
-            match (escaped, c) {
-                (false, '\\') => escaped = true,
-                (false, '"') => in_string = false,
+            match (escaped, b) {
+                (false, b'\\') => escaped = true,
+                (false, b'"') => in_string = false,
                 _ => escaped = false,
             }
             continue;
         }
-        match c {
-            '"' => in_string = true,
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => depth -= 1,
-            ',' if depth == 0 => index += 1,
+        match b {
+            b'"' => in_string = true,
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b',' if depth == 0 => index += 1,
             _ => {}
         }
     }

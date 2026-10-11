@@ -1,18 +1,10 @@
-//! Hints for deviations from TigerGraph's GSQL Style Guide (an appendix of the
-//! language reference). They only nudge: each one is a hint, carries a quick fix
-//! that is safe to apply without review (so "fix all" applies it too), and
-//! `diagnostics.style` turns them all off.
-//!
-//! * "Always write keywords and reserved words in all caps": `keyword-case`.
-//! * "Use // for single line and inline comments", "Do not use #": `hash-comment`.
-//!
-//! Indentation (4 spaces, no tabs) is the formatter's job, see `formatting`.
+//! Hints for deviations from the GSQL Style Guide, each with a safe fix.
 
 use crate::features::diagnostics::{add_fix, diagnostic};
 use crate::features::formatting::keyword_case_edits;
 use crate::features::{KeywordCase, Snapshot};
 use crate::lsp::types::{Diagnostic, TextEdit, severity};
-use crate::syntax;
+use crate::syntax::kind;
 use crate::text::Span;
 
 pub fn check(snapshot: &Snapshot) -> Vec<Diagnostic> {
@@ -22,9 +14,7 @@ pub fn check(snapshot: &Snapshot) -> Vec<Diagnostic> {
     out
 }
 
-/// Keywords and reserved words in all caps. `TRUE`, `FALSE` and `NULL` are
-/// reserved words, so they count; the formatter's `keywordCase` decides which
-/// tokens are keywords, so the hints and `format` agree.
+/// Keywords, `TRUE`, `FALSE` and `NULL` in all caps, as `format` finds them.
 fn keyword_case(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
     for (start, end, upper) in
         keyword_case_edits(snapshot, KeywordCase::Upper)
@@ -39,41 +29,56 @@ fn keyword_case(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
             "keyword-case",
             message,
         );
+        let title = format!("Change to `{upper}`");
         let edit = TextEdit {
             range: hint.range,
-            new_text: upper.clone(),
+            new_text: upper,
         };
-        add_fix(&mut hint, format!("Change to `{upper}`"), vec![edit], true);
+        add_fix(&mut hint, title, vec![edit], true);
         out.push(hint);
     }
 }
 
-/// `#` comments: the style guide writes single-line comments with `//` (and the
-/// coming GQL standard has no `#`). The hint covers the `#` only.
+/// `#` comments (the style guide uses `//`). The hint covers the `#`.
 fn hash_comments(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
     let source = snapshot.text();
-    syntax::walk(snapshot.root(), |node| {
-        if node.kind() != "comment"
-            || !syntax::text(node, source).starts_with('#')
-        {
-            return;
+    let mut hashes = source
+        .match_indices('#')
+        .map(|(i, _)| i)
+        .peekable();
+    let root = snapshot.root();
+    let mut cursor = root.walk();
+    // Look up each `#` in its top-level node, not by walking the tree.
+    for top in root.children(&mut cursor) {
+        if hashes.peek().is_none() {
+            break;
         }
-        let hash = Span::new(node.start_byte(), node.start_byte() + 1);
-        let message = "Comments start with `//`, not `#`; multi-line comments go between `/*` and `*/`".to_string();
-        let mut hint = diagnostic(
-            snapshot,
-            hash,
-            severity::HINT,
-            "hash-comment",
-            message,
-        );
-        let edit = TextEdit {
-            range: hint.range,
-            new_text: "//".to_string(),
-        };
-        add_fix(&mut hint, "Change `#` to `//`", vec![edit], true);
-        out.push(hint);
-    });
+        while let Some(start) = hashes.next_if(|&i| i < top.end_byte()) {
+            let starts_comment = top
+                .descendant_for_byte_range(start, start + 1)
+                .is_some_and(|n| {
+                    n.kind_id() == kind::COMMENT && n.start_byte() == start
+                });
+            if !starts_comment {
+                continue;
+            }
+            let hash = Span::new(start, start + 1);
+            let message = "Comments start with `//`, not `#`; multi-line comments go between `/*` and `*/`".to_string();
+            let mut hint = diagnostic(
+                snapshot,
+                hash,
+                severity::HINT,
+                "hash-comment",
+                message,
+            );
+            let edit = TextEdit {
+                range: hint.range,
+                new_text: "//".to_string(),
+            };
+            add_fix(&mut hint, "Change `#` to `//`", vec![edit], true);
+            out.push(hint);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -245,8 +250,14 @@ mod tests {
         let whole =
             Range::new(snapshot.position(0), snapshot.position(text.len()));
         let only = ["source.fixAll".to_string()];
-        let actions =
-            code_actions(&snapshot, whole, &found, Some(&only), &found);
+        let actions = code_actions(
+            &snapshot,
+            whole,
+            &found,
+            Some(&only),
+            &found,
+            false,
+        );
         assert_eq!(actions.len(), 1);
         let edits = actions[0].edit.changes[snapshot.uri].clone();
         assert_eq!(
@@ -266,8 +277,14 @@ mod tests {
             Range::new(snapshot.position(offset), snapshot.position(offset))
         };
         // The cursor in `create`: one fix, the preferred one.
-        let actions =
-            code_actions(&snapshot, at(2), &found, Some(&only), &found);
+        let actions = code_actions(
+            &snapshot,
+            at(2),
+            &found,
+            Some(&only),
+            &found,
+            false,
+        );
         assert_eq!(
             actions
                 .iter()
@@ -288,6 +305,7 @@ mod tests {
             &found,
             Some(&only),
             &found,
+            false,
         );
         assert_eq!(
             actions

@@ -480,9 +480,15 @@ pub struct TextEdit {
     pub new_text: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct WorkspaceEdit {
     pub changes: std::collections::BTreeMap<String, Vec<TextEdit>>,
+}
+
+impl WorkspaceEdit {
+    pub fn is_empty(&self) -> bool {
+        self.changes.is_empty()
+    }
 }
 
 pub mod symbol_kind {
@@ -643,7 +649,12 @@ pub struct CodeAction {
     pub diagnostics: Vec<Diagnostic>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_preferred: Option<bool>,
+    /// Left out until the client resolves the action.
+    #[serde(skip_serializing_if = "WorkspaceEdit::is_empty")]
     pub edit: WorkspaceEdit,
+    /// What resolving the action needs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -672,6 +683,7 @@ pub mod error_code {
     pub const INVALID_PARAMS: i64 = -32602;
     pub const INTERNAL_ERROR: i64 = -32603;
     pub const SERVER_NOT_INITIALIZED: i64 = -32002;
+    pub const CONTENT_MODIFIED: i64 = -32801;
     pub const REQUEST_FAILED: i64 = -32803;
 }
 

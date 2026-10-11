@@ -28,14 +28,14 @@ fn resolve(snapshot: &Snapshot, path: &str) -> Option<PathBuf> {
 }
 
 /// A path written in the document: the span of the path and its text.
-fn path_of(node: Node, source: &str) -> Option<(Span, String)> {
+fn path_of<'s>(node: Node, source: &'s str) -> Option<(Span, &'s str)> {
     match node.kind() {
         // `@schema.gsql`
         "file_include" => {
             let text = syntax::text(node, source);
             Some((
                 Span::new(node.start_byte() + 1, node.end_byte()),
-                text[1..].to_string(),
+                &text[1..],
             ))
         }
         // `DEFINE FILENAME f = "data/people.csv"`, `LOAD "data/people.csv" TO ...`,
@@ -59,19 +59,19 @@ fn path_of(node: Node, source: &str) -> Option<(Span, String)> {
                 }
                 _ => false,
             };
+            if !is_path {
+                return None;
+            }
             let text = syntax::text(node, source);
             let path = text.strip_prefix('"')?.strip_suffix('"')?;
             // Machine-qualified paths (`ALL:`, `ANY:`, `m1:`) live on the server.
-            if !is_path
-                || path.is_empty()
-                || path.contains(':')
-                || path.starts_with('$')
+            if path.is_empty() || path.contains(':') || path.starts_with('$')
             {
                 return None;
             }
             Some((
                 Span::new(node.start_byte() + 1, node.end_byte() - 1),
-                path.to_string(),
+                path,
             ))
         }
         _ => None,
@@ -85,7 +85,7 @@ pub fn document_links(snapshot: &Snapshot) -> Vec<DocumentLink> {
         let Some((span, path)) = path_of(node, source) else {
             return;
         };
-        if let Some(file) = resolve(snapshot, &path) {
+        if let Some(file) = resolve(snapshot, path) {
             links.push(DocumentLink {
                 range: snapshot.range(span),
                 target: Some(uri::from_path(&file)),
@@ -109,7 +109,7 @@ pub fn definition(
         .into_iter()
         .find(|n| n.kind() == "file_include")?;
     let (_, path) = path_of(node, snapshot.text())?;
-    let file = resolve(snapshot, &path)?;
+    let file = resolve(snapshot, path)?;
     Some(Location {
         uri: uri::from_path(&file),
         range: Range::default(),

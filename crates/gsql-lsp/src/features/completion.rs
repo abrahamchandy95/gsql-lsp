@@ -14,7 +14,8 @@ use crate::lsp::types::{
 use crate::syntax;
 use crate::text::{
     Span, ends_with_ignore_ascii_case, is_identifier, is_word_char,
-    noncode_end, starts_with_ignore_ascii_case, word_offsets,
+    next_noncode_start, noncode_end, starts_with_ignore_ascii_case,
+    word_offsets,
 };
 use crate::util::extend_unique;
 use crate::workspace::GlobalSymbol;
@@ -219,7 +220,7 @@ fn code_only(text: &str, end: usize) -> (String, bool) {
     let (mut index, mut in_block) = (0, false);
     while index < end {
         let Some((stop, open)) = noncode_end(bytes, index, end) else {
-            index += 1;
+            index = next_noncode_start(bytes, index + 1, end);
             continue;
         };
         let stop = stop.min(end);
@@ -239,7 +240,17 @@ fn code_only(text: &str, end: usize) -> (String, bool) {
 /// Whether `offset` is inside a `/* .. */` comment, closed or not (found from the
 /// text: strings and line comments are skipped).
 fn in_open_block_comment(text: &str, offset: usize) -> bool {
-    code_only(text, offset).1
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    while index < offset {
+        match noncode_end(bytes, index, offset) {
+            // An unclosed comment runs to `offset`.
+            Some((_, true)) => return true,
+            Some((stop, false)) => index = stop,
+            None => index = next_noncode_start(bytes, index + 1, offset),
+        }
+    }
+    false
 }
 
 /// The names offered inside `USER_DEFINED_HEADER="` and `$"` of a loading job.
@@ -3685,15 +3696,12 @@ impl Builder<'_> {
     }
 
     fn locals(&mut self, kinds: &[SymbolKind]) {
-        let symbols: Vec<_> = self
-            .snapshot
-            .analysis
+        let analysis = self.snapshot.analysis;
+        for symbol in analysis
             .visible_symbols(self.offset)
             .into_iter()
             .filter(|s| kinds.contains(&s.kind))
-            .cloned()
-            .collect();
-        for symbol in symbols {
+        {
             let item_kind = match symbol.kind {
                 SymbolKind::File | SymbolKind::FilenameVariable => kind::FILE,
                 SymbolKind::TupleType => kind::STRUCT,

@@ -404,8 +404,12 @@ fn check_rename_conflicts(
             if !symbol.kind.is_accumulator() && is_query_reserved(name) {
                 return Err(format!("`{name}` is a reserved word in GSQL"));
             }
-            let taken = snapshot.analysis.symbols.iter().enumerate().any(|(other, s)| {
+            let analysis = &snapshot.analysis;
+            let taken = analysis.scopes[symbol.scope].symbols.iter().any(|&other| {
+                let s = &analysis.symbols[other];
                 other != *id
+                    // A copied reverse-edge attribute keeps its scope but
+                    // is listed under the file scope.
                     && s.scope == symbol.scope
                     && s.name.trim_start_matches('@') == name
                     && s.kind.is_accumulator() == symbol.kind.is_accumulator()
@@ -474,12 +478,12 @@ pub fn rename(
     let mut changes: BTreeMap<String, Vec<TextEdit>> = BTreeMap::new();
     match target {
         Target::Local(id) => {
-            for r in snapshot.analysis.references_to(id) {
-                changes
-                    .entry(snapshot.uri.to_string())
-                    .or_default()
-                    .push(snapshot.edit(r.span, replacement.clone()));
-            }
+            let edits = snapshot
+                .analysis
+                .references_to(id)
+                .map(|r| snapshot.edit(r.span, replacement.clone()))
+                .collect();
+            changes.insert(snapshot.uri.to_string(), edits);
         }
         Target::Global(key) => {
             let mut locations = snapshot.workspace.references(

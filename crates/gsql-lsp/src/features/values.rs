@@ -8,7 +8,7 @@ use crate::analysis::{FILE_SCOPE, SymbolKind};
 use crate::features::diagnostics::diagnostic;
 use crate::features::{Snapshot, plural};
 use crate::lsp::types::{Diagnostic, severity};
-use crate::syntax;
+use crate::syntax::{self, field, keyword, kind};
 use crate::text::Span;
 
 /// One position of a VALUES list.
@@ -48,16 +48,42 @@ pub struct ValueList<'t> {
 
 /// Every VALUES list of the file whose slots are known.
 pub fn value_lists<'t>(snapshot: &Snapshot<'t>) -> Vec<ValueList<'t>> {
+    value_lists_in(snapshot, 0, usize::MAX)
+}
+
+/// The VALUES lists of the statements that overlap `start..=end`.
+pub fn value_lists_in<'t>(
+    snapshot: &Snapshot<'t>,
+    start: usize,
+    end: usize,
+) -> Vec<ValueList<'t>> {
     let mut lists = Vec::new();
-    syntax::walk(snapshot.tree.root_node(), |node| {
-        let list = match node.kind() {
-            "load_destination" => load_destination(snapshot, node),
-            "insert_statement" => insert(snapshot, node),
-            _ => None,
-        };
-        lists.extend(list);
+    syntax::walk_range(snapshot.tree.root_node(), start, end, |node| {
+        lists.extend(value_list(snapshot, node));
     });
     lists
+}
+
+/// The VALUES list of the LOAD or INSERT around `node`, if its slots are known.
+pub fn value_list_around<'t>(
+    snapshot: &Snapshot<'t>,
+    node: Node<'t>,
+) -> Option<ValueList<'t>> {
+    let statement = syntax::self_and_ancestors(node).find(|n| {
+        matches!(n.kind_id(), kind::LOAD_DESTINATION | kind::INSERT_STATEMENT)
+    })?;
+    value_list(snapshot, statement)
+}
+
+fn value_list<'t>(
+    snapshot: &Snapshot<'t>,
+    node: Node<'t>,
+) -> Option<ValueList<'t>> {
+    match node.kind_id() {
+        kind::LOAD_DESTINATION => load_destination(snapshot, node),
+        kind::INSERT_STATEMENT => insert(snapshot, node),
+        _ => None,
+    }
 }
 
 fn load_destination<'t>(
@@ -65,9 +91,9 @@ fn load_destination<'t>(
     node: Node<'t>,
 ) -> Option<ValueList<'t>> {
     let source = snapshot.text();
-    let list = node.child_by_field_name("values")?;
+    let list = node.child_by_field_id(field::VALUES)?;
     let target = syntax::field_text(node, "target", source)?;
-    let kind = node.child_by_field_name("kind")?.kind();
+    let kind = node.child_by_field_id(field::KIND)?.kind();
     let make = |slots: Vec<Slot>,
                 source: Source,
                 target: String,
@@ -83,10 +109,10 @@ fn load_destination<'t>(
     };
     match kind {
         "TEMP_TABLE" => {
-            let columns = node.child_by_field_name("columns")?;
+            let columns = node.child_by_field_id(field::COLUMNS)?;
             let slots = syntax::named_children(columns)
                 .into_iter()
-                .filter(|c| c.kind() == "identifier")
+                .filter(|c| c.kind_id() == kind::IDENTIFIER)
                 .map(|c| {
                     let name = syntax::text(c, source).to_string();
                     Slot {
@@ -145,10 +171,10 @@ fn insert<'t>(
     node: Node<'t>,
 ) -> Option<ValueList<'t>> {
     let source = snapshot.text();
-    let list = node.child_by_field_name("values")?;
-    let target_node = node.child_by_field_name("target")?;
+    let list = node.child_by_field_id(field::VALUES)?;
+    let target_node = node.child_by_field_id(field::TARGET)?;
     // `INSERT INTO EDGE type_param` names the type at run time.
-    if node.child_by_field_name("kind").is_some() {
+    if node.child_by_field_id(field::KIND).is_some() {
         return None;
     }
     let target = syntax::text(target_node, source);
@@ -164,13 +190,15 @@ fn insert<'t>(
             primary_id_first: schema.is_some_and(|s| s.primary_id_first),
         }
     };
-    match node.child_by_field_name("columns") {
+    match node.child_by_field_id(field::COLUMNS) {
         Some(columns) => {
             let mut slots = Vec::new();
             syntax::walk(columns, |c| {
-                let name = match c.kind() {
-                    "PRIMARY_ID" | "FROM" | "TO" => c.kind().to_string(),
-                    "identifier" => syntax::text(c, source).to_string(),
+                let name = match c.kind_id() {
+                    keyword::PRIMARY_ID | keyword::FROM | keyword::TO => {
+                        c.kind().to_string()
+                    }
+                    kind::IDENTIFIER => syntax::text(c, source).to_string(),
                     _ => return,
                 };
                 slots.push(Slot {
@@ -302,20 +330,21 @@ fn schema(snapshot: &Snapshot, name: &str) -> Option<Schema> {
 /// when that is not known.
 fn width(value: Node, source: &str) -> Option<usize> {
     let function = value
-        .child_by_field_name("function")
+        .child_by_field_id(field::FUNCTION)
         .filter(|f| {
-            value.kind() == "call_expression" && f.kind() == "identifier"
+            value.kind_id() == kind::CALL_EXPRESSION
+                && f.kind_id() == kind::IDENTIFIER
         })
         .map(|f| syntax::text(f, source).to_ascii_lowercase());
     let arguments: Vec<Node> = value
-        .child_by_field_name("arguments")
+        .child_by_field_id(field::ARGUMENTS)
         .map(syntax::code_children)
         .unwrap_or_default();
     match function.as_deref() {
         Some("flatten") => {
             let last = arguments
                 .last()
-                .filter(|a| a.kind() == "integer")?;
+                .filter(|a| a.kind_id() == kind::INTEGER)?;
             syntax::text(*last, source).parse().ok()
         }
         Some("flatten_json_array") => {
@@ -384,7 +413,7 @@ pub fn check(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
             && list
                 .values
                 .first()
-                .is_some_and(|v| v.kind() == "wildcard")
+                .is_some_and(|v| v.kind_id() == kind::WILDCARD)
         {
             out.push(diagnostic(
                 snapshot,
@@ -400,7 +429,7 @@ pub fn check(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
                 .values
                 .iter()
                 .take(2)
-                .filter(|v| v.kind() != "typed_value")
+                .filter(|v| v.kind_id() != kind::TYPED_VALUE)
             {
                 out.push(diagnostic(
                     snapshot,

@@ -1,8 +1,14 @@
 //! Tree-sitter helpers shared by the analysis and the language features.
 
+use std::sync::LazyLock;
+
 use tree_sitter::{Node, Parser, Tree};
 
 use crate::text::Span;
+
+mod ids;
+
+pub use ids::{field, keyword, kind};
 
 pub fn language() -> tree_sitter::Language {
     tree_sitter_gsql::LANGUAGE.into()
@@ -205,21 +211,36 @@ pub fn word_at(root: Node, offset: usize) -> Option<Node> {
 
 pub fn is_word_like(node: Node) -> bool {
     matches!(
-        node.kind(),
-        "identifier"
-            | "global_accumulator"
-            | "local_accumulator"
-            | "accumulator_kind"
+        node.kind_id(),
+        kind::IDENTIFIER
+            | kind::GLOBAL_ACCUMULATOR
+            | kind::LOCAL_ACCUMULATOR
+            | kind::ACCUMULATOR_KIND
     ) || is_keyword(node)
 }
 
 /// Anonymous keyword tokens are named after their upper-case spelling.
 pub fn is_keyword(node: Node) -> bool {
-    !node.is_named()
-        && node.kind().len() > 1
-        && node.kind().chars().all(|c| {
-            c.is_ascii_uppercase() || c == '_' || c == '-' || c == ' '
-        })
+    // By kind id: reading a kind's name costs more than this check.
+    static KEYWORDS: LazyLock<Vec<bool>> = LazyLock::new(|| {
+        let language = language();
+        (0..language.node_kind_count() as u16)
+            .map(|id| {
+                let name = language.node_kind_for_id(id).unwrap_or("");
+                !language.node_kind_is_named(id)
+                    && name.len() > 1
+                    && name.chars().all(|c| {
+                        c.is_ascii_uppercase()
+                            || c == '_'
+                            || c == '-'
+                            || c == ' '
+                    })
+            })
+            .collect()
+    });
+    KEYWORDS
+        .get(usize::from(node.kind_id()))
+        .is_some_and(|&keyword| keyword)
 }
 
 /// A token of the code: a leaf with text that is not a comment or another extra.
@@ -231,14 +252,14 @@ pub fn is_code_token(node: Node) -> bool {
 }
 
 /// Kinds of the name nodes that the analysis resolves.
-pub fn is_name_kind(kind: &str) -> bool {
+pub fn is_name_kind(kind: u16) -> bool {
     matches!(
         kind,
-        "identifier"
-            | "type_identifier"
-            | "global_accumulator"
-            | "local_accumulator"
-            | "qualified_identifier"
+        kind::IDENTIFIER
+            | kind::TYPE_IDENTIFIER
+            | kind::GLOBAL_ACCUMULATOR
+            | kind::LOCAL_ACCUMULATOR
+            | kind::QUALIFIED_IDENTIFIER
     )
 }
 
@@ -363,6 +384,74 @@ pub fn walk<'tree>(root: Node<'tree>, mut visit: impl FnMut(Node<'tree>)) {
     }
 }
 
+/// Every node in the subtrees that have syntax errors, in document order:
+/// where all ERROR and MISSING nodes are.
+pub fn walk_errors<'tree>(
+    root: Node<'tree>,
+    mut visit: impl FnMut(Node<'tree>),
+) {
+    let mut cursor = root.walk();
+    loop {
+        let node = cursor.node();
+        visit(node);
+        if node.has_error() && cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                return;
+            }
+        }
+    }
+}
+
+/// Every node that overlaps `start..=end`, in document order.
+pub fn walk_range<'tree>(
+    root: Node<'tree>,
+    start: usize,
+    end: usize,
+    mut visit: impl FnMut(Node<'tree>),
+) {
+    let mut cursor = root.walk();
+    loop {
+        let node = cursor.node();
+        let overlaps = node.end_byte() >= start && node.start_byte() <= end;
+        if overlaps {
+            visit(node);
+        }
+        if overlaps && cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                return;
+            }
+        }
+    }
+}
+
+/// The first node of the tree, in document order, that `accept` takes.
+pub fn find<'tree>(
+    root: Node<'tree>,
+    mut accept: impl FnMut(Node<'tree>) -> bool,
+) -> Option<Node<'tree>> {
+    let mut cursor = root.walk();
+    loop {
+        let node = cursor.node();
+        if accept(node) {
+            return Some(node);
+        }
+        if cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                return None;
+            }
+        }
+    }
+}
+
 /// Every node in the tree, in document order, and whether it is inside an
 /// ERROR node (cheaper than asking each node for its ancestors: tree-sitter
 /// finds a parent by walking down from the root).
@@ -397,6 +486,89 @@ pub fn walk_with_errors<'tree>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `syntax/ids.rs` as the grammar gives it.
+    fn ids_source() -> String {
+        use std::collections::BTreeMap;
+        use std::fmt::Write;
+        let language = language();
+        let (mut kinds, mut keywords) = (BTreeMap::new(), BTreeMap::new());
+        kinds.insert(
+            "ERROR".to_string(),
+            language.id_for_node_kind("ERROR", true),
+        );
+        for id in 0..language.node_kind_count() as u16 {
+            let Some(name) = language.node_kind_for_id(id) else {
+                continue;
+            };
+            if !language.node_kind_is_visible(id) || name.starts_with('_') {
+                continue;
+            }
+            let named = language.node_kind_is_named(id);
+            let is_word = name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_');
+            let constants = match (named, is_word) {
+                (true, _) => &mut kinds,
+                (false, true) => &mut keywords,
+                (false, false) => continue,
+            };
+            // Symbols that share a name share the id `kind_id` gives.
+            let public = language.id_for_node_kind(name, named);
+            let previous =
+                constants.insert(name.to_ascii_uppercase(), public);
+            assert!(
+                previous.is_none_or(|p| p == public),
+                "two kinds are {name}"
+            );
+        }
+        let mut fields = BTreeMap::new();
+        for id in 1..=language.field_count() as u16 {
+            let name = language
+                .field_name_for_id(id)
+                .expect("a field");
+            fields.insert(name.to_ascii_uppercase(), id);
+        }
+        let mut out = String::from(
+            "//! Node kind and field ids of the grammar, generated by the test\n\
+             //! `ids_match_the_grammar`: run it with `UPDATE_IDS=1` after\n\
+             //! `tree-sitter generate`.\n",
+        );
+        for (module, doc, ids) in [
+            (
+                "kind",
+                "Named node kinds, as `Node::kind_id` gives them.",
+                kinds,
+            ),
+            (
+                "keyword",
+                "Keywords: the anonymous nodes that are words.",
+                keywords,
+            ),
+            ("field", "Fields, for `Node::child_by_field_id`.", fields),
+        ] {
+            writeln!(out, "\n/// {doc}\npub mod {module} {{").unwrap();
+            for (name, id) in ids {
+                writeln!(out, "    pub const {name}: u16 = {id};").unwrap();
+            }
+            out.push_str("}\n");
+        }
+        out
+    }
+
+    #[test]
+    fn ids_match_the_grammar() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/syntax/ids.rs");
+        let expected = ids_source();
+        if std::env::var_os("UPDATE_IDS").is_some() {
+            std::fs::write(path, &expected).unwrap();
+        }
+        let found = std::fs::read_to_string(path).unwrap_or_default();
+        assert!(
+            found == expected,
+            "src/syntax/ids.rs is out of date: run `UPDATE_IDS=1 cargo test ids_match_the_grammar`"
+        );
+    }
 
     #[test]
     fn collects_leading_comments() {

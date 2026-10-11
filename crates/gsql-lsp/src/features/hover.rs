@@ -39,9 +39,10 @@ fn hover_here(snapshot: &Snapshot, position: Position) -> Option<Hover> {
         .root()
         .descendant_for_byte_range(offset, offset)
         && matches!(node.kind(), "column_reference" | "wildcard" | "_")
+        && let Some(list) = super::values::value_list_around(snapshot, node)
     {
-        let lists = super::values::value_lists(snapshot);
-        if let Some((list, slot)) = super::values::slot_at(&lists, offset) {
+        let lists = std::slice::from_ref(&list);
+        if let Some((list, slot)) = super::values::slot_at(lists, offset) {
             let verb = if list.load {
                 "Loads into"
             } else {
@@ -166,30 +167,18 @@ pub fn describe(snapshot: &Snapshot, target: &Target) -> Option<String> {
 /// An attribute declared by several types: the declaring types and the type
 /// of each; one line per type only when the declarations differ.
 fn describe_shared_attribute(declarations: &[&GlobalSymbol]) -> String {
-    let split = |s: &GlobalSymbol| {
-        let owner = s
-            .owner
-            .clone()
-            .unwrap_or_else(|| "?".to_string());
-        (owner, s.detail.clone())
-    };
-    let (_, first) = split(declarations[0]);
+    fn owner(s: &GlobalSymbol) -> &str {
+        s.owner.as_deref().unwrap_or("?")
+    }
+    let first = &declarations[0].detail;
     let text = if declarations
         .iter()
-        .all(|d| split(d).1 == first)
+        .all(|d| d.detail == *first)
     {
-        let owners: Vec<String> = declarations
+        let name = first.split_whitespace().next().unwrap_or("");
+        let names = declarations
             .iter()
-            .map(|d| split(d).0)
-            .collect();
-        let names = owners
-            .iter()
-            .map(|o| {
-                format!(
-                    "{o}.{}",
-                    first.split_whitespace().next().unwrap_or("")
-                )
-            })
+            .map(|d| format!("{}.{name}", owner(d)))
             .collect::<Vec<_>>();
         let ty = first
             .split_once(char::is_whitespace)
@@ -198,7 +187,7 @@ fn describe_shared_attribute(declarations: &[&GlobalSymbol]) -> String {
     } else {
         declarations
             .iter()
-            .map(|d| format!("{}.{}", split(d).0, d.detail))
+            .map(|d| format!("{}.{}", owner(d), d.detail))
             .collect::<Vec<_>>()
             .join("\n")
     };

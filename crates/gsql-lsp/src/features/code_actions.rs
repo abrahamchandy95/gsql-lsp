@@ -2,6 +2,8 @@
 
 use std::collections::BTreeMap;
 
+use serde::Deserialize;
+use serde_json::json;
 use tree_sitter::Node;
 
 use crate::analysis::{Analysis, Role, Ty};
@@ -19,18 +21,23 @@ use crate::text::Span;
 /// Quick fixes for the diagnostics in `range`, and a "fix all" action built
 /// from all of the document's diagnostics (`document_diagnostics`, as last
 /// published). `only` restricts the kinds of action, as in the LSP request.
+/// With `resolve`, the "fix all" action comes without its edit, which the
+/// client asks for ([`fix_all_edit`]) once the action is picked.
 pub fn code_actions(
     snapshot: &Snapshot,
     range: Range,
     diagnostics: &[Diagnostic],
     only: Option<&[String]>,
     document_diagnostics: &[Diagnostic],
+    resolve: bool,
 ) -> Vec<CodeAction> {
     let wants = |kind: &str| {
         only.is_none_or(|kinds| {
-            kinds
-                .iter()
-                .any(|k| kind == k || kind.starts_with(&format!("{k}.")))
+            kinds.iter().any(|k| {
+                kind.strip_prefix(k).is_some_and(|rest| {
+                    rest.is_empty() || rest.starts_with('.')
+                })
+            })
         })
     };
     let mut actions = Vec::new();
@@ -38,7 +45,7 @@ pub fn code_actions(
         actions.extend(quick_fixes(snapshot, range, diagnostics));
     }
     if wants("source.fixAll") {
-        actions.extend(fix_all(snapshot, document_diagnostics));
+        actions.extend(fix_all(snapshot, document_diagnostics, resolve));
     }
     actions
 }
@@ -46,28 +53,24 @@ pub fn code_actions(
 /// Fixes attached to a diagnostic's data by the diagnostics feature.
 fn attached_fixes(
     diagnostic: &Diagnostic,
-) -> Vec<(String, Vec<TextEdit>, bool)> {
-    let Some(fixes) = diagnostic
+) -> impl Iterator<Item = (&str, Vec<TextEdit>, bool)> {
+    diagnostic
         .data
         .as_ref()
         .and_then(|d| d.get("fixes"))
         .and_then(|f| f.as_array())
-    else {
-        return Vec::new();
-    };
-    fixes
-        .iter()
+        .into_iter()
+        .flatten()
         .filter_map(|fix| {
-            let title = fix.get("title")?.as_str()?.to_string();
-            let edits: Vec<TextEdit> =
-                serde_json::from_value(fix.get("edits")?.clone()).ok()?;
+            let title = fix.get("title")?.as_str()?;
+            let edits =
+                Vec::<TextEdit>::deserialize(fix.get("edits")?).ok()?;
             let safe = fix
                 .get("safe")
                 .and_then(|s| s.as_bool())
                 .unwrap_or(false);
             Some((title, edits, safe))
         })
-        .collect()
 }
 
 /// Applies every fix that is safe without review: accumulator name case,
@@ -75,15 +78,11 @@ fn attached_fixes(
 /// mistakes (`ELSEIF`, `POST ACCUM`, `= value` in attribute lists, trailing commas).
 /// The edits of the fixes that are certain, without overlaps.
 fn certain_edits(document_diagnostics: &[Diagnostic]) -> Vec<TextEdit> {
-    let mut edits: Vec<TextEdit> = Vec::new();
-    for diagnostic in document_diagnostics {
-        if let Some((_, fix, _)) = attached_fixes(diagnostic)
-            .into_iter()
-            .find(|(_, _, safe)| *safe)
-        {
-            edits.extend(fix);
-        }
-    }
+    let mut edits: Vec<TextEdit> = document_diagnostics
+        .iter()
+        .filter_map(safe_fix)
+        .flatten()
+        .collect();
     edits.sort_by_key(|e| (e.range.start, e.range.end));
     edits.dedup();
     let mut kept: Vec<TextEdit> = Vec::new();
@@ -98,18 +97,55 @@ fn certain_edits(document_diagnostics: &[Diagnostic]) -> Vec<TextEdit> {
     kept
 }
 
-/// All the certain fixes. A mistake can hide others (a misspelled keyword
-/// makes the errors of its statement look like its consequences), so the
-/// fixed text is checked again, a few times, and the fixes found then are
-/// included: one run gets as far as repeated runs would.
+/// The edits of a diagnostic's first fix that is safe without review.
+fn safe_fix(diagnostic: &Diagnostic) -> Option<Vec<TextEdit>> {
+    attached_fixes(diagnostic)
+        .find(|(_, _, safe)| *safe)
+        .map(|(_, edits, _)| edits)
+}
+
+/// The "fix all" action, when some fix is certain.
 fn fix_all(
     snapshot: &Snapshot,
     document_diagnostics: &[Diagnostic],
+    resolve: bool,
 ) -> Option<CodeAction> {
+    let certain = document_diagnostics
+        .iter()
+        .filter_map(safe_fix)
+        .any(|edits| !edits.is_empty());
+    if !certain {
+        return None;
+    }
+    Some(CodeAction {
+        title: "Fix all auto-fixable problems".into(),
+        kind: "source.fixAll",
+        diagnostics: Vec::new(),
+        is_preferred: None,
+        // Finding the edit means checking the document again, too slow for
+        // the requests sent on every cursor move.
+        edit: if resolve {
+            WorkspaceEdit::default()
+        } else {
+            fix_all_edit(snapshot, document_diagnostics)
+        },
+        data: resolve.then(|| json!({ "uri": snapshot.uri })),
+    })
+}
+
+/// The edit of the "fix all" action (see [`code_actions`]): all the certain
+/// fixes. A mistake can hide others (a misspelled keyword makes the errors of
+/// its statement look like its consequences), so the fixed text is checked
+/// again, a few times, and the fixes found then are included: one run gets
+/// as far as repeated runs would.
+pub fn fix_all_edit(
+    snapshot: &Snapshot,
+    document_diagnostics: &[Diagnostic],
+) -> WorkspaceEdit {
     const MAX_ROUNDS: usize = 4;
     let first = certain_edits(document_diagnostics);
     if first.is_empty() {
-        return None;
+        return WorkspaceEdit::default();
     }
     let original = snapshot.text();
     let mut text = snapshot
@@ -166,13 +202,7 @@ fn fix_all(
     };
     let mut changes = BTreeMap::new();
     changes.insert(snapshot.uri.to_string(), kept);
-    Some(CodeAction {
-        title: "Fix all auto-fixable problems".into(),
-        kind: "source.fixAll",
-        diagnostics: Vec::new(),
-        is_preferred: None,
-        edit: WorkspaceEdit { changes },
-    })
+    WorkspaceEdit { changes }
 }
 
 fn quick_fixes(
@@ -215,17 +245,18 @@ fn quick_fixes(
             }
             _ => {}
         }
-        let fixes = attached_fixes(diagnostic);
+        let fixes: Vec<_> = attached_fixes(diagnostic).collect();
         let single = fixes.len() == 1;
         for (title, edits, _) in fixes {
             let mut changes = BTreeMap::new();
             changes.insert(snapshot.uri.to_string(), edits);
             actions.push(CodeAction {
-                title,
+                title: title.to_string(),
                 kind: "quickfix",
                 diagnostics: vec![diagnostic.clone()],
                 is_preferred: single.then_some(true),
                 edit: WorkspaceEdit { changes },
+                data: None,
             });
         }
         // After its attached `Replace with` fix.
@@ -261,6 +292,7 @@ fn declare_accumulator(
         diagnostics: vec![diagnostic.clone()],
         is_preferred: Some(true),
         edit: workspace_edit(snapshot, snapshot.insert(insert_at, text)),
+        data: None,
     })
 }
 
@@ -460,6 +492,7 @@ fn tolerance_comparison(
             snapshot,
             snapshot.edit(Span::of(comparison), new_text),
         ),
+        data: None,
     })
 }
 
@@ -503,6 +536,7 @@ fn use_syntax_v3(
         diagnostics: vec![diagnostic.clone()],
         is_preferred: None,
         edit: workspace_edit(snapshot, edit),
+        data: None,
     })
 }
 
@@ -525,6 +559,7 @@ fn rename_reserved(
         diagnostics: vec![diagnostic.clone()],
         is_preferred: None,
         edit,
+        data: None,
     })
 }
 
@@ -604,6 +639,7 @@ fn remove_unused(
         diagnostics: vec![diagnostic.clone()],
         is_preferred: None,
         edit: workspace_edit(snapshot, snapshot.edit(span, "")),
+        data: None,
     })
 }
 
@@ -616,15 +652,15 @@ fn did_you_mean(
         return Vec::new();
     };
     // For types and attributes, the candidates of the diagnostic's "did you mean".
-    let candidates: Vec<String> = match diagnostic.code.as_deref() {
+    let global: Option<Vec<String>> = match diagnostic.code.as_deref() {
         Some("unknown-type") => {
             let kinds = reference
                 .role
                 .global_kinds()
                 .unwrap_or_default();
-            unknown_type_candidates(snapshot, reference, kinds)
+            Some(unknown_type_candidates(snapshot, reference, kinds))
         }
-        Some("unknown-attribute") => match &reference.role {
+        Some("unknown-attribute") => Some(match &reference.role {
             Role::Attribute(ty) => ty
                 .schema_owners()
                 .map(|(_, owners)| {
@@ -632,18 +668,22 @@ fn did_you_mean(
                 })
                 .unwrap_or_default(),
             _ => Vec::new(),
-        },
-        _ => snapshot
+        }),
+        _ => None,
+    };
+    let candidates: Vec<&str> = match &global {
+        Some(names) => names.iter().map(String::as_str).collect(),
+        None => snapshot
             .analysis
             .visible_symbols(offset)
             .into_iter()
             .filter(|s| !s.name.starts_with('@'))
-            .map(|s| s.name.clone())
+            .map(|s| s.name.as_str())
             .collect(),
     };
     // The ranking of the diagnostics' "did you mean", so a suggestion always
     // has its fix (transpositions included).
-    similar(&reference.name, candidates.iter().map(String::as_str))
+    similar(&reference.name, candidates)
         .into_iter()
         .take(3)
         .map(|name| CodeAction {
@@ -655,6 +695,7 @@ fn did_you_mean(
                 snapshot,
                 snapshot.edit(reference.span, name),
             ),
+            data: None,
         })
         .collect()
 }
@@ -784,6 +825,7 @@ mod tests {
                 &found,
                 Some(&["source.fixAll".to_string()]),
                 &found,
+                false,
             );
             assert!(
                 all.iter()
@@ -813,6 +855,7 @@ mod tests {
             &found,
             Some(&["source.fixAll".to_string()]),
             &found,
+            false,
         );
         assert!(all.iter().all(|a| !a.title.contains("END")), "{all:?}");
         // No fix when the closing brace shares its line.
@@ -890,7 +933,7 @@ mod tests {
             Range::new(snapshot.position(0), snapshot.position(fixed.len()));
         let only = ["source.fixAll".to_string()];
         assert!(
-            code_actions(&snapshot, whole, &all, Some(&only), &all)
+            code_actions(&snapshot, whole, &all, Some(&only), &all, false)
                 .is_empty()
         );
     }
@@ -986,9 +1029,15 @@ mod tests {
             Range::new(snapshot.position(0), snapshot.position(text.len()));
         let only = ["source.fixAll".to_string()];
         let all = diagnostics(&snapshot);
-        let found = code_actions(&snapshot, whole, &all, Some(&only), &all);
+        let found =
+            code_actions(&snapshot, whole, &all, Some(&only), &all, false);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].kind, "source.fixAll");
+        // A client that resolves actions gets the edit once it asks.
+        let offered =
+            code_actions(&snapshot, whole, &all, Some(&only), &all, true);
+        assert!(offered[0].edit.is_empty());
+        assert_eq!(fix_all_edit(&snapshot, &all), found[0].edit);
     }
 
     #[test]
@@ -1048,6 +1097,20 @@ mod tests {
             apply_fix(text, "Remove unused `x`"),
             "CREATE QUERY q() {\n  INT y = 2;\n  PRINT y;\n}\n"
         );
+    }
+
+    #[test]
+    fn guesses_accumulator_types_from_assignments_in_blocks() {
+        let declares_a_double = |body: &str| {
+            let text = format!("CREATE QUERY q() {{\n{body}\n}}\n");
+            actions(&text, &[])
+                .iter()
+                .any(|a| a.title == "Declare `SumAccum<DOUBLE> @@total`")
+        };
+        assert!(declares_a_double("  IF TRUE THEN @@total += 1.5; END;"));
+        assert!(declares_a_double(
+            "  S = SELECT s FROM Person:s ACCUM @@total += 1.5;\n  PRINT S;"
+        ));
     }
 
     #[test]

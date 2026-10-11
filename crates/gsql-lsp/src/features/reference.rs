@@ -1,8 +1,4 @@
-//! A reference of the built-in functions, methods, accumulators, types and
-//! keywords, as a file that "go to definition" can jump into. There is no
-//! source to show for a built-in, so the server writes its documentation to a
-//! file in the cache folder (comments only, so it has no diagnostics) and the
-//! locations point at the entry. Every editor can open it without help.
+//! Built-in docs as a stub file that go to definition can open.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -16,7 +12,7 @@ use crate::uri;
 
 struct Reference {
     text: String,
-    /// Lookup key of an entry -> the line of its heading.
+    /// Entry key -> its line.
     lines: HashMap<String, u32>,
 }
 
@@ -27,7 +23,7 @@ struct Writer {
     line: u32,
 }
 
-/// A `/* ... */` comment holding `doc` (Markdown) as plain text, with `*/` broken up.
+/// `doc` as a plain-text `/* */` comment.
 fn comment(doc: &str, indent: &str) -> String {
     let doc = to_plain(doc).replace("*/", "* /");
     let mut lines = doc.lines();
@@ -42,10 +38,7 @@ fn comment(doc: &str, indent: &str) -> String {
     out
 }
 
-// Lookup keys of the entries.
-
-/// The keys of a method entry: the exact entry of a method whose receiver is
-/// known, then by text for the rest.
+/// By identity first, then by text.
 fn method_keys(method: &Method) -> [String; 3] {
     let signature = method.signature();
     [
@@ -88,7 +81,7 @@ impl Writer {
         self.push(&format!("\n// ===== {title} =====\n"));
     }
 
-    /// Points `keys` at the current line (the first entry for a key wins).
+    /// Points `keys` here; the first entry wins.
     fn mark(&mut self, keys: &[String]) {
         for key in keys {
             self.lines
@@ -97,8 +90,7 @@ impl Writer {
         }
     }
 
-    /// A declaration followed by its documentation, as in a Python stub;
-    /// definitions point at the declaration.
+    /// A declaration followed by its docs, like a Python stub.
     fn entry(
         &mut self,
         keys: &[String],
@@ -123,7 +115,7 @@ impl Writer {
         }
     }
 
-    /// `BUILTIN OBJECT name syntax { doc; methods }`, with `doc` in Markdown.
+    /// `BUILTIN OBJECT name syntax { doc; methods }`.
     fn object(
         &mut self,
         keys: &[String],
@@ -219,7 +211,6 @@ fn reference() -> &'static Reference {
     REFERENCE.get_or_init(build)
 }
 
-/// The start of the reference file's name, before the version.
 const FILE_PREFIX: &str = "reference-";
 
 fn file_name() -> String {
@@ -251,9 +242,7 @@ pub fn is_reference_file(uri: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || "-+.".contains(c))
 }
 
-/// The folders the reference file may be kept in, in order of preference: the
-/// platform's cache folder, then a folder of the user in the temporary folder
-/// (for a missing or read-only home).
+/// Where the file may go: the cache folder, then a private temp folder.
 fn candidate_dirs() -> Vec<PathBuf> {
     let var = |name: &str| {
         std::env::var_os(name)
@@ -289,7 +278,7 @@ fn candidate_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// Creates `dir` (private to the user where the platform has such a thing).
+/// Creates `dir`, private to the user where possible.
 fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -298,8 +287,7 @@ fn create_private_dir(dir: &Path) -> std::io::Result<()> {
             .recursive(true)
             .mode(0o700)
             .create(dir)?;
-        // In the shared temp folder, a folder made by someone else beforehand (a
-        // link, or open to others) is not trusted: only a private real folder is.
+        // A shared-temp folder must be ours: a real dir, closed to others.
         if dir.starts_with(std::env::temp_dir()) {
             let meta = std::fs::symlink_metadata(dir)?;
             if !meta.is_dir() || meta.permissions().mode() & 0o077 != 0 {
@@ -315,8 +303,7 @@ fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)
 }
 
-/// Writes the reference file into the first of `dirs` where that works (or
-/// finds it there up to date).
+/// Writes the file to the first of `dirs` that works (or finds it current).
 fn write_to_first(dirs: &[PathBuf], text: &str) -> Option<PathBuf> {
     dirs.iter().find_map(|dir| {
         let path = dir.join(file_name());
@@ -326,9 +313,7 @@ fn write_to_first(dirs: &[PathBuf], text: &str) -> Option<PathBuf> {
             return Some(path);
         }
         create_private_dir(dir).ok()?;
-        // Written beside and renamed, so an editor never reads half of it, and
-        // servers started together do not write to the same file (the name
-        // holds the process and a counter).
+        // Write then rename: no half-read file, no clash between servers.
         static COUNTER: std::sync::atomic::AtomicUsize =
             std::sync::atomic::AtomicUsize::new(0);
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -338,7 +323,7 @@ fn write_to_first(dirs: &[PathBuf], text: &str) -> Option<PathBuf> {
             .and_then(|()| std::fs::rename(&partial, &path));
         if written.is_err() {
             let _ = std::fs::remove_file(&partial);
-            // Another server may have won the race with the same text.
+            // Another server may have written it first.
             return std::fs::read_to_string(&path)
                 .is_ok_and(|existing| existing == text)
                 .then_some(path);
@@ -347,8 +332,7 @@ fn write_to_first(dirs: &[PathBuf], text: &str) -> Option<PathBuf> {
     })
 }
 
-/// The reference file, written when it is missing or out of date. `None` when
-/// no folder can hold it: definitions then have no location (hovers still work).
+/// The file, written if missing or stale; `None` if no folder can hold it.
 fn ensure_file() -> Option<&'static PathBuf> {
     static FILE: OnceLock<Option<PathBuf>> = OnceLock::new();
     FILE.get_or_init(|| write_to_first(&candidate_dirs(), &reference().text))
@@ -373,7 +357,6 @@ fn locate(keys: &[String]) -> Option<Location> {
     })
 }
 
-/// The text of the reference file.
 #[cfg(test)]
 pub fn text() -> &'static str {
     &reference().text

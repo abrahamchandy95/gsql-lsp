@@ -29,11 +29,14 @@ fn type_hints(
     hints: &mut Vec<InlayHint>,
 ) {
     let source = snapshot.text();
-    for reference in &snapshot.analysis.references {
-        if !reference.declaration
-            || reference.span.end < start
-            || reference.span.start > end
-        {
+    // References are sorted by position and never overlap.
+    let references = &snapshot.analysis.references;
+    let first = references.partition_point(|r| r.span.end < start);
+    for reference in references[first..]
+        .iter()
+        .take_while(|r| r.span.start <= end)
+    {
+        if !reference.declaration {
             continue;
         }
         let Some(symbol) = snapshot.analysis.target_symbol(reference) else {
@@ -43,38 +46,30 @@ fn type_hints(
             (SymbolKind::Alias, Ty::Vertex(types) | Ty::Edge(types))
                 if !types.is_empty() =>
             {
-                // Only when the pattern does not already spell out the type.
                 let Some(node) = snapshot.node_at(reference.span) else {
                     continue;
                 };
                 let Some(pattern) = node.parent() else {
                     continue;
                 };
-                let spelled = pattern
-                    .child_by_field_name("type")
-                    .is_some_and(|t| {
-                        let text = syntax::text(t, source);
-                        types.len() == 1 && types[0] == text
-                    });
-                let is_vertex_set = pattern
-                    .child_by_field_name("type")
-                    .is_some_and(|t| {
-                        matches!(
-                            t.kind(),
-                            "identifier" | "global_accumulator"
-                        )
-                    });
-                // An untyped alias has its type from the edge before it.
-                let from_edge = pattern.child_by_field_name("type").is_none()
-                    && matches!(
+                let shown = match pattern.child_by_field_name("type") {
+                    // Typed by the edge before it.
+                    None => matches!(
                         pattern.kind(),
                         "vertex_pattern" | "node_pattern"
-                    );
-                if !from_edge
-                    && (spelled
-                        || pattern.kind() != "vertex_pattern"
-                        || !is_vertex_set)
-                {
+                    ),
+                    // A vertex set, unless it already spells the type.
+                    Some(set) => {
+                        pattern.kind() == "vertex_pattern"
+                            && matches!(
+                                set.kind(),
+                                "identifier" | "global_accumulator"
+                            )
+                            && !(types.len() == 1
+                                && types[0] == syntax::text(set, source))
+                    }
+                };
+                if !shown {
                     continue;
                 }
                 types.join(" | ")
@@ -101,10 +96,7 @@ fn argument_hints(
     end: usize,
     hints: &mut Vec<InlayHint>,
 ) {
-    syntax::walk(snapshot.root(), |node| {
-        if node.end_byte() < start || node.start_byte() > end {
-            return;
-        }
+    syntax::walk_range(snapshot.root(), start, end, |node| {
         // A call by plain name may build a tuple instead.
         let Some((query, _, arguments)) =
             resolve::query_called_by(snapshot, node)
@@ -136,7 +128,7 @@ fn value_hints(
     hints: &mut Vec<InlayHint>,
 ) {
     let source = snapshot.text();
-    for list in super::values::value_lists(snapshot) {
+    for list in super::values::value_lists_in(snapshot, start, end) {
         if list.list.end_byte() < start
             || list.list.start_byte() > end
             || list.values.len() < 2

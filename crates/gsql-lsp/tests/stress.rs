@@ -374,6 +374,7 @@ fn exercise(
                 &diagnostics,
                 None,
                 &diagnostics,
+                false,
             )
         });
     }

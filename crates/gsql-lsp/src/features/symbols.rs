@@ -1,5 +1,7 @@
 //! Document outline and workspace symbol search.
 
+use std::borrow::Cow;
+
 use tree_sitter::Node;
 
 use crate::analysis::{Symbol, SymbolKind};
@@ -9,6 +11,7 @@ use crate::lsp::types::{
 };
 use crate::syntax;
 use crate::text::Span;
+use crate::workspace::{GlobalSymbol, Workspace};
 
 pub fn lsp_kind(kind: SymbolKind) -> u8 {
     match kind {
@@ -210,20 +213,15 @@ fn stub_symbols(snapshot: &Snapshot) -> Vec<DocumentSymbol> {
         Some(detail)
     };
     let mut result = Vec::new();
-    syntax::walk(snapshot.root(), |node| {
+    let mut visit = |node: Node| {
         if node.kind() != "stub_declaration" {
             return;
         }
         // CONSTANT, TYPE and KEYWORD name themselves; FUNCTION and OBJECT hold the name.
-        let word = |node: Node| {
-            let keyword = node
-                .child(1)
-                .map(|k| k.kind().to_ascii_uppercase());
-            match keyword.as_deref() {
-                Some("TYPE") => symbol_kind::TYPE_PARAMETER,
-                Some("KEYWORD") => symbol_kind::KEY,
-                _ => symbol_kind::CONSTANT,
-            }
+        let word = |node: Node| match node.child(1).map(|k| k.kind()) {
+            Some("TYPE") => symbol_kind::TYPE_PARAMETER,
+            Some("KEYWORD") => symbol_kind::KEY,
+            _ => symbol_kind::CONSTANT,
         };
         if let Some(function) = syntax::child_of_kind(node, "stub_function") {
             if let Some(name) = function.child_by_field_name("name") {
@@ -268,7 +266,17 @@ fn stub_symbols(snapshot: &Snapshot) -> Vec<DocumentSymbol> {
         } else if let Some(name) = node.child_by_field_name("name") {
             result.push(entry(node, name, word(node), None, Vec::new()));
         }
-    });
+    };
+    // A stub is a top-level statement, or the child of an error.
+    let root = snapshot.root();
+    let mut cursor = root.walk();
+    for top in root.children(&mut cursor) {
+        if top.has_error() {
+            syntax::walk_errors(top, &mut visit);
+        } else {
+            visit(top);
+        }
+    }
     result
 }
 
@@ -281,14 +289,22 @@ fn matches(query: &str, name: &str) -> bool {
         .all(|q| name_chars.any(|n| n == q))
 }
 
-/// 0 exact, 1 prefix, 2 substring, 3 subsequence (case-insensitive).
+/// 0 exact, 1 prefix, 2 substring, 3 subsequence; `query` is lower case.
 fn match_tier(query: &str, name: &str) -> u8 {
-    let (query, name) = (query.to_lowercase(), name.to_lowercase());
+    // Most names are lower-case ASCII already.
+    let name = if name
+        .bytes()
+        .any(|b| b.is_ascii_uppercase() || !b.is_ascii())
+    {
+        Cow::Owned(name.to_lowercase())
+    } else {
+        Cow::Borrowed(name)
+    };
     if name == query {
         0
-    } else if name.starts_with(&query) {
+    } else if name.starts_with(query) {
         1
-    } else if name.contains(&query) {
+    } else if name.contains(query) {
         2
     } else {
         3
@@ -296,27 +312,39 @@ fn match_tier(query: &str, name: &str) -> u8 {
 }
 
 pub fn workspace_symbols(
-    workspace: &crate::workspace::Workspace,
+    workspace: &Workspace,
     query: &str,
 ) -> Vec<SymbolInformation> {
-    let mut result: Vec<SymbolInformation> = workspace
+    let lower = query.to_lowercase();
+    let mut found: Vec<(u8, usize, &GlobalSymbol)> = workspace
         .symbols()
         // A job's file variables are only visible inside the job.
         .filter(|s| !s.is_job_file())
         .filter(|s| matches(query, &s.name))
-        .map(|s| SymbolInformation {
+        .enumerate()
+        .map(|(i, s)| (match_tier(&lower, &s.name), i, s))
+        .collect();
+    // Exact, prefix, substring, then subsequence matches; shorter names
+    // first; then in workspace order.
+    fn rank<'a>(
+        &(tier, i, s): &(u8, usize, &'a GlobalSymbol),
+    ) -> (u8, usize, &'a str, usize) {
+        (tier, s.name.len(), &s.name, i)
+    }
+    if found.len() > 500 {
+        found.select_nth_unstable_by_key(500, rank);
+        found.truncate(500);
+    }
+    found.sort_unstable_by_key(rank);
+    found
+        .into_iter()
+        .map(|(_, _, s)| SymbolInformation {
             name: s.name.clone(),
             kind: lsp_kind(s.kind),
             location: s.location(),
             container_name: s.owner.clone().or_else(|| s.graph.clone()),
         })
-        .collect();
-    // Exact, prefix, substring, then subsequence matches; shorter names first.
-    result.sort_by_cached_key(|s| {
-        (match_tier(query, &s.name), s.name.len(), s.name.clone())
-    });
-    result.truncate(500);
-    result
+        .collect()
 }
 
 #[cfg(test)]

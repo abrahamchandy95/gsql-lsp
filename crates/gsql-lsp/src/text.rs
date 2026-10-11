@@ -492,6 +492,15 @@ pub fn noncode_end(
     }
 }
 
+/// Where a string or comment may start at or after `from`: the first `"`,
+/// `#` or `/` before `end` (any other byte is code), else `end`.
+pub fn next_noncode_start(bytes: &[u8], from: usize, end: usize) -> usize {
+    bytes[from..end]
+        .iter()
+        .position(|b| matches!(b, b'"' | b'#' | b'/'))
+        .map_or(end, |n| from + n)
+}
+
 /// Byte ranges of the strings and comments of `text`, in order.
 pub fn noncode_spans(text: &str) -> Vec<Span> {
     let mut spans = Vec::new();
@@ -518,7 +527,7 @@ pub fn noncode_until(
                 spans.push(Span::new(index, stop));
                 index = stop;
             }
-            None => index += 1,
+            None => index = next_noncode_start(bytes, index + 1, end),
         }
     }
     index

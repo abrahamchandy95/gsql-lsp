@@ -1,35 +1,23 @@
-//! A conservative formatter: re-indents lines by block structure, keeps the
-//! relative indentation of continuation lines (so hand-aligned SELECT
-//! clauses survive), trims trailing whitespace and optionally normalizes
-//! keyword case. Long or multi-line query parameter lists and TUPLE field
-//! lists are laid out one item per line, as the GSQL Style Guide asks of
-//! lines over 80 characters. Files with syntax errors are left alone.
+//! Re-indents by block structure, keeping hand-aligned continuations, and
+//! splits long parameter and TUPLE lists. Broken files are left alone.
+
+use std::borrow::Cow;
 
 use tree_sitter::Node;
 
 use crate::features::{KeywordCase, Snapshot};
 use crate::lsp::types::{FormattingOptions, Range, TextEdit};
-use crate::syntax;
+use crate::syntax::{self, field, keyword, kind};
 use crate::text::Span;
 
+/// How to indent a line: at a level, relative to another row, or as written.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Rule {
-    /// Indent to an absolute level.
     Level(usize),
-    /// Keep the indentation relative to an anchor line; a line that is not
-    /// indented past the anchor gets one level, unless `aligned` allows it
-    /// to line up with the anchor (SELECT clauses under SELECT).
     Continuation { anchor: usize, aligned: bool },
-    /// Keep exactly the indentation relative to an anchor line (the inside
-    /// of a block comment).
     Relative { anchor: usize },
-    /// Indent `depth` levels past the anchor line, whatever the line had (the
-    /// END of an IF inside ACCUM lines up with the IF).
     Under { anchor: usize, depth: usize },
-    /// Indent like another, later line (a comment above a SELECT clause
-    /// lines up with the clause).
     SameAs { row: usize },
-    /// Leave the line untouched (inside a multi-line string).
     Keep,
 }
 
@@ -75,8 +63,7 @@ impl Planner<'_> {
         }
     }
 
-    /// Lines after the first line of `node` (up to `end_row`) keep their
-    /// indentation relative to `anchor`, unless a nested rule assigns them.
+    /// Later rows keep their indent relative to `anchor`, unless already set.
     fn continuation(
         &mut self,
         anchor: usize,
@@ -95,15 +82,14 @@ impl Planner<'_> {
         }
     }
 
-    /// Lets the clauses of a SELECT block in `node` line up with the
-    /// statement's first line.
+    /// SELECT clauses in `node` may line up with its first line.
     fn align_select_clauses(&mut self, node: Node) {
-        let select = match node.kind() {
-            "select_statement" => Some(node),
-            "assignment_statement" | "vertex_set_declaration" => node
-                .child_by_field_name("right")
-                .or_else(|| node.child_by_field_name("value"))
-                .filter(|v| v.kind() == "select_statement"),
+        let select = match node.kind_id() {
+            kind::SELECT_STATEMENT => Some(node),
+            kind::ASSIGNMENT_STATEMENT | kind::VERTEX_SET_DECLARATION => node
+                .child_by_field_id(field::RIGHT)
+                .or_else(|| node.child_by_field_id(field::VALUE))
+                .filter(|v| v.kind_id() == kind::SELECT_STATEMENT),
             _ => None,
         };
         let Some(select) = select else {
@@ -128,7 +114,9 @@ impl Planner<'_> {
     fn align_comments_above(&mut self, clause: Node) {
         let target = clause.start_position().row;
         let mut previous = clause.prev_sibling();
-        while let Some(comment) = previous.filter(|c| c.kind() == "comment") {
+        while let Some(comment) =
+            previous.filter(|c| c.kind_id() == kind::COMMENT)
+        {
             let row = comment.start_position().row;
             if !self.starts_line(comment) || row != comment.end_position().row
             {
@@ -160,16 +148,16 @@ impl Planner<'_> {
         let end = node.end_position().row;
         self.set_if_starts_line(node, level);
         let anchor = first;
-        match node.kind() {
-            "query_definition"
-            | "interpret_query_statement"
-            | "loading_job_definition"
-            | "schema_change_job_definition" => match node
-                .child_by_field_name("body")
+        match node.kind_id() {
+            kind::QUERY_DEFINITION
+            | kind::INTERPRET_QUERY_STATEMENT
+            | kind::LOADING_JOB_DEFINITION
+            | kind::SCHEMA_CHANGE_JOB_DEFINITION => match node
+                .child_by_field_id(field::BODY)
             {
-                Some(body) if body.kind() != "opencypher_body" => {
+                Some(body) if body.kind_id() != kind::OPENCYPHER_BODY => {
                     let brace_row = body.start_position().row;
-                    // A `{` on its own line lines up with the statement, like its `}`.
+                    // A `{` on its own line lines up like its `}`.
                     if brace_row > first
                         && self.starts_line(body)
                         && self.source[body.start_byte()..].starts_with('{')
@@ -183,14 +171,16 @@ impl Planner<'_> {
                 }
                 _ => self.continuation(anchor, first + 1, end),
             },
-            "if_statement" | "while_statement" | "foreach_statement" => {
+            kind::IF_STATEMENT
+            | kind::WHILE_STATEMENT
+            | kind::FOREACH_STATEMENT => {
                 for child in syntax::children(node) {
-                    match child.kind() {
-                        "block" => self.block(child, level + 1),
-                        "else_if_clause" | "else_clause" => {
+                    match child.kind_id() {
+                        kind::BLOCK => self.block(child, level + 1),
+                        kind::ELSE_IF_CLAUSE | kind::ELSE_CLAUSE => {
                             self.set_if_starts_line(child, level);
                             for part in syntax::children(child) {
-                                if part.kind() == "block" {
+                                if part.kind_id() == kind::BLOCK {
                                     self.block(part, level + 1);
                                 }
                             }
@@ -200,21 +190,22 @@ impl Planner<'_> {
                                 child.end_position().row,
                             );
                         }
-                        "END" => self.set_if_starts_line(child, level),
+                        keyword::END => self.set_if_starts_line(child, level),
                         _ => {}
                     }
                 }
                 self.continuation(anchor, first + 1, end);
             }
-            "case_statement" | "try_statement" => {
+            kind::CASE_STATEMENT | kind::TRY_STATEMENT => {
                 for child in syntax::children(node) {
-                    match child.kind() {
-                        "block" => self.block(child, level + 1),
-                        "when_clause" | "exception_handler"
-                        | "else_clause" => {
+                    match child.kind_id() {
+                        kind::BLOCK => self.block(child, level + 1),
+                        kind::WHEN_CLAUSE
+                        | kind::EXCEPTION_HANDLER
+                        | kind::ELSE_CLAUSE => {
                             self.set_if_starts_line(child, level + 1);
                             for part in syntax::children(child) {
-                                if part.kind() == "block" {
+                                if part.kind_id() == kind::BLOCK {
                                     self.block(part, level + 2);
                                 }
                             }
@@ -224,7 +215,7 @@ impl Planner<'_> {
                                 child.end_position().row,
                             );
                         }
-                        "EXCEPTION" | "END" => {
+                        keyword::EXCEPTION | keyword::END => {
                             self.set_if_starts_line(child, level)
                         }
                         _ => {}
@@ -240,14 +231,9 @@ impl Planner<'_> {
         }
     }
 
-    /// Control flow among the comma-separated statements of ACCUM, POST-ACCUM
-    /// and UPDATE ... SET is laid out like its statement-level kind: a
-    /// branch's statements one level in from its IF (or WHEN), END and ELSE
-    /// lined up with the IF.
+    /// Control flow inside ACCUM, POST-ACCUM and SET, laid out like blocks.
     fn nested_control_flow(&mut self, node: Node) {
-        // Multi-line statements of the lists continue from their own first
-        // line. (They are found from their list: asking a node for its parent
-        // makes tree-sitter search down from the root.)
+        // List items (from their list: `parent()` searches from the root).
         let mut listed = std::collections::HashSet::new();
         let mut constructs = Vec::new();
         syntax::walk(node, |n| {
@@ -259,8 +245,8 @@ impl Planner<'_> {
                 constructs.push(n);
             }
             if matches!(
-                n.kind(),
-                "accum_clause" | "post_accum_clause" | "block"
+                n.kind_id(),
+                kind::ACCUM_CLAUSE | kind::POST_ACCUM_CLAUSE | kind::BLOCK
             ) {
                 listed.extend(
                     syntax::code_children(n)
@@ -287,16 +273,16 @@ impl Planner<'_> {
             for child in syntax::children(construct) {
                 let (child_row, child_end) =
                     (child.start_position().row, child.end_position().row);
-                match child.kind() {
-                    "END" if self.starts_line(child) => self.set(
+                match child.kind_id() {
+                    keyword::END if self.starts_line(child) => self.set(
                         child_row,
                         Rule::Under {
                             anchor: row,
                             depth: 0,
                         },
                     ),
-                    "else_if_clause" | "else_clause"
-                        if construct.kind() == "if_statement" =>
+                    kind::ELSE_IF_CLAUSE | kind::ELSE_CLAUSE
+                        if construct.kind_id() == kind::IF_STATEMENT =>
                     {
                         if self.starts_line(child) {
                             self.set(
@@ -308,7 +294,7 @@ impl Planner<'_> {
                             );
                         }
                     }
-                    "when_clause" | "else_clause" => {
+                    kind::WHEN_CLAUSE | kind::ELSE_CLAUSE => {
                         if self.starts_line(child) {
                             self.set(
                                 child_row,
@@ -330,12 +316,11 @@ impl Planner<'_> {
                         if !self.starts_line(child)
                             && self.starts_line(construct)
                         {
-                            // `CASE WHEN c THEN` on one line: its body is
-                            // as deep as the bodies of the branches below
-                            // (not after `ACCUM CASE`, whose layout is the user's).
+                            // `CASE WHEN c THEN` on one line: its body as deep
+                            // as the other branches' (not after `ACCUM CASE`).
                             for body in syntax::children(child)
                                 .into_iter()
-                                .filter(|b| b.kind() == "block")
+                                .filter(|b| b.kind_id() == kind::BLOCK)
                             {
                                 for stmt in syntax::named_children(body) {
                                     if stmt.start_position().row > child_row
@@ -368,10 +353,8 @@ impl Planner<'_> {
     }
 }
 
-/// For the raw text of an openCypher body starting on row `first`: the rows
-/// that begin inside a string literal, a backtick-quoted name or a block
-/// comment (their text is data and is kept as written), and the rows that
-/// end inside a string (their trailing whitespace is data too).
+/// The rows of an openCypher body (from row `first`) that start inside a
+/// string, quoted name or block comment, and those that end inside a string.
 fn cypher_protected_rows(
     text: &str,
     first: usize,
@@ -432,37 +415,30 @@ fn cypher_protected_rows(
 /// Lines longer than this are split (the GSQL Style Guide).
 const MAX_LINE: usize = 80;
 
-/// A query's parameter list or a TUPLE's field list, which is laid out one
-/// item per line when it spans lines or its line is too long.
+/// A parameter or TUPLE field list that may be laid out one item per line.
 struct List {
-    /// The statement's first row and its parent, to chain sibling lists.
     statement_row: usize,
     parent: Option<usize>,
     open_row: usize,
     close_row: usize,
-    /// The byte after `(` or `<`, and the byte of `)` or `>`.
     open_end: usize,
     close_start: usize,
-    /// Byte spans of the items.
     items: Vec<(usize, usize)>,
-    /// Byte spans of the string literals inside, whose spaces are data.
     strings: Vec<(usize, usize)>,
 }
 
-/// The lists that may be laid out, in order. A list's statement starts its
-/// line, or follows a sibling's list that closes on that line (`> T; TYPEDEF
-/// TUPLE<`), so the items always sit one level past the line they open on.
-/// Lists with comments or multi-line strings are left to the line pass, and so
-/// is a chain of lists when such a list opens on its last line, which would
-/// otherwise end up half laid out.
+/// The lists that may be laid out, in order: those whose statement starts its
+/// line or follows a sibling's list, without comments or multi-line strings.
 fn breakable_lists(root: Node, source: &str) -> Vec<List> {
     let mut lists: Vec<List> = Vec::new();
+    // By id: by name, every node would scan the grammar's field names.
+    let parameters = syntax::language().field_id_for_name("parameters");
     syntax::walk(root, |node| {
-        let (list, open, close, item_kind) = match node.kind() {
-            "typedef_statement" => (node, "<", ">", "tuple_field"),
-            _ => match node
-                .child_by_field_name("parameters")
-                .filter(|p| p.kind() == "parameter_list")
+        let (list, open, close, item_kind) = match node.kind_id() {
+            kind::TYPEDEF_STATEMENT => (node, "<", ">", "tuple_field"),
+            _ => match parameters
+                .and_then(|id| node.child_by_field_id(id.get()))
+                .filter(|p| p.kind_id() == kind::PARAMETER_LIST)
             {
                 Some(parameters) => (parameters, "(", ")", "parameter"),
                 None => return,
@@ -485,12 +461,14 @@ fn breakable_lists(root: Node, source: &str) -> Vec<List> {
             .collect();
         let mut strings = Vec::new();
         let mut safe = !items.is_empty();
-        syntax::walk(list, |n| match n.kind() {
-            "comment" => safe = false,
-            "string" if n.start_position().row != n.end_position().row => {
+        syntax::walk(list, |n| match n.kind_id() {
+            kind::COMMENT => safe = false,
+            kind::STRING
+                if n.start_position().row != n.end_position().row =>
+            {
                 safe = false
             }
-            "string" => strings.push((n.start_byte(), n.end_byte())),
+            kind::STRING => strings.push((n.start_byte(), n.end_byte())),
             _ => {}
         });
         let (open_row, close_row) =
@@ -544,8 +522,7 @@ fn breakable_lists(root: Node, source: &str) -> Vec<List> {
     lists
 }
 
-/// Whitespace runs (newlines too) outside the string literals of `text`,
-/// which starts at byte `offset`, become single spaces.
+/// Whitespace runs outside the strings become single spaces.
 fn collapse_whitespace(
     text: &str,
     offset: usize,
@@ -572,16 +549,15 @@ fn collapse_whitespace(
 
 fn is_control_flow(node: Node) -> bool {
     matches!(
-        node.kind(),
-        "if_statement"
-            | "case_statement"
-            | "while_statement"
-            | "foreach_statement"
+        node.kind_id(),
+        kind::IF_STATEMENT
+            | kind::CASE_STATEMENT
+            | kind::WHILE_STATEMENT
+            | kind::FOREACH_STATEMENT
     )
 }
 
-/// The width of a line's indentation in columns, with tab stops every `tab`
-/// columns (the unit tabs are written with, so formatting twice is stable).
+/// Indentation width in columns, with tab stops every `tab` columns.
 fn indentation(line: &str, tab: usize) -> usize {
     line.chars()
         .take_while(|c| *c == ' ' || *c == '\t')
@@ -635,24 +611,23 @@ pub fn format(
     // Lines that end inside a string literal keep their trailing whitespace.
     let mut open_string = vec![false; line_count];
 
-    // Never touch lines that start inside a string literal, and keep the
-    // layout of block comments.
+    // Lines inside strings are kept; block comments keep their layout.
     syntax::walk(root, |node| {
         let (first, last) =
             (node.start_position().row, node.end_position().row);
         if first == last {
             return;
         }
-        match node.kind() {
-            "string" => {
+        match node.kind_id() {
+            kind::STRING => {
                 open_string[first] = true;
                 (first + 1..=last)
                     .for_each(|row| planner.set(row, Rule::Keep));
             }
-            "comment" => (first + 1..=last).for_each(|row| {
+            kind::COMMENT => (first + 1..=last).for_each(|row| {
                 planner.set(row, Rule::Relative { anchor: first })
             }),
-            "opencypher_body" => {
+            kind::OPENCYPHER_BODY => {
                 let (kept, open) = cypher_protected_rows(
                     &source[node.start_byte()..node.end_byte()],
                     first,
@@ -675,17 +650,20 @@ pub fn format(
         })
         .collect();
     let newline = snapshot.source.newline();
-    // The text of `start..end` with the keyword-case edits inside it applied.
+    // The text of `start..end` with its keyword-case edits.
     let cased = |start: usize, end: usize| {
-        let mut text = source[start..end].to_string();
         let from = keyword_edits.partition_point(|e| e.0 < start);
         let to = keyword_edits.partition_point(|e| e.0 < end);
+        if from == to {
+            return Cow::Borrowed(&source[start..end]);
+        }
+        let mut text = source[start..end].to_string();
         for (s, e, replacement) in keyword_edits[from..to].iter().rev() {
             if *e <= end {
                 text.replace_range(s - start..e - start, replacement);
             }
         }
-        text
+        Cow::Owned(text)
     };
     let in_range = |first: usize, last: usize| {
         range.is_none_or(|r| {
@@ -768,9 +746,8 @@ pub fn format(
             }
         }
         if let Some(mut list) = first {
-            // One item per line, one level past this line; the closing bracket
-            // and the rest of its line at this line's indent. A sibling's list
-            // that opens on that line is laid out the same way, in the same edit.
+            // One item per line a level in, the closer at this indent; a
+            // sibling's list opening on the closing line joins the edit.
             let mut text = format!(
                 "{}{}",
                 render_indent(indent, options),
@@ -781,8 +758,11 @@ pub fn format(
                 for (i, &(start, end)) in list.items.iter().enumerate() {
                     let mut item = cased(start, end);
                     if item.contains('\n') {
-                        item =
-                            collapse_whitespace(&item, start, &list.strings);
+                        item = Cow::Owned(collapse_whitespace(
+                            &item,
+                            start,
+                            &list.strings,
+                        ));
                     }
                     let comma = if i < last { "," } else { "" };
                     text.push_str(&format!(
@@ -856,8 +836,9 @@ pub fn format(
         let formatted = if is_blank {
             String::new()
         } else {
-            let body = cased(content_start, content_start + body.len());
-            format!("{}{}", render_indent(indent, options), body)
+            let mut text = render_indent(indent, options);
+            text.push_str(&cased(content_start, content_start + body.len()));
+            text
         };
         if formatted != line && in_range(row, row) {
             let span =
@@ -882,9 +863,8 @@ pub fn format(
     edits
 }
 
-/// (start, end, replacement) for the keywords whose case differs from `case`.
-/// Reserved words that are literals (`TRUE`, `FALSE`, `NULL`) count as keywords.
-/// The `keyword-case` style hint uses this too, so it and the formatter agree.
+/// (start, end, replacement) of the keywords (and TRUE, FALSE, NULL) not in
+/// `case`; the keyword-case hint uses it too, so the two agree.
 pub(crate) fn keyword_case_edits(
     snapshot: &Snapshot,
     case: KeywordCase,
@@ -896,19 +876,25 @@ pub(crate) fn keyword_case_edits(
     let mut edits = Vec::new();
     syntax::walk(snapshot.root(), |node| {
         if !(syntax::is_keyword(node)
-            || matches!(node.kind(), "boolean" | "null"))
+            || matches!(node.kind_id(), kind::BOOLEAN | kind::NULL))
         {
             return;
         }
         let text = syntax::text(node, source);
         let replacement = match case {
-            KeywordCase::Upper => text.to_ascii_uppercase(),
-            KeywordCase::Lower => text.to_ascii_lowercase(),
-            KeywordCase::Preserve => return,
+            KeywordCase::Upper
+                if text.bytes().any(|b| b.is_ascii_lowercase()) =>
+            {
+                text.to_ascii_uppercase()
+            }
+            KeywordCase::Lower
+                if text.bytes().any(|b| b.is_ascii_uppercase()) =>
+            {
+                text.to_ascii_lowercase()
+            }
+            _ => return,
         };
-        if replacement != text && replacement.eq_ignore_ascii_case(text) {
-            edits.push((node.start_byte(), node.end_byte(), replacement));
-        }
+        edits.push((node.start_byte(), node.end_byte(), replacement));
     });
     edits.sort();
     edits

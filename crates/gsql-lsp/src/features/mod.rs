@@ -407,10 +407,8 @@ pub(crate) mod test_support {
 
     /// Splits `text` at the `|` marker, returning the text without it and the cursor offset.
     pub fn cursor(text: &str) -> (String, usize) {
-        let offset = text.find('|').expect("cursor marker");
-        let mut without = text.to_string();
-        without.remove(offset);
-        (without, offset)
+        let (before, after) = text.split_once('|').expect("cursor marker");
+        (format!("{before}{after}"), before.len())
     }
 
     /// The message of every diagnostic of `text`, with other workspace files.
@@ -462,7 +460,9 @@ pub(crate) mod test_support {
         let found = diagnostics::diagnostics(&snapshot);
         let whole =
             Range::new(snapshot.position(0), snapshot.position(text.len()));
-        code_actions::code_actions(&snapshot, whole, &found, None, &found)
+        code_actions::code_actions(
+            &snapshot, whole, &found, None, &found, false,
+        )
     }
 
     /// `text` with the code action titled `title` applied.

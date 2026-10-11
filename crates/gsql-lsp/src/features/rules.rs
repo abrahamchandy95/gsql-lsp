@@ -1,10 +1,8 @@
-//! Rules from the GSQL language reference that the grammar does not enforce:
-//! reserved words, where accumulators may be assigned or modified, virtual
-//! edge restrictions, constraints on accumulator types, interpreted and
-//! distributed query limitations, and the compiler's warning about exact
-//! comparison of floating-point values.
+//! Language-reference rules the grammar does not enforce.
 
+use std::cmp::Ordering;
 use std::collections::HashSet;
+use std::sync::LazyLock;
 
 use tree_sitter::Node;
 
@@ -16,7 +14,7 @@ use crate::features::diagnostics::{add_fix, diagnostic};
 use crate::features::resolve::{self, Callee, Target};
 use crate::features::{Snapshot, plural};
 use crate::lsp::types::{Diagnostic, diagnostic_tag, severity};
-use crate::syntax;
+use crate::syntax::{self, field, keyword, kind};
 use crate::text::{Span, starts_with_ignore_ascii_case};
 use crate::workspace::GlobalSymbol;
 
@@ -41,8 +39,7 @@ requires return short signed sizeof static static_assert static_cast struct swit
 thread_local throw true try typedef typeid typename union unsigned using virtual void volatile \
 wchar_t while xor xor_eq";
 
-/// Words the DDL compiler rejects as names of vertex types, edge types,
-/// graphs, tags and attributes.
+/// Names the DDL compiler rejects for types, graphs, tags and attributes.
 const DDL_RESERVED: &str = "\
 ACCUM ADD ALL ALLOCATE ALTER AND ANY AS ASC AVG BAG BATCH BETWEEN BIGINT BLOB BOOL BOOLEAN BOTH \
 BREAK BY CALL CASCADE CASE CATCH CHAR CHARACTER CHECK CLOB COALESCE COMPRESS CONST CONSTRAINT \
@@ -63,19 +60,37 @@ WHERE WHILE WITH GSQL_SYS_TAG _INTERNAL_ATTR_TAG";
 const RESERVED_PREFIX: &str = "gsql_sys_";
 
 pub(crate) fn is_query_reserved(name: &str) -> bool {
-    QUERY_RESERVED
-        .split_whitespace()
-        .any(|w| w.eq_ignore_ascii_case(name))
-        || CPP_RESERVED
-            .split_whitespace()
-            .any(|w| w == name)
+    static QUERY: LazyLock<Vec<&str>> =
+        LazyLock::new(|| sorted(QUERY_RESERVED));
+    static CPP: LazyLock<HashSet<&str>> =
+        LazyLock::new(|| CPP_RESERVED.split_whitespace().collect());
+    listed(&QUERY, name) || CPP.contains(name)
 }
 
 pub(crate) fn is_ddl_reserved(name: &str) -> bool {
-    DDL_RESERVED
-        .split_whitespace()
-        .any(|w| w.eq_ignore_ascii_case(name))
-        || starts_with_ignore_ascii_case(name, RESERVED_PREFIX)
+    static DDL: LazyLock<Vec<&str>> = LazyLock::new(|| sorted(DDL_RESERVED));
+    listed(&DDL, name) || starts_with_ignore_ascii_case(name, RESERVED_PREFIX)
+}
+
+/// `a` and `b` compared as if in upper case.
+fn cmp_upper(a: &str, b: &str) -> Ordering {
+    a.bytes()
+        .map(|c| c.to_ascii_uppercase())
+        .cmp(b.bytes().map(|c| c.to_ascii_uppercase()))
+}
+
+/// The words of a list, sorted for [`listed`].
+fn sorted(words: &'static str) -> Vec<&'static str> {
+    let mut sorted: Vec<_> = words.split_whitespace().collect();
+    sorted.sort_unstable_by(|a, b| cmp_upper(a, b));
+    sorted
+}
+
+/// Whether `name` is one of `words`, ignoring ASCII case.
+fn listed(words: &[&str], name: &str) -> bool {
+    words
+        .binary_search_by(|w| cmp_upper(w, name))
+        .is_ok()
 }
 
 pub fn check(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
@@ -104,12 +119,15 @@ pub fn check(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
     let mut contexts = vec![Context::default()];
     loop {
         let node = cursor.node();
+        // Read once: every check asks.
+        let kind = node.kind_id();
         let context = enter(
             *contexts.last().expect("never empty"),
             node,
+            kind,
             snapshot.text(),
         );
-        checker.visit(node, &context);
+        checker.visit(node, kind, &context);
         if !node.is_error() && cursor.goto_first_child() {
             contexts.push(context);
             continue;
@@ -164,20 +182,20 @@ enum Returns {
     Unknown,
     /// No RETURNS clause.
     Missing,
-    /// The RETURNS type, as "a number" or "a BOOL" when a string cannot be returned as it.
+    /// How the RETURNS type reads when a string cannot be returned as it.
     Declared(Option<&'static str>),
 }
 
-fn enter(parent: Context, node: Node, source: &str) -> Context {
+fn enter(parent: Context, node: Node, kind: u16, source: &str) -> Context {
     let mut context = parent;
     context.in_list_accum = parent.list_accum;
-    context.list_accum = node.kind() == "accumulator_type"
+    context.list_accum = kind == kind::ACCUMULATOR_TYPE
         && syntax::field_text(node, "kind", source)
             .is_some_and(|k| k.eq_ignore_ascii_case("listaccum"));
-    match node.kind() {
-        "query_definition"
-        | "interpret_query_statement"
-        | "opencypher_query_definition" => {
+    match kind {
+        kind::QUERY_DEFINITION
+        | kind::INTERPRET_QUERY_STATEMENT
+        | kind::OPENCYPHER_QUERY_DEFINITION => {
             let versions = syntax::declared_syntax_versions(node, source);
             let v3 = versions
                 .iter()
@@ -186,9 +204,9 @@ fn enter(parent: Context, node: Node, source: &str) -> Context {
                 v.eq_ignore_ascii_case("v1") || v.eq_ignore_ascii_case("v2")
             });
             let distributed = node
-                .child_by_field_name("modifier")
-                .is_some_and(|m| m.kind() == "DISTRIBUTED");
-            let interpreted = node.kind() == "interpret_query_statement";
+                .child_by_field_id(field::MODIFIER)
+                .is_some_and(|m| m.kind_id() == keyword::DISTRIBUTED);
+            let interpreted = kind == kind::INTERPRET_QUERY_STATEMENT;
             context = Context {
                 query: Some(Mode {
                     interpreted,
@@ -199,7 +217,7 @@ fn enter(parent: Context, node: Node, source: &str) -> Context {
                 }),
                 ..Context::default()
             };
-            if node.kind() == "query_definition" {
+            if kind == kind::QUERY_DEFINITION {
                 let clause = syntax::child_of_kind(node, "returns_clause");
                 context.returns = match clause {
                     // A query that does not parse cleanly may be misread.
@@ -207,7 +225,7 @@ fn enter(parent: Context, node: Node, source: &str) -> Context {
                     None => Returns::Missing,
                     Some(clause) => Returns::Declared(
                         clause
-                            .child_by_field_name("type")
+                            .child_by_field_id(field::TYPE)
                             .and_then(|t| {
                                 stores_string_badly(&type_of_type_node(
                                     t, source,
@@ -217,16 +235,12 @@ fn enter(parent: Context, node: Node, source: &str) -> Context {
                 };
             }
         }
-        "accum_clause" => context.accum = true,
-        "post_accum_clause" => context.post_accum = true,
-        "print_statement" => context.print = true,
-        "foreach_statement" | "dml_foreach_statement" => {
-            context.foreach = true
-        }
-        "while_statement" | "dml_while_statement" => {
-            context.while_loop = true
-        }
-        "insert_statement" => context.insert = true,
+        kind::ACCUM_CLAUSE => context.accum = true,
+        kind::POST_ACCUM_CLAUSE => context.post_accum = true,
+        kind::PRINT_STATEMENT => context.print = true,
+        kind::FOREACH_STATEMENT => context.foreach = true,
+        kind::WHILE_STATEMENT => context.while_loop = true,
+        kind::INSERT_STATEMENT => context.insert = true,
         _ => {}
     }
     context
@@ -239,7 +253,15 @@ fn reserved_words(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
             continue;
         }
         let name = symbol.name.as_str();
-        let label = with_article(symbol.kind.label());
+        let cannot_name = || {
+            let label = with_article(symbol.kind.label());
+            (
+                severity::ERROR,
+                format!(
+                    "`{name}` is a reserved word in GSQL and cannot name {label}"
+                ),
+            )
+        };
         let finding = match symbol.kind {
             K::Parameter
             | K::Variable
@@ -252,23 +274,11 @@ fn reserved_words(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
             | K::File
             | K::Exception
             | K::Table
-            | K::Query => is_query_reserved(name).then(|| {
-                (
-                    severity::ERROR,
-                    format!(
-                        "`{name}` is a reserved word in GSQL and cannot name {label}"
-                    ),
-                )
-            }),
+            | K::Query => is_query_reserved(name).then(cannot_name),
             K::VertexType | K::EdgeType | K::Graph | K::Attribute
                 if is_ddl_reserved(name) =>
             {
-                Some((
-                    severity::ERROR,
-                    format!(
-                        "`{name}` is a reserved word in GSQL and cannot name {label}"
-                    ),
-                ))
+                Some(cannot_name())
             }
             K::VertexType | K::EdgeType if is_query_reserved(name) => Some((
                 severity::WARNING,
@@ -291,8 +301,7 @@ fn reserved_words(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
     }
 }
 
-/// The pairs a MapAccum or GroupByAccum takes: its type, key and value types, and how
-/// messages name it (`A MapAccum<STRING, INT>`) and its pairs (`` `(key -> value)` ``).
+/// A MapAccum or GroupByAccum's pairs: types and how messages name them.
 struct Pairs<'t> {
     ty: &'t Ty,
     keys: &'t [Ty],
@@ -306,8 +315,7 @@ struct Checker<'s, 'a> {
     out: &'s mut Vec<Diagnostic>,
     /// The query whose cypher patterns were reported (once per query).
     cypher_reported: Option<usize>,
-    /// Expressions reported as a mistyped `->` (`(k - v)`), so that the
-    /// arithmetic is not reported again.
+    /// Mistyped `->` (`(k - v)`) already reported, not to report twice.
     arrow_typos: HashSet<usize>,
     /// The TYPEDEF'd accumulator and tuple types declared in this file.
     type_symbols: Vec<&'s Symbol>,
@@ -328,7 +336,7 @@ impl<'s> Checker<'s, '_> {
         ));
     }
 
-    /// The symbol an identifier or accumulator occurrence resolves to in this file.
+    /// The symbol `node` resolves to in this file.
     fn symbol_of(&self, node: Node) -> Option<&Symbol> {
         let reference = self
             .snapshot
@@ -340,7 +348,7 @@ impl<'s> Checker<'s, '_> {
             .target_symbol(reference)
     }
 
-    /// Whether `method` modifies the accumulator that `accumulator` resolves to.
+    /// Whether `method` modifies the accumulator `accumulator` names.
     fn calls_mutator(&self, accumulator: Node, method: Node) -> bool {
         let Some(Ty::Accumulator(kind, _)) =
             self.symbol_of(accumulator).map(|s| &s.ty)
@@ -352,24 +360,24 @@ impl<'s> Checker<'s, '_> {
             .is_some_and(|m| m.mutator)
     }
 
-    fn visit(&mut self, node: Node, context: &Context) {
+    fn visit(&mut self, node: Node, kind: u16, context: &Context) {
         if matches!(
-            node.kind(),
-            "assignment_statement"
-                | "dml_assignment_statement"
-                | "accumulator_declarator"
+            kind,
+            kind::ASSIGNMENT_STATEMENT | kind::ACCUMULATOR_DECLARATOR
         ) {
             self.accumulator_input(node);
         }
-        self.type_checks(node, context);
-        match node.kind() {
-            "assignment_statement" if context.accum || context.post_accum => {
+        self.type_checks(node, kind, context);
+        match kind {
+            kind::ASSIGNMENT_STATEMENT
+                if context.accum || context.post_accum =>
+            {
                 self.accumulator_assignment(node)
             }
-            "local_accumulator" if context.post_accum => {
+            kind::LOCAL_ACCUMULATOR if context.post_accum => {
                 self.edge_accumulator_in_post_accum(node)
             }
-            "accumulator_declaration"
+            kind::ACCUMULATOR_DECLARATION
                 if context.foreach || context.while_loop =>
             {
                 self.attached_accumulator_in_loop(
@@ -377,17 +385,15 @@ impl<'s> Checker<'s, '_> {
                     if context.foreach { "FOREACH" } else { "WHILE" },
                 )
             }
-            "virtual_edge_declaration" => self.virtual_edge(node),
-            "foreach_statement" if !node.has_error() => {
+            kind::VIRTUAL_EDGE_DECLARATION => self.virtual_edge(node),
+            kind::FOREACH_STATEMENT if !node.has_error() => {
                 self.foreach_variables(node)
             }
-            // `CREATE QUERY q(MapAccum<STRING, INT> m)`. The arguments of a query run on its own
-            // come from outside and cannot be accumulators; whether a subquery (one with
-            // RETURNS) may take one is not documented, so that is only a warning.
-            "parameter" => {
+            // An accumulator parameter: an error, a warning for a subquery.
+            kind::PARAMETER => {
                 if let Some(ty) = node
-                    .child_by_field_name("type")
-                    .filter(|t| t.kind() == "accumulator_type")
+                    .child_by_field_id(field::TYPE)
+                    .filter(|t| t.kind_id() == kind::ACCUMULATOR_TYPE)
                 {
                     let (level, message) = if matches!(
                         context.returns,
@@ -411,19 +417,19 @@ impl<'s> Checker<'s, '_> {
                     );
                 }
             }
-            "edge_alternation" | "relationship_detail" => {
+            kind::EDGE_ALTERNATION | kind::RELATIONSHIP_DETAIL => {
                 self.mixed_virtual_edges(node)
             }
             // An accumulator as a parameter type is reported once, as that.
-            "accumulator_type"
+            kind::ACCUMULATOR_TYPE
                 if node
                     .parent()
-                    .is_none_or(|p| p.kind() != "parameter") =>
+                    .is_none_or(|p| p.kind_id() != kind::PARAMETER) =>
             {
                 self.accumulator_type(node, context)
             }
-            "accumulator_kind" => self.accumulator_case(node),
-            "binary_expression" => {
+            kind::ACCUMULATOR_KIND => self.accumulator_case(node),
+            kind::BINARY_EXPRESSION => {
                 if context.query.is_some() {
                     self.compared_condition(node);
                 }
@@ -435,7 +441,7 @@ impl<'s> Checker<'s, '_> {
                     self.float_equality(node, mode);
                 }
             }
-            "call_expression" => {
+            kind::CALL_EXPRESSION => {
                 if context.query.is_some() {
                     self.set_expression_method(node);
                 }
@@ -445,8 +451,8 @@ impl<'s> Checker<'s, '_> {
                     self.subquery_call(node);
                 }
             }
-            "cypher_pattern" => self.cypher_syntax(node, context),
-            "break_statement" | "continue_statement"
+            kind::CYPHER_PATTERN => self.cypher_syntax(node, context),
+            kind::BREAK_STATEMENT | kind::CONTINUE_STATEMENT
                 if context.query.is_some()
                     && !context.foreach
                     && !context.while_loop =>
@@ -459,44 +465,44 @@ impl<'s> Checker<'s, '_> {
                 );
                 self.report(node, severity::ERROR, "loop-control", message);
             }
-            "return_statement" => self.return_value(node, context),
-            "limit_clause" => self.offset_without_order(node),
-            "select_statement" if !node.has_error() => {
+            kind::RETURN_STATEMENT => self.return_value(node, context),
+            kind::LIMIT_CLAUSE => self.offset_without_order(node),
+            kind::SELECT_STATEMENT if !node.has_error() => {
                 self.select_aliases(node)
             }
-            "accum_clause" if !node.has_error() => {
+            kind::ACCUM_CLAUSE if !node.has_error() => {
                 self.read_after_write(node)
             }
-            "edge_pattern" if !node.has_error() => {
+            kind::EDGE_PATTERN if !node.has_error() => {
                 self.aliased_repetition(node)
             }
-            "tag_statement" | "tag_expression" | "tags_clause" => {
-                self.reserved_tags(node)
-            }
+            kind::TAG_STATEMENT
+            | kind::TAG_EXPRESSION
+            | kind::TAGS_CLAUSE => self.reserved_tags(node),
             _ => {}
         }
-        self.deprecated(node);
+        self.deprecated(node, kind);
         if let Some(mode) = context.query {
             if mode.interpreted {
-                self.interpreted(node, context);
+                self.interpreted(node, kind, context);
             }
-            self.distributed(node, mode, context);
+            self.distributed(node, kind, mode, context);
         }
     }
 
     /// Global accumulators may only be assigned outside SELECT blocks.
     fn accumulator_assignment(&mut self, node: Node) {
-        let Some(left) = node.child_by_field_name("left") else {
+        let Some(left) = node.child_by_field_id(field::LEFT) else {
             return;
         };
         let assigns = node
-            .child_by_field_name("operator")
+            .child_by_field_id(field::OPERATOR)
             .is_some_and(|o| o.kind() == "=");
-        let global = match left.kind() {
-            "global_accumulator" => true,
-            "subscript_expression" => left
-                .child_by_field_name("object")
-                .is_some_and(|o| o.kind() == "global_accumulator"),
+        let global = match left.kind_id() {
+            kind::GLOBAL_ACCUMULATOR => true,
+            kind::SUBSCRIPT_EXPRESSION => left
+                .child_by_field_id(field::OBJECT)
+                .is_some_and(|o| o.kind_id() == kind::GLOBAL_ACCUMULATOR),
             _ => false,
         };
         if assigns && global {
@@ -522,18 +528,18 @@ impl<'s> Checker<'s, '_> {
         }
     }
 
-    /// An accumulator read in a later statement of the ACCUM clause that writes it. Every
-    /// execution of the clause starts from the same snapshot of the accumulators and the
-    /// inputs are only aggregated when all executions are done (Sec. 4.3 of the GSQL paper).
+    /// A read after a write in one ACCUM clause: reads see the old value.
     fn read_after_write(&mut self, clause: Node) {
         let mut writes = Vec::new();
         let mut reads = Vec::new();
-        syntax::walk(clause, |n| match n.kind() {
-            "assignment_statement" => writes.push(n),
-            "global_accumulator" => reads.push(n),
-            "member_expression"
-                if n.child_by_field_name("property")
-                    .is_some_and(|p| p.kind() == "local_accumulator") =>
+        syntax::walk(clause, |n| match n.kind_id() {
+            kind::ASSIGNMENT_STATEMENT => writes.push(n),
+            kind::GLOBAL_ACCUMULATOR => reads.push(n),
+            kind::MEMBER_EXPRESSION
+                if n.child_by_field_id(field::PROPERTY)
+                    .is_some_and(|p| {
+                        p.kind_id() == kind::LOCAL_ACCUMULATOR
+                    }) =>
             {
                 reads.push(n)
             }
@@ -542,7 +548,7 @@ impl<'s> Checker<'s, '_> {
         // The accumulator a write targets is not a read.
         let targets: Vec<(usize, usize)> = writes
             .iter()
-            .filter_map(|w| w.child_by_field_name("left"))
+            .filter_map(|w| w.child_by_field_id(field::LEFT))
             .filter_map(|left| {
                 self.accumulator_key(left)
                     .map(|_| accumulator_target(left))
@@ -552,16 +558,15 @@ impl<'s> Checker<'s, '_> {
         let mut reported = Vec::new();
         for write in writes {
             let Some(key) = write
-                .child_by_field_name("left")
+                .child_by_field_id(field::LEFT)
                 .and_then(|l| self.accumulator_key(l))
             else {
                 continue;
             };
-            // Only reads in the same block (not the other branch of an IF) and after the write.
-            let Some(scope) = write
-                .parent()
-                .filter(|p| matches!(p.kind(), "block" | "accum_clause"))
-            else {
+            // Later reads in the same block (not another IF branch).
+            let Some(scope) = write.parent().filter(|p| {
+                matches!(p.kind_id(), kind::BLOCK | kind::ACCUM_CLAUSE)
+            }) else {
                 continue;
             };
             for read in &reads {
@@ -581,9 +586,9 @@ impl<'s> Checker<'s, '_> {
                     "`{}` is read in the same ACCUM clause that updates it; the read sees the value from before the clause, not the running total (read it in POST-ACCUM)",
                     self.text(*read)
                 );
-                // (The paper's ACCUM only has `+=`: a plain `=` write is an extrapolation, a hint.)
+                // Only a hint for a plain `=` (the paper's ACCUM has `+=`).
                 let level = if write
-                    .child_by_field_name("operator")
+                    .child_by_field_id(field::OPERATOR)
                     .is_some_and(|o| o.kind() == "=")
                 {
                     severity::HINT
@@ -600,29 +605,29 @@ impl<'s> Checker<'s, '_> {
         }
     }
 
-    /// The accumulator is the object of a call to a method that modifies it (`.clear()`, `.add(x)`).
+    /// `read` is modified by a method call (`.clear()`, `.add(x)`).
     fn is_mutated(&self, read: Node) -> bool {
         let Some(member) = read
             .parent()
-            .filter(|p| p.kind() == "member_expression")
+            .filter(|p| p.kind_id() == kind::MEMBER_EXPRESSION)
         else {
             return false;
         };
         let (Some(object), Some(method)) = (
-            member.child_by_field_name("object"),
-            member.child_by_field_name("property"),
+            member.child_by_field_id(field::OBJECT),
+            member.child_by_field_id(field::PROPERTY),
         ) else {
             return false;
         };
         if object.id() != read.id()
             || member
                 .parent()
-                .is_none_or(|c| c.kind() != "call_expression")
+                .is_none_or(|c| c.kind_id() != kind::CALL_EXPRESSION)
         {
             return false;
         }
-        let accumulator = if read.kind() == "member_expression" {
-            read.child_by_field_name("property")
+        let accumulator = if read.kind_id() == kind::MEMBER_EXPRESSION {
+            read.child_by_field_id(field::PROPERTY)
                 .unwrap_or(read)
         } else {
             read
@@ -630,19 +635,18 @@ impl<'s> Checker<'s, '_> {
         self.calls_mutator(accumulator, method)
     }
 
-    /// `@@name` or `alias.@name` for a global accumulator or a vertex accumulator of an alias,
-    /// also when subscripted.
+    /// `@@name` or `alias.@name`, subscripted or not.
     fn accumulator_key(&self, node: Node) -> Option<String> {
         let node = accumulator_target(node);
-        match node.kind() {
-            "global_accumulator" => Some(self.text(node).to_string()),
-            "member_expression" => {
+        match node.kind_id() {
+            kind::GLOBAL_ACCUMULATOR => Some(self.text(node).to_string()),
+            kind::MEMBER_EXPRESSION => {
                 let object = node
-                    .child_by_field_name("object")
-                    .filter(|o| o.kind() == "identifier")?;
+                    .child_by_field_id(field::OBJECT)
+                    .filter(|o| o.kind_id() == kind::IDENTIFIER)?;
                 let property = node
-                    .child_by_field_name("property")
-                    .filter(|p| p.kind() == "local_accumulator")?;
+                    .child_by_field_id(field::PROPERTY)
+                    .filter(|p| p.kind_id() == kind::LOCAL_ACCUMULATOR)?;
                 Some(format!("{}.{}", self.text(object), self.text(property)))
             }
             _ => None,
@@ -652,29 +656,28 @@ impl<'s> Checker<'s, '_> {
     /// `*2..2`: equal bounds are an exact count.
     fn same_bounds(&self, bounds: Node) -> bool {
         match (
-            bounds.child_by_field_name("min"),
-            bounds.child_by_field_name("max"),
+            bounds.child_by_field_id(field::MIN),
+            bounds.child_by_field_id(field::MAX),
         ) {
             (Some(min), Some(max)) => self.text(min) == self.text(max),
             _ => false,
         }
     }
 
-    /// An edge alias on a repeated edge pattern binds no single edge: the number of edges
-    /// varies (Sec. 7 of the GSQL paper; the TigerGraph documentation forbids it).
+    /// An edge alias on a repeated edge pattern binds no single edge.
     fn aliased_repetition(&mut self, node: Node) {
-        let Some(alias) = node.child_by_field_name("alias") else {
+        let Some(alias) = node.child_by_field_id(field::ALIAS) else {
             return;
         };
         let mut star = false;
-        if let Some(kind) = node.child_by_field_name("type") {
+        if let Some(kind) = node.child_by_field_id(field::TYPE) {
             syntax::walk(kind, |n| {
                 // An exact count (`*3`) or a condition is left alone.
-                if n.kind() == "edge_repetition"
+                if n.kind_id() == kind::EDGE_REPETITION
                     && !syntax::named_children(n).iter().any(|b| {
-                        b.kind() == "repetition_bounds"
-                            && (b.child_by_field_name("exact").is_some()
-                                || b.child_by_field_name("condition")
+                        b.kind_id() == kind::REPETITION_BOUNDS
+                            && (b.child_by_field_id(field::EXACT).is_some()
+                                || b.child_by_field_id(field::CONDITION)
                                     .is_some()
                                 || self.same_bounds(*b))
                     })
@@ -692,19 +695,23 @@ impl<'s> Checker<'s, '_> {
         }
     }
 
-    /// Rules about the aliases of a SELECT block: HAVING, PER, and the
-    /// patterns of the FROM clause.
+    /// Rules on a SELECT block's aliases: HAVING, PER and FROM patterns.
     fn select_aliases(&mut self, node: Node) {
         let children = syntax::named_children(node);
         let Some(from) = children
             .iter()
-            .find(|c| c.kind() == "from_clause")
+            .find(|c| c.kind_id() == kind::FROM_CLAUSE)
         else {
             return;
         };
         let patterns: Vec<Node> = syntax::named_children(*from)
             .into_iter()
-            .filter(|c| matches!(c.kind(), "path_pattern" | "cypher_pattern"))
+            .filter(|c| {
+                matches!(
+                    c.kind_id(),
+                    kind::PATH_PATTERN | kind::CYPHER_PATTERN
+                )
+            })
             .collect();
         let vertices: Vec<Vec<Node>> = patterns
             .iter()
@@ -723,28 +730,26 @@ impl<'s> Checker<'s, '_> {
             .iter()
             .copied()
             .filter(|r| {
-                r.kind() == "identifier" && aliases.contains(&self.text(*r))
+                r.kind_id() == kind::IDENTIFIER
+                    && aliases.contains(&self.text(*r))
             })
             .collect();
         for clause in children
             .iter()
-            .filter(|c| c.kind() == "post_accum_clause")
+            .filter(|c| c.kind_id() == kind::POST_ACCUM_CLAUSE)
         {
             self.non_binding_post_accum(*clause, &aliases, &selected);
         }
-        // HAVING: "The SELECT block selects src, but the HAVING clause uses tgt"
-        // (SEM-50, the HAVING section of the SELECT statement: "The condition
-        // in a HAVING clause is applied to each vertex in the SELECT set").
-        // Only a block selecting a single vertex alias is judged.
+        // HAVING applies to the selected vertices: judged for one alias only.
         if let ([one], 1, None, Some(having)) = (
             selected.as_slice(),
             results.len(),
             children
                 .iter()
-                .find(|c| c.kind() == "group_by_clause"),
+                .find(|c| c.kind_id() == kind::GROUP_BY_CLAUSE),
             children
                 .iter()
-                .find(|c| c.kind() == "having_clause"),
+                .find(|c| c.kind_id() == kind::HAVING_CLAUSE),
         ) {
             let name = self.text(*one).to_string();
             for object in member_objects(*having) {
@@ -762,21 +767,17 @@ impl<'s> Checker<'s, '_> {
                 }
             }
         }
-        // PER: "If the PER Clause is used in a SELECT query block, then the
-        // vertex aliases used in the SELECT, ACCUM, and POST-ACCUM clauses must
-        // be confined to the aliases that appear in the PER clause." (PER
-        // clause page of the pattern matching tutorial; the illegal examples
-        // are SELECT t, ACCUM t.@cnt and POST-ACCUM t.@cnt with t missing.)
+        // With PER, SELECT and the ACCUM clauses may only use PER's aliases.
         let per = children
             .iter()
             .copied()
             .chain(
                 children
                     .iter()
-                    .filter(|c| c.kind() == "accum_clause")
+                    .filter(|c| c.kind_id() == kind::ACCUM_CLAUSE)
                     .flat_map(|a| syntax::named_children(*a)),
             )
-            .find(|c| c.kind() == "per_clause");
+            .find(|c| c.kind_id() == kind::PER_CLAUSE);
         let Some(per) = per else {
             return;
         };
@@ -786,7 +787,10 @@ impl<'s> Checker<'s, '_> {
             .collect();
         let mut uses = selected;
         for clause in children.iter().filter(|c| {
-            matches!(c.kind(), "accum_clause" | "post_accum_clause")
+            matches!(
+                c.kind_id(),
+                kind::ACCUM_CLAUSE | kind::POST_ACCUM_CLAUSE
+            )
         }) {
             uses.extend(
                 member_objects(*clause)
@@ -805,23 +809,24 @@ impl<'s> Checker<'s, '_> {
         }
     }
 
-    /// A POST-ACCUM clause that uses no vertex alias of the FROM clause binds
-    /// to none: the query compiler warns that such clauses "will be deprecated
-    /// soon" and asks for `POST-ACCUM (selectAlias) ...` (WARN-7).
+    /// A POST-ACCUM using no FROM alias binds to none; the compiler warns.
     fn non_binding_post_accum(
         &mut self,
         clause: Node,
         aliases: &[&str],
         selected: &[Node],
     ) {
-        if aliases.is_empty() || clause.child_by_field_name("alias").is_some()
+        if aliases.is_empty()
+            || clause
+                .child_by_field_id(field::ALIAS)
+                .is_some()
         {
             return;
         }
         let mut binds = false;
         syntax::walk(clause, |n| {
-            binds |=
-                n.kind() == "identifier" && aliases.contains(&self.text(n))
+            binds |= n.kind_id() == kind::IDENTIFIER
+                && aliases.contains(&self.text(n))
         });
         let Some(keyword) = clause.child(0).filter(|_| !binds) else {
             return;
@@ -848,14 +853,8 @@ impl<'s> Checker<'s, '_> {
         self.out.push(d);
     }
 
-    /// Conjunctive patterns: "If the match tables of the patterns in a FROM
-    /// clause can be naturally joined into one match table, then the FROM
-    /// clause has a valid CPM input. Otherwise, the FROM clause has an invalid
-    /// pattern input list." ("an invalid CPM, since the two patterns do not
-    /// share any vertex variables, they cannot be naturally joined", the
-    /// conjunctive pattern matching page.) Judged only when every pattern has
-    /// an edge (lists of plain vertex sets are another form) and every vertex
-    /// has an alias, so that what is shared is known.
+    /// FROM patterns that share no vertex alias cannot be joined. Judged when
+    /// every pattern has an edge and every vertex an alias.
     fn disjoint_patterns(
         &mut self,
         patterns: &[Node],
@@ -908,15 +907,14 @@ impl<'s> Checker<'s, '_> {
         }
     }
 
-    /// `LIMIT k OFFSET j` skips results in a known order only; the query
-    /// compiler rejects OFFSET without ORDER BY.
+    /// OFFSET without ORDER BY: the compiler rejects it.
     fn offset_without_order(&mut self, node: Node) {
         let Some(offset) = syntax::child_of_kind(node, "OFFSET") else {
             return;
         };
         let select = node
             .parent()
-            .filter(|p| p.kind() == "select_statement");
+            .filter(|p| p.kind_id() == kind::SELECT_STATEMENT);
         if select.is_some_and(|s| !syntax::has_child(s, "order_by_clause")) {
             self.report(
                 offset,
@@ -936,11 +934,11 @@ impl<'s> Checker<'s, '_> {
         };
         for declarator in syntax::named_children(node)
             .into_iter()
-            .filter(|c| c.kind() == "accumulator_declarator")
+            .filter(|c| c.kind_id() == kind::ACCUMULATOR_DECLARATOR)
         {
             if let Some(name) = declarator
-                .child_by_field_name("name")
-                .filter(|n| n.kind() == "local_accumulator")
+                .child_by_field_id(field::NAME)
+                .filter(|n| n.kind_id() == kind::LOCAL_ACCUMULATOR)
             {
                 self.report(
                     name,
@@ -955,9 +953,9 @@ impl<'s> Checker<'s, '_> {
     fn virtual_edge(&mut self, node: Node) {
         let at_top_level = node
             .parent()
-            .is_some_and(|p| p.kind() == "query_body");
+            .is_some_and(|p| p.kind_id() == kind::QUERY_BODY);
         let name = node
-            .child_by_field_name("name")
+            .child_by_field_id(field::NAME)
             .unwrap_or(node);
         if !at_top_level {
             self.report(
@@ -967,10 +965,10 @@ impl<'s> Checker<'s, '_> {
                 "Virtual edge types can only be declared at the top level of a query body".into(),
             );
         }
-        if let Some(attributes) = node.child_by_field_name("attributes") {
+        if let Some(attributes) = node.child_by_field_id(field::ATTRIBUTES) {
             for discriminator in syntax::named_children(attributes)
                 .into_iter()
-                .filter(|c| c.kind() == "discriminator")
+                .filter(|c| c.kind_id() == kind::DISCRIMINATOR)
             {
                 self.report(
                     discriminator,
@@ -982,25 +980,25 @@ impl<'s> Checker<'s, '_> {
         }
     }
 
-    /// A virtual edge type cannot share an edge pattern with other edge types.
+    /// A virtual edge type cannot share an edge pattern with other types.
     fn mixed_virtual_edges(&mut self, node: Node) {
         let names: Vec<Node> = match node.kind() {
             "relationship_detail" => syntax::children_by_field(node, "type")
                 .into_iter()
-                .filter(|t| t.kind() == "identifier")
+                .filter(|t| t.kind_id() == kind::IDENTIFIER)
                 .collect(),
             // A nested alternation is checked with the outermost one.
             _ if syntax::ancestors(node)
-                .take_while(|a| a.kind() != "edge_pattern")
-                .any(|a| a.kind() == "edge_alternation") =>
+                .take_while(|a| a.kind_id() != kind::EDGE_PATTERN)
+                .any(|a| a.kind_id() == kind::EDGE_ALTERNATION) =>
             {
                 return;
             }
             _ => {
                 let mut names = Vec::new();
                 syntax::walk(node, |n| {
-                    if n.kind() == "edge_atom"
-                        && let Some(name) = n.child_by_field_name("name")
+                    if n.kind_id() == kind::EDGE_ATOM
+                        && let Some(name) = n.child_by_field_id(field::NAME)
                     {
                         names.push(name);
                     }
@@ -1044,10 +1042,10 @@ impl<'s> Checker<'s, '_> {
         let arguments = syntax::children_by_field(node, "argument");
         self.type_arguments(node, &kind, &arguments);
         if kind == "listaccum" {
-            // "ListAccum is the only accumulator type that can be nested within ListAccum"
+            // Only a ListAccum may be nested in a ListAccum.
             for argument in arguments
                 .iter()
-                .filter(|a| a.kind() == "accumulator_type")
+                .filter(|a| a.kind_id() == kind::ACCUMULATOR_TYPE)
             {
                 if !is_list_accum(*argument, self) {
                     self.report(
@@ -1064,7 +1062,7 @@ impl<'s> Checker<'s, '_> {
             "groupbyaccum" => {
                 for argument in arguments
                     .iter()
-                    .filter(|a| a.kind() != "group_by_field")
+                    .filter(|a| a.kind_id() != kind::GROUP_BY_FIELD)
                 {
                     self.report(
                         *argument,
@@ -1076,10 +1074,10 @@ impl<'s> Checker<'s, '_> {
                 }
             }
             "mapaccum" => {
-                // "MapAccum<SetAccum<INT>, INT> # illegal" (querying/accumulators, Nested Accumulators)
+                // A map key cannot be an accumulator.
                 if let Some(key) = arguments
                     .first()
-                    .filter(|k| k.kind() == "accumulator_type")
+                    .filter(|k| k.kind_id() == kind::ACCUMULATOR_TYPE)
                 {
                     self.report(
                         *key,
@@ -1089,7 +1087,7 @@ impl<'s> Checker<'s, '_> {
                     );
                 }
                 let heap_value = arguments.get(1).is_some_and(|value| {
-                    value.kind() == "accumulator_type"
+                    value.kind_id() == kind::ACCUMULATOR_TYPE
                         && syntax::field_text(
                             *value,
                             "kind",
@@ -1106,14 +1104,13 @@ impl<'s> Checker<'s, '_> {
                     );
                 }
             }
-            // "Only ListAccum, ArrayAccum, MapAccum, and GroupByAccum can contain other accumulators."
-            // (HeapAccum arguments are tuple types, never accumulator types.)
+            // Only List, Array, Map and GroupBy accumulators may nest others.
             "setaccum" | "bagaccum" => {
                 let name =
                     builtins::accumulator(&kind).map_or("", |a| a.name);
                 for argument in arguments
                     .iter()
-                    .filter(|a| a.kind() == "accumulator_type")
+                    .filter(|a| a.kind_id() == kind::ACCUMULATOR_TYPE)
                 {
                     self.report(
                         *argument,
@@ -1123,12 +1120,11 @@ impl<'s> Checker<'s, '_> {
                     );
                 }
             }
-            // "All accumulators, except HeapAccum, MapAccum, and GroupByAccum, can be used."
-            // (querying/accumulators, ArrayAccum)
+            // ArrayAccum holds any accumulator but Heap, Map and GroupBy.
             "arrayaccum" => {
                 for argument in arguments
                     .iter()
-                    .filter(|a| a.kind() == "accumulator_type")
+                    .filter(|a| a.kind_id() == kind::ACCUMULATOR_TYPE)
                 {
                     let element = syntax::field_text(
                         *argument,
@@ -1185,8 +1181,7 @@ impl<'s> Checker<'s, '_> {
                 (count != 1)
                     .then(|| format!("{name} takes one type argument, its {what} (`{name}<type>`), not {count}"))
             }
-            // "The data type of an AvgAccum variable is not declared" (also DeviationAccum).
-            // Only a warning: whether a compiler rejects `AvgAccum<DOUBLE>` is not documented.
+            // AvgAccum takes no type (a warning: rejection is undocumented).
             "avgaccum" | "deviationaccum" | "deviationpaccum" => {
                 if count > 0 {
                     self.untyped_accumulator(node, name);
@@ -1199,7 +1194,7 @@ impl<'s> Checker<'s, '_> {
                 }
                 None
             }
-            // `OrAccum`, `AndAccum`; `BitwiseOrAccum<128>` takes a bit length.
+            // `OrAccum`, `AndAccum`; `BitwiseOrAccum<128>` takes a length.
             _ if count > 1 => Some(format!("{name} takes at most one type argument, not {count}")),
             _ => None,
         };
@@ -1209,11 +1204,10 @@ impl<'s> Checker<'s, '_> {
         }
         for argument in arguments {
             if bitwise {
-                // `BitwiseAndAccum<128>` or `BitwiseAndAccum<len>` (a parameter).
-                // A warning: older references write only the bare `BitwiseOrAccum`.
+                // `BitwiseAndAccum<128>`; a warning: old docs omit the size.
                 if !matches!(
-                    argument.kind(),
-                    "integer" | "identifier" | "type_identifier"
+                    argument.kind_id(),
+                    kind::INTEGER | kind::IDENTIFIER | kind::TYPE_IDENTIFIER
                 ) {
                     let message = format!(
                         "{name} takes a bit length (a number or an INT parameter), not a type"
@@ -1225,7 +1219,7 @@ impl<'s> Checker<'s, '_> {
                         message,
                     );
                 }
-            } else if argument.kind() == "integer" {
+            } else if argument.kind_id() == kind::INTEGER {
                 let message = if matches!(kind, "oraccum" | "andaccum") {
                     format!(
                         "{name} takes no bit length; only BitwiseOrAccum and BitwiseAndAccum do"
@@ -1241,7 +1235,7 @@ impl<'s> Checker<'s, '_> {
                     "accumulator-type",
                     message,
                 );
-            } else if argument.kind() == "group_by_field"
+            } else if argument.kind_id() == kind::GROUP_BY_FIELD
                 && kind != "groupbyaccum"
             {
                 let message = format!(
@@ -1254,7 +1248,7 @@ impl<'s> Checker<'s, '_> {
                     message,
                 );
             } else if kind == "sumaccum" && !self.sums(*argument) {
-                // "operate on values of type INT, UINT, FLOAT, DOUBLE, or STRING only"
+                // Only INT, UINT, FLOAT, DOUBLE or STRING values.
                 let given =
                     type_of_type_node(*argument, self.snapshot.text())
                         .display();
@@ -1271,21 +1265,23 @@ impl<'s> Checker<'s, '_> {
         }
     }
 
-    /// Whether a SumAccum can hold values of the type `argument` (a TYPEDEF name is not judged).
+    /// Whether a SumAccum can hold `argument` (TYPEDEF names are not judged).
     fn sums(&self, argument: Node) -> bool {
-        match argument.kind() {
-            "primitive_type" => matches!(
+        match argument.kind_id() {
+            kind::PRIMITIVE_TYPE => matches!(
                 type_of_type_node(argument, self.snapshot.text()),
-                // `STRING COMPRESS` is listed too (and reported as deprecated).
+                // `STRING COMPRESS` too (reported as deprecated).
                 Ty::Primitive(p) if matches!(p.as_str(), "INT" | "UINT" | "FLOAT" | "DOUBLE") || p.starts_with("STRING")
             ),
-            "vertex_type" | "edge_type" | "collection_type"
-            | "accumulator_type" => false,
+            kind::VERTEX_TYPE
+            | kind::EDGE_TYPE
+            | kind::COLLECTION_TYPE
+            | kind::ACCUMULATOR_TYPE => false,
             _ => true,
         }
     }
 
-    /// `AvgAccum<DOUBLE>`: the type argument is not written; a quick fix removes it.
+    /// `AvgAccum<DOUBLE>`: the type is not written; a fix removes it.
     fn untyped_accumulator(&mut self, node: Node, name: &str) {
         let children = syntax::children(node);
         let (Some(open), Some(close)) = (
@@ -1318,16 +1314,17 @@ impl<'s> Checker<'s, '_> {
         self.out.push(d);
     }
 
-    /// The fields of `GroupByAccum<key, ..., accumulator, ...>`: keys first, at least one
-    /// of each, and distinct names (identifiers are case-sensitive). Whether the arguments
-    /// are complete enough to be checked one by one.
+    /// GroupByAccum fields: keys first, at least one of each, distinct names.
+    /// Whether the arguments are complete enough to check one by one.
     fn group_by_arguments(&mut self, node: Node, arguments: &[Node]) -> bool {
         let accumulators: Vec<bool> = arguments
             .iter()
             .map(|a| {
-                let ty = a.child_by_field_name("type").unwrap_or(*a);
-                ty.kind() == "accumulator_type"
-                    || (ty.kind() == "type_identifier"
+                let ty = a
+                    .child_by_field_id(field::TYPE)
+                    .unwrap_or(*a);
+                ty.kind_id() == kind::ACCUMULATOR_TYPE
+                    || (ty.kind_id() == kind::TYPE_IDENTIFIER
                         && self
                             .accumulator_typedef(
                                 self.text(ty),
@@ -1362,7 +1359,7 @@ impl<'s> Checker<'s, '_> {
         let mut seen = Vec::new();
         for field in arguments
             .iter()
-            .filter_map(|a| a.child_by_field_name("name"))
+            .filter_map(|a| a.child_by_field_id(field::NAME))
         {
             let name = self.text(field).to_string();
             if seen.contains(&name) {
@@ -1387,8 +1384,7 @@ impl<'s> Checker<'s, '_> {
             .map(|s| s.ty.clone())
     }
 
-    /// The innermost TYPEDEF of `kind` named `name` visible at `offset` (without listing
-    /// every visible symbol: this runs for each accumulator write).
+    /// The innermost TYPEDEF of `kind` named `name` visible at `offset`.
     fn visible_type(
         &self,
         kind: SymbolKind,
@@ -1415,8 +1411,7 @@ impl<'s> Checker<'s, '_> {
             })
     }
 
-    /// `ty` with the TYPEDEF'd accumulator names among its arguments (which read as
-    /// tuple names) replaced by their accumulator types.
+    /// `ty` with TYPEDEF'd accumulator names resolved to their types.
     fn resolved(&self, ty: &Ty, offset: usize) -> Ty {
         match ty {
             Ty::Tuple(name) => self
@@ -1432,7 +1427,7 @@ impl<'s> Checker<'s, '_> {
         }
     }
 
-    /// Whether `name` is a tuple type visible at `offset` (or declared in the workspace).
+    /// Whether `name` is a tuple type at `offset` or in the workspace.
     fn is_tuple_type(&self, name: &str, offset: usize) -> bool {
         self.visible_type(SymbolKind::TupleType, name, offset)
             .is_some()
@@ -1442,46 +1437,46 @@ impl<'s> Checker<'s, '_> {
                 .declares(&[SymbolKind::TupleType], name)
     }
 
-    /// The value written to an accumulator with `+=` or `=` (also in ACCUM and POST-ACCUM,
-    /// and the initial value of a declaration), judged against the accumulator's type.
+    /// A value written to an accumulator, judged against its type.
     fn accumulator_input(&mut self, node: Node) {
         if node.has_error() {
             return;
         }
-        let (ty, value) = if node.kind() == "accumulator_declarator" {
+        let (ty, value) = if node.kind_id() == kind::ACCUMULATOR_DECLARATOR {
             // ArrayAccum elements are written through subscripts.
             if syntax::has_child(node, "array_dimension") {
                 return;
             }
             let ty = node
                 .parent()
-                .and_then(|d| d.child_by_field_name("type"))
-                // `TYPEDEF MapAccum<...> Counts; Counts @@c = ...;` resolves below.
+                .and_then(|d| d.child_by_field_id(field::TYPE))
+                // A TYPEDEF'd accumulator type resolves below.
                 .filter(|t| {
-                    matches!(t.kind(), "accumulator_type" | "type_identifier")
+                    matches!(
+                        t.kind_id(),
+                        kind::ACCUMULATOR_TYPE | kind::TYPE_IDENTIFIER
+                    )
                 })
                 .map(|t| type_of_type_node(t, self.snapshot.text()));
-            (ty, node.child_by_field_name("value"))
+            (ty, node.child_by_field_id(field::VALUE))
         } else {
             let ty = node
-                .child_by_field_name("left")
-                .filter(|left| left.kind() != "identifier")
+                .child_by_field_id(field::LEFT)
+                .filter(|left| left.kind_id() != kind::IDENTIFIER)
                 .and_then(|left| self.operand_type(left));
-            (ty, node.child_by_field_name("right"))
+            (ty, node.child_by_field_id(field::RIGHT))
         };
         if let (Some(ty), Some(value)) = (ty, value) {
             let ty = self.resolved(&ty, node.start_byte());
-            let assigned = node.kind() == "accumulator_declarator"
+            let assigned = node.kind_id() == kind::ACCUMULATOR_DECLARATOR
                 || node
-                    .child_by_field_name("operator")
+                    .child_by_field_id(field::OPERATOR)
                     .is_some_and(|o| o.kind() == "=");
             self.accumulator_value(value, &ty, assigned);
         }
     }
 
-    /// `value` given to an accumulator of type `ty` (for a pair `(k -> v)`, `v` is
-    /// accumulated into the accumulator stored for `k`); `assigned` for `=` and an
-    /// initial value rather than `+=`.
+    /// `value` given to an accumulator `ty` (`assigned`: `=`, not `+=`).
     fn accumulator_value(&mut self, value: Node, ty: &Ty, assigned: bool) {
         let Ty::Accumulator(kind, args) = ty else {
             return;
@@ -1509,7 +1504,10 @@ impl<'s> Checker<'s, '_> {
             _ => {
                 let inner = unparenthesized(value);
                 let what = capitalized(&with_article(&ty.display()));
-                if matches!(inner.kind(), "key_value_pair" | "map_literal") {
+                if matches!(
+                    inner.kind_id(),
+                    kind::KEY_VALUE_PAIR | kind::MAP_LITERAL
+                ) {
                     let message = format!(
                         "{what} takes no `(key -> value)` pairs; only MapAccum and GroupByAccum do"
                     );
@@ -1528,9 +1526,13 @@ impl<'s> Checker<'s, '_> {
                         kind.as_str(),
                         "SetAccum" | "BagAccum" | "ListAccum" | "ArrayAccum"
                     );
-                if single && matches!(inner.kind(), "tuple" | "list_literal")
+                if single
+                    && matches!(
+                        inner.kind_id(),
+                        kind::TUPLE | kind::LIST_LITERAL
+                    )
                 {
-                    let shape = if inner.kind() == "tuple" {
+                    let shape = if inner.kind_id() == kind::TUPLE {
                         "a tuple"
                     } else {
                         "a list"
@@ -1570,7 +1572,7 @@ impl<'s> Checker<'s, '_> {
         }
     }
 
-    /// The input of a MapAccum (one key, one value) or a GroupByAccum (its keys and accumulators).
+    /// The input of a MapAccum or GroupByAccum: keys and values.
     fn pair_input(
         &mut self,
         value: Node,
@@ -1606,8 +1608,8 @@ impl<'s> Checker<'s, '_> {
             shape,
         };
         let (what, shape) = (&pairs.what, &pairs.shape);
-        match inner.kind() {
-            "key_value_pair" => {
+        match inner.kind_id() {
+            kind::KEY_VALUE_PAIR => {
                 let arrow = syntax::child_of_kind(inner, "->");
                 let Some(arrow) = arrow else { return };
                 let (before, after): (Vec<Node>, Vec<Node>) =
@@ -1616,21 +1618,21 @@ impl<'s> Checker<'s, '_> {
                         .partition(|c| c.end_byte() <= arrow.start_byte());
                 self.pair(inner, &before, &after, &pairs);
             }
-            "map_literal" => {
+            kind::MAP_LITERAL => {
                 for entry in syntax::code_children(inner)
                     .into_iter()
-                    .filter(|e| e.kind() == "map_entry")
+                    .filter(|e| e.kind_id() == kind::MAP_ENTRY)
                 {
                     let (Some(key), Some(item)) = (
-                        entry.child_by_field_name("key"),
-                        entry.child_by_field_name("value"),
+                        entry.child_by_field_id(field::KEY),
+                        entry.child_by_field_id(field::VALUE),
                     ) else {
                         continue;
                     };
                     self.pair(entry, &[key], &[item], &pairs);
                 }
             }
-            "tuple" => {
+            kind::TUPLE => {
                 let elements = syntax::code_children(inner);
                 let message = format!(
                     "{what} takes {shape} pairs, not a tuple; separate the keys from the values with `->`"
@@ -1669,18 +1671,18 @@ impl<'s> Checker<'s, '_> {
                 }
                 self.out.push(d);
             }
-            // `(k - v)`, `(k > v)` or `(k >> v)`: the `->` lost or mistyped a character.
-            "binary_expression"
+            // `(k - v)`, `(k > v)`, `(k >> v)`: a mistyped `->`.
+            kind::BINARY_EXPRESSION
                 if inner.id() != value.id()
                     && keys.len() == 1
                     && values.len() == 1
                     && inner
-                        .child_by_field_name("operator")
+                        .child_by_field_id(field::OPERATOR)
                         .is_some_and(|o| {
                             matches!(o.kind(), "-" | ">" | ">>")
                         }) =>
             {
-                let Some(operator) = inner.child_by_field_name("operator")
+                let Some(operator) = inner.child_by_field_id(field::OPERATOR)
                 else {
                     return;
                 };
@@ -1705,7 +1707,7 @@ impl<'s> Checker<'s, '_> {
                 );
                 self.out.push(d);
             }
-            "list_literal" => {
+            kind::LIST_LITERAL => {
                 self.report(
                     value,
                     severity::ERROR,
@@ -1719,11 +1721,9 @@ impl<'s> Checker<'s, '_> {
                 {
                     return;
                 }
-                // A literal, or a value of a known scalar kind (identifiers of unknown or
-                // map type and calls are left alone).
+                // Only literals and values of a known scalar kind.
                 if self.value_kind(inner).is_some() {
-                    // One error: no comparison or arithmetic warning on `p >= 1` or
-                    // `(p >= 1)` besides it.
+                    // One error: no other warning on `p >= 1`.
                     self.arrow_typos.insert(inner.id());
                     self.report(
                         value,
@@ -1736,9 +1736,8 @@ impl<'s> Checker<'s, '_> {
         }
     }
 
-    /// A variable or accumulator of type `source` given to the MapAccum or GroupByAccum `ty`:
-    /// another map is merged (its keys must fit), anything else that holds several
-    /// values is wrong. Whether it was judged.
+    /// A collection given to a MapAccum or GroupByAccum `ty`: another map
+    /// merges (its keys must fit); others are wrong. Whether it was judged.
     fn pair_source(
         &mut self,
         value: Node,
@@ -1849,9 +1848,7 @@ impl<'s> Checker<'s, '_> {
         }
     }
 
-    /// A key or a plain value of a map: a value of another kind than declared (a number
-    /// where a string is declared, a vertex or a set where a string is, a number where a
-    /// tuple is), and a pair where no accumulator takes one.
+    /// A map key or plain value of the wrong kind, or an unexpected pair.
     fn scalar_input(
         &mut self,
         node: Node,
@@ -1860,7 +1857,8 @@ impl<'s> Checker<'s, '_> {
         role: &str,
     ) {
         let inner = unparenthesized(node);
-        if matches!(inner.kind(), "key_value_pair" | "map_literal") {
+        if matches!(inner.kind_id(), kind::KEY_VALUE_PAIR | kind::MAP_LITERAL)
+        {
             if matches!(declared, Ty::Primitive(_)) {
                 let message = format!(
                     "The {role} of {} are {}, not `(key -> value)` pairs",
@@ -1905,23 +1903,22 @@ impl<'s> Checker<'s, '_> {
         }
     }
 
-    /// The declared type of a variable, parameter, alias or accumulator (`@@a`, `@a`, `t.@a`).
+    /// The declared type of a variable, parameter, alias or accumulator.
     fn operand_type(&self, node: Node) -> Option<Ty> {
-        let symbol = match node.kind() {
-            "identifier" | "global_accumulator" | "local_accumulator" => {
-                self.symbol_of(node)
-            }
-            "member_expression" => node
-                .child_by_field_name("property")
-                .filter(|p| p.kind() == "local_accumulator")
+        let symbol = match node.kind_id() {
+            kind::IDENTIFIER
+            | kind::GLOBAL_ACCUMULATOR
+            | kind::LOCAL_ACCUMULATOR => self.symbol_of(node),
+            kind::MEMBER_EXPRESSION => node
+                .child_by_field_id(field::PROPERTY)
+                .filter(|p| p.kind_id() == kind::LOCAL_ACCUMULATOR)
                 .and_then(|p| self.symbol_of(p)),
             _ => None,
         }?;
         Some(self.resolved(&symbol.ty, node.start_byte()))
     }
 
-    /// What a value certainly is: a number, string or BOOL, or a vertex, edge, collection or
-    /// accumulator that holds several values.
+    /// What a value certainly is: a scalar, or something of several values.
     fn given(&self, node: Node) -> Option<Given> {
         if let Some(kind) = self.value_kind(node) {
             return Some(Given::Kind(kind));
@@ -1931,8 +1928,7 @@ impl<'s> Checker<'s, '_> {
             | Ty::Edge(_)
             | Ty::VertexSet(_)
             | Ty::Collection(..)) => Some(Given::Other(described_type(&ty))),
-            // Only accumulators that certainly hold several values (`MaxAccum<VERTEX>` reads
-            // as one vertex, `MaxAccum<tuple>` as one tuple).
+            // Only accumulators that surely hold several values.
             ty @ Ty::Accumulator(..) if holds_several_values(&ty) => {
                 Some(Given::Other(described_type(&ty)))
             }
@@ -1940,21 +1936,21 @@ impl<'s> Checker<'s, '_> {
         }
     }
 
-    /// The keys given to `get`, `containsKey` and `remove` of a MapAccum or GroupByAccum.
+    /// Keys given to `get`, `containsKey` and `remove` of a map accumulator.
     fn accumulator_method(&mut self, node: Node) {
         let (Some(function), Some(arguments)) = (
-            node.child_by_field_name("function"),
-            node.child_by_field_name("arguments"),
+            node.child_by_field_id(field::FUNCTION),
+            node.child_by_field_id(field::ARGUMENTS),
         ) else {
             return;
         };
         let (Some(object), Some(method)) = (
             function
-                .child_by_field_name("object")
-                .filter(|_| function.kind() == "member_expression"),
+                .child_by_field_id(field::OBJECT)
+                .filter(|_| function.kind_id() == kind::MEMBER_EXPRESSION),
             function
-                .child_by_field_name("property")
-                .filter(|p| p.kind() == "identifier"),
+                .child_by_field_id(field::PROPERTY)
+                .filter(|p| p.kind_id() == kind::IDENTIFIER),
         ) else {
             return;
         };
@@ -1972,7 +1968,7 @@ impl<'s> Checker<'s, '_> {
             return;
         };
         let keys: Vec<Ty> = match kind.as_str() {
-            // The count of a MapAccum's keys is checked with the other built-in methods.
+            // The key count is checked with the other built-in methods.
             "MapAccum" => args.first().cloned().into_iter().collect(),
             "GroupByAccum" => args
                 .iter()
@@ -2022,19 +2018,18 @@ impl<'s> Checker<'s, '_> {
         }
     }
 
-    /// `FOREACH (k, v) IN @@map`: a MapAccum or MAP binds a key and a value; a set, bag or
-    /// list of plain values one element.
+    /// `FOREACH (k, v) IN @@map`: maps bind a key and value, others one.
     fn foreach_variables(&mut self, node: Node) {
         let (Some(variables), Some(collection)) = (
-            node.child_by_field_name("variable"),
-            node.child_by_field_name("collection"),
+            node.child_by_field_id(field::VARIABLE),
+            node.child_by_field_id(field::COLLECTION),
         ) else {
             return;
         };
-        let count = if variables.kind() == "foreach_variables" {
+        let count = if variables.kind_id() == kind::FOREACH_VARIABLES {
             syntax::named_children(variables)
                 .into_iter()
-                .filter(|c| c.kind() == "identifier")
+                .filter(|c| c.kind_id() == kind::IDENTIFIER)
                 .count()
         } else {
             1
@@ -2112,10 +2107,7 @@ impl<'s> Checker<'s, '_> {
         }
     }
 
-    /// openCypher patterns need `SYNTAX V3`: a query that declares V1 or V2 is
-    /// rejected. Queries without a declaration are not judged: the 4.2 and 4.3
-    /// reference writes patterns such as `FROM (v:Post)` in default-syntax
-    /// queries. Reported once per query.
+    /// openCypher patterns need SYNTAX V3 (only V1/V2 queries are judged).
     fn cypher_syntax(&mut self, node: Node, context: &Context) {
         let Some(mode) = context
             .query
@@ -2135,12 +2127,10 @@ impl<'s> Checker<'s, '_> {
         );
     }
 
-    /// A parenthesized condition cannot be the left side of a comparison: the
-    /// query parser rejects `(a < b AND c) != (d < e)` at the operator, and then
-    /// reports every later line of the statement too. `>` is left out, as the
-    /// parser lists it among the tokens it accepts there.
+    /// A parenthesized condition cannot be compared (`(a < b) != c`); `>` is
+    /// left out, as the parser accepts it there.
     fn compared_condition(&mut self, node: Node) {
-        let Some(operator) = node.child_by_field_name("operator") else {
+        let Some(operator) = node.child_by_field_id(field::OPERATOR) else {
             return;
         };
         if !matches!(
@@ -2150,15 +2140,15 @@ impl<'s> Checker<'s, '_> {
             return;
         }
         let Some(left) = node
-            .child_by_field_name("left")
-            .filter(|l| l.kind() == "parenthesized_expression")
+            .child_by_field_id(field::LEFT)
+            .filter(|l| l.kind_id() == kind::PARENTHESIZED_EXPRESSION)
         else {
             return;
         };
         let inner = unparenthesized(left);
-        let condition = match inner.kind() {
-            "binary_expression" => inner
-                .child_by_field_name("operator")
+        let condition = match inner.kind_id() {
+            kind::BINARY_EXPRESSION => inner
+                .child_by_field_id(field::OPERATOR)
                 .is_some_and(|o| {
                     matches!(
                         o.kind(),
@@ -2168,11 +2158,13 @@ impl<'s> Checker<'s, '_> {
                         "AND" | "OR"
                     )
                 }),
-            "unary_expression" => inner
-                .child_by_field_name("operator")
+            kind::UNARY_EXPRESSION => inner
+                .child_by_field_id(field::OPERATOR)
                 .is_some_and(|o| self.text(o).eq_ignore_ascii_case("NOT")),
-            "in_expression" | "like_expression" | "is_expression"
-            | "between_expression" => true,
+            kind::IN_EXPRESSION
+            | kind::LIKE_EXPRESSION
+            | kind::IS_EXPRESSION
+            | kind::BETWEEN_EXPRESSION => true,
             _ => false,
         };
         if condition {
@@ -2189,25 +2181,24 @@ impl<'s> Checker<'s, '_> {
         }
     }
 
-    /// The query compiler rejects a method called on a parenthesized set
-    /// expression, `(@@a MINUS @@b).size()`; the result has to be stored first.
+    /// No method on a parenthesized set expression, `(@@a MINUS @@b).size()`.
     fn set_expression_method(&mut self, node: Node) {
         let Some(function) = node
-            .child_by_field_name("function")
-            .filter(|f| f.kind() == "member_expression")
+            .child_by_field_id(field::FUNCTION)
+            .filter(|f| f.kind_id() == kind::MEMBER_EXPRESSION)
         else {
             return;
         };
         let Some(object) = function
-            .child_by_field_name("object")
-            .filter(|o| o.kind() == "parenthesized_expression")
+            .child_by_field_id(field::OBJECT)
+            .filter(|o| o.kind_id() == kind::PARENTHESIZED_EXPRESSION)
         else {
             return;
         };
         let inner = unparenthesized(object);
         let Some(operator) = inner
-            .child_by_field_name("operator")
-            .filter(|_| inner.kind() == "binary_expression")
+            .child_by_field_id(field::OPERATOR)
+            .filter(|_| inner.kind_id() == kind::BINARY_EXPRESSION)
         else {
             return;
         };
@@ -2215,7 +2206,7 @@ impl<'s> Checker<'s, '_> {
         if !matches!(operator.as_str(), "UNION" | "INTERSECT" | "MINUS") {
             return;
         }
-        let Some(method) = function.child_by_field_name("property") else {
+        let Some(method) = function.child_by_field_id(field::PROPERTY) else {
             return;
         };
         let message = format!(
@@ -2230,9 +2221,9 @@ impl<'s> Checker<'s, '_> {
         );
     }
 
-    /// The query compiler warns about exact comparison of floating-point values.
+    /// The compiler warns about exact floating-point comparison.
     fn float_equality(&mut self, node: Node, mode: Mode) {
-        let Some(operator) = node.child_by_field_name("operator") else {
+        let Some(operator) = node.child_by_field_id(field::OPERATOR) else {
             return;
         };
         let equality =
@@ -2241,13 +2232,12 @@ impl<'s> Checker<'s, '_> {
             return;
         }
         let (Some(left), Some(right)) = (
-            node.child_by_field_name("left"),
-            node.child_by_field_name("right"),
+            node.child_by_field_id(field::LEFT),
+            node.child_by_field_id(field::RIGHT),
         ) else {
             return;
         };
-        // Whole numbers are exact in floating point: `x == 0`, and the
-        // `x == float_to_int(x)` test for a whole value, are reliable.
+        // Whole numbers are exact: `x == 0` and `x == floor(x)` are reliable.
         let exact = self.is_whole_literal(left)
             || self.is_whole_literal(right)
             || self.is_rounding_of(right, left)
@@ -2269,36 +2259,35 @@ impl<'s> Checker<'s, '_> {
 
     /// `0`, `-1`, `2.0`: a literal without a fractional part.
     fn is_whole_literal(&self, node: Node) -> bool {
-        match node.kind() {
-            "integer" => true,
-            "float" => self
+        match node.kind_id() {
+            kind::INTEGER => true,
+            kind::FLOAT => self
                 .text(node)
                 .parse::<f64>()
                 .is_ok_and(|v| v.fract() == 0.0 && v.abs() < 9e15),
-            "parenthesized_expression" => syntax::first_code_child(node)
+            kind::PARENTHESIZED_EXPRESSION => syntax::first_code_child(node)
                 .is_some_and(|inner| self.is_whole_literal(inner)),
-            "unary_expression" => {
-                node.child_by_field_name("operator")
+            kind::UNARY_EXPRESSION => {
+                node.child_by_field_id(field::OPERATOR)
                     .is_some_and(|o| o.kind() == "-")
                     && node
-                        .child_by_field_name("operand")
+                        .child_by_field_id(field::OPERAND)
                         .is_some_and(|inner| self.is_whole_literal(inner))
             }
             _ => false,
         }
     }
 
-    /// Whether `call` is `float_to_int(x)`, `floor(x)`, `ceil(x)`, `round(x)` or
-    /// `trunc(x)` of the same expression as `operand`.
+    /// Whether `call` rounds `operand` (`floor(x)`, `round(x)`, ...).
     fn is_rounding_of(&self, call: Node, operand: Node) -> bool {
         let mut call = call;
-        while call.kind() == "parenthesized_expression" {
+        while call.kind_id() == kind::PARENTHESIZED_EXPRESSION {
             let Some(inner) = syntax::first_code_child(call) else {
                 return false;
             };
             call = inner;
         }
-        if call.kind() != "call_expression" {
+        if call.kind_id() != kind::CALL_EXPRESSION {
             return false;
         }
         // A query or tuple type of that name replaces the built-in.
@@ -2314,14 +2303,14 @@ impl<'s> Checker<'s, '_> {
         let squash = |node: Node| -> String {
             let mut out = String::new();
             syntax::walk(node, |n| {
-                if n.child_count() == 0 && n.kind() != "comment" {
+                if n.child_count() == 0 && n.kind_id() != kind::COMMENT {
                     out.extend(self.text(n).split_whitespace());
                 }
             });
             out
         };
         let arguments = call
-            .child_by_field_name("arguments")
+            .child_by_field_id(field::ARGUMENTS)
             .map(syntax::code_children)
             .unwrap_or_default();
         arguments
@@ -2329,41 +2318,41 @@ impl<'s> Checker<'s, '_> {
             .is_some_and(|first| squash(*first) == squash(operand))
     }
 
-    /// Whether an expression has a FLOAT or DOUBLE value (iterative: operator
-    /// chains can be tens of thousands of terms long).
+    /// Whether an expression is FLOAT or DOUBLE (iterative: chains are long).
     fn is_float(&self, node: Node) -> bool {
         let mut pending = vec![node];
         while let Some(node) = pending.pop() {
-            let float = match node.kind() {
-                "float" => true,
-                "parenthesized_expression" => {
+            let float = match node.kind_id() {
+                kind::FLOAT => true,
+                kind::PARENTHESIZED_EXPRESSION => {
                     pending.extend(syntax::first_code_child(node));
                     false
                 }
-                "unary_expression" => {
-                    pending.extend(node.child_by_field_name("operand"));
+                kind::UNARY_EXPRESSION => {
+                    pending.extend(node.child_by_field_id(field::OPERAND));
                     false
                 }
-                "binary_expression" => {
+                kind::BINARY_EXPRESSION => {
                     let arithmetic = node
-                        .child_by_field_name("operator")
+                        .child_by_field_id(field::OPERATOR)
                         .is_some_and(|o| {
                             matches!(o.kind(), "+" | "-" | "*" | "/")
                         });
                     if arithmetic {
-                        pending.extend(node.child_by_field_name("left"));
-                        pending.extend(node.child_by_field_name("right"));
+                        pending.extend(node.child_by_field_id(field::LEFT));
+                        pending.extend(node.child_by_field_id(field::RIGHT));
                     }
                     false
                 }
-                "identifier" | "global_accumulator" | "local_accumulator" => {
-                    self.symbol_of(node)
-                        .is_some_and(|s| is_float_type(&s.ty))
-                }
-                "member_expression" => node
-                    .child_by_field_name("property")
+                kind::IDENTIFIER
+                | kind::GLOBAL_ACCUMULATOR
+                | kind::LOCAL_ACCUMULATOR => self
+                    .symbol_of(node)
+                    .is_some_and(|s| is_float_type(&s.ty)),
+                kind::MEMBER_EXPRESSION => node
+                    .child_by_field_id(field::PROPERTY)
                     .is_some_and(|p| self.is_float_member(p)),
-                "call_expression" => {
+                kind::CALL_EXPRESSION => {
                     self.callee(node).is_some_and(|callee| {
                         match callee {
                             // The type of its RETURNS clause.
@@ -2392,10 +2381,9 @@ impl<'s> Checker<'s, '_> {
             })
     }
 
-    /// The declared types of a member: the accumulator or local variable, or
-    /// the attribute in every type that declares it. `None` when unknown.
+    /// The declared types of a member, `None` when unknown.
     fn member_types(&self, property: Node) -> Option<Vec<Ty>> {
-        if property.kind() == "local_accumulator" {
+        if property.kind_id() == kind::LOCAL_ACCUMULATOR {
             return self
                 .symbol_of(property)
                 .map(|s| vec![s.ty.clone()]);
@@ -2421,8 +2409,8 @@ impl<'s> Checker<'s, '_> {
     /// What a call by plain name, `name(...)`, calls.
     fn callee(&self, call: Node) -> Option<Callee<'s>> {
         let function = call
-            .child_by_field_name("function")
-            .filter(|f| f.kind() == "identifier")?;
+            .child_by_field_id(field::FUNCTION)
+            .filter(|f| f.kind_id() == kind::IDENTIFIER)?;
         resolve::callee(self.snapshot, function)
     }
 
@@ -2431,9 +2419,7 @@ impl<'s> Checker<'s, '_> {
         let Callee::Query(query) = self.callee(call)? else {
             return None;
         };
-        // Only a file with a syntax error can have a call inside code the parser gave
-        // up on. (`Node::parent` costs the depth of the node, so the walk is capped
-        // and skipped for clean files: it is quadratic on a long chain of calls.)
+        // Only broken files need this; capped, as `parent()` costs depth.
         if self.snapshot.root().has_error() {
             let mut ancestors = syntax::self_and_ancestors(call);
             if ancestors
@@ -2448,26 +2434,25 @@ impl<'s> Checker<'s, '_> {
         (!query.in_error).then_some(query)
     }
 
-    /// A subquery call whose value is used where the query returns none, and
-    /// arguments of certain kind that the parameter cannot take.
+    /// Subquery calls: a missing return value, and unfit arguments.
     fn subquery_call(&mut self, node: Node) {
         let Some(query) = self.user_query(node) else {
             return;
         };
-        let Some(function) = node.child_by_field_name("function") else {
+        let Some(function) = node.child_by_field_id(field::FUNCTION) else {
             return;
         };
-        let used_as_value = node
-            .parent()
-            .is_some_and(|p| match p.kind() {
-                "variable_declarator" => {
-                    p.child_by_field_name("value") == Some(node)
-                }
-                "assignment_statement" => {
-                    p.child_by_field_name("right") == Some(node)
-                }
-                _ => false,
-            });
+        let used_as_value =
+            node.parent()
+                .is_some_and(|p| match p.kind_id() {
+                    kind::VARIABLE_DECLARATOR => {
+                        p.child_by_field_id(field::VALUE) == Some(node)
+                    }
+                    kind::ASSIGNMENT_STATEMENT => {
+                        p.child_by_field_id(field::RIGHT) == Some(node)
+                    }
+                    _ => false,
+                });
         if query.returns.is_none() && used_as_value {
             let message = format!(
                 "Query `{}` has no RETURNS clause, so it returns no value",
@@ -2476,14 +2461,14 @@ impl<'s> Checker<'s, '_> {
             self.report(node, severity::WARNING, "type-mismatch", message);
         }
         let Some(arguments) = node
-            .child_by_field_name("arguments")
+            .child_by_field_id(field::ARGUMENTS)
             .filter(|a| !a.has_error())
         else {
             return;
         };
         let values = syntax::code_children(arguments);
         for (value, param) in values.into_iter().zip(&query.params) {
-            // Literals are judged by the `argument-type` check of the query call.
+            // The `argument-type` check judges literals.
             if resolve::literal_argument(value).is_some() {
                 continue;
             }
@@ -2522,18 +2507,18 @@ impl<'s> Checker<'s, '_> {
 
     /// What kind of value an expression certainly has, when that is known.
     fn value_kind(&self, node: Node) -> Option<ValueKind> {
-        match node.kind() {
-            "integer" | "float" => Some(ValueKind::Number),
-            "string" => Some(ValueKind::Text),
-            "boolean" => Some(ValueKind::Bool),
-            "parenthesized_expression" => syntax::first_code_child(node)
+        match node.kind_id() {
+            kind::INTEGER | kind::FLOAT => Some(ValueKind::Number),
+            kind::STRING => Some(ValueKind::Text),
+            kind::BOOLEAN => Some(ValueKind::Bool),
+            kind::PARENTHESIZED_EXPRESSION => syntax::first_code_child(node)
                 .and_then(|inner| self.value_kind(inner)),
-            "unary_expression" => {
+            kind::UNARY_EXPRESSION => {
                 let operand = node
-                    .child_by_field_name("operand")
+                    .child_by_field_id(field::OPERAND)
                     .and_then(|o| self.value_kind(o));
                 match node
-                    .child_by_field_name("operator")
+                    .child_by_field_id(field::OPERATOR)
                     .map(|o| o.kind())
                 {
                     Some("-") => operand.filter(|k| *k == ValueKind::Number),
@@ -2542,9 +2527,9 @@ impl<'s> Checker<'s, '_> {
                     _ => None,
                 }
             }
-            "binary_expression" => {
+            kind::BINARY_EXPRESSION => {
                 let operator = node
-                    .child_by_field_name("operator")
+                    .child_by_field_id(field::OPERATOR)
                     .map(|o| o.kind())?;
                 let side = |field: &str| {
                     node.child_by_field_name(field)
@@ -2568,13 +2553,17 @@ impl<'s> Checker<'s, '_> {
                     _ => None,
                 }
             }
-            "in_expression" | "like_expression" | "is_expression"
-            | "between_expression" => Some(ValueKind::Bool),
-            "identifier" | "global_accumulator" | "local_accumulator" => self
+            kind::IN_EXPRESSION
+            | kind::LIKE_EXPRESSION
+            | kind::IS_EXPRESSION
+            | kind::BETWEEN_EXPRESSION => Some(ValueKind::Bool),
+            kind::IDENTIFIER
+            | kind::GLOBAL_ACCUMULATOR
+            | kind::LOCAL_ACCUMULATOR => self
                 .symbol_of(node)
                 .and_then(|s| value_kind_of(&s.ty)),
             // A subquery returning a plain number, string or BOOL.
-            "call_expression" => {
+            kind::CALL_EXPRESSION => {
                 let query = self.user_query(node)?;
                 match &query.ty {
                     Ty::Primitive(_) if query.returns.is_some() => {
@@ -2583,9 +2572,9 @@ impl<'s> Checker<'s, '_> {
                     _ => None,
                 }
             }
-            "member_expression" => {
-                let types =
-                    self.member_types(node.child_by_field_name("property")?)?;
+            kind::MEMBER_EXPRESSION => {
+                let types = self
+                    .member_types(node.child_by_field_id(field::PROPERTY)?)?;
                 let kinds: Vec<Option<ValueKind>> =
                     types.iter().map(value_kind_of).collect();
                 let first = (*kinds.first()?)?;
@@ -2598,16 +2587,14 @@ impl<'s> Checker<'s, '_> {
         }
     }
 
-    /// Mismatches that cannot be right: a string added to a numeric
-    /// accumulator or stored in a numeric or BOOL variable, and arithmetic on
-    /// a string. Only values of certain kind are judged.
-    fn type_checks(&mut self, node: Node, context: &Context) {
-        match node.kind() {
-            "assignment_statement" => {
+    /// Certain type mismatches: strings in numeric or BOOL places.
+    fn type_checks(&mut self, node: Node, kind: u16, context: &Context) {
+        match kind {
+            kind::ASSIGNMENT_STATEMENT => {
                 let (Some(left), Some(right), Some(operator)) = (
-                    node.child_by_field_name("left"),
-                    node.child_by_field_name("right"),
-                    node.child_by_field_name("operator"),
+                    node.child_by_field_id(field::LEFT),
+                    node.child_by_field_id(field::RIGHT),
+                    node.child_by_field_id(field::OPERATOR),
                 ) else {
                     return;
                 };
@@ -2615,7 +2602,7 @@ impl<'s> Checker<'s, '_> {
                     return;
                 }
                 if operator.kind() == "="
-                    && left.kind() == "identifier"
+                    && left.kind_id() == kind::IDENTIFIER
                     && let Some(symbol) = self.symbol_of(left).filter(|s| {
                         matches!(
                             s.kind,
@@ -2639,9 +2626,9 @@ impl<'s> Checker<'s, '_> {
                 }
                 // `+=` into an accumulator: see `accumulator_value`.
             }
-            "variable_declaration" => {
+            kind::VARIABLE_DECLARATION => {
                 let Some(declared) = node
-                    .child_by_field_name("type")
+                    .child_by_field_id(field::TYPE)
                     .map(|t| type_of_type_node(t, self.snapshot.text()))
                 else {
                     return;
@@ -2651,10 +2638,10 @@ impl<'s> Checker<'s, '_> {
                 };
                 for declarator in syntax::named_children(node)
                     .into_iter()
-                    .filter(|c| c.kind() == "variable_declarator")
+                    .filter(|c| c.kind_id() == kind::VARIABLE_DECLARATOR)
                 {
                     if let Some(value) =
-                        declarator.child_by_field_name("value")
+                        declarator.child_by_field_id(field::VALUE)
                         && self.value_kind(value) == Some(ValueKind::Text)
                     {
                         let message = format!(
@@ -2670,8 +2657,8 @@ impl<'s> Checker<'s, '_> {
                     }
                 }
             }
-            "binary_expression" => {
-                let Some(operator) = node.child_by_field_name("operator")
+            kind::BINARY_EXPRESSION => {
+                let Some(operator) = node.child_by_field_id(field::OPERATOR)
                 else {
                     return;
                 };
@@ -2679,7 +2666,7 @@ impl<'s> Checker<'s, '_> {
                 if self.arrow_typos.contains(&node.id()) {
                     return;
                 }
-                // `=` compares only in SYNTAX V3 queries (elsewhere it is an assignment).
+                // `=` compares only in SYNTAX V3 (else it assigns).
                 let v3_equals = operator.kind() == "="
                     && context.query.is_some_and(|mode| mode.v3)
                     && !syntax::self_and_ancestors(node)
@@ -2737,11 +2724,12 @@ impl<'s> Checker<'s, '_> {
                 }
             }
             // `-"a"`
-            "unary_expression" => {
+            kind::UNARY_EXPRESSION => {
                 if node
-                    .child_by_field_name("operator")
+                    .child_by_field_id(field::OPERATOR)
                     .is_some_and(|o| o.kind() == "-")
-                    && let Some(operand) = node.child_by_field_name("operand")
+                    && let Some(operand) =
+                        node.child_by_field_id(field::OPERAND)
                     && self.value_kind(operand) == Some(ValueKind::Text)
                 {
                     let message =
@@ -2756,20 +2744,21 @@ impl<'s> Checker<'s, '_> {
                 }
             }
             // `(p:Person {age: "abc"})` means `p.age == "abc"`.
-            "pair"
+            kind::PAIR
                 if node
                     .parent()
-                    .is_some_and(|p| p.kind() == "property_map") =>
+                    .is_some_and(|p| p.kind_id() == kind::PROPERTY_MAP) =>
             {
                 let (Some(key), Some(value)) = (
-                    node.child_by_field_name("key"),
-                    node.child_by_field_name("value"),
+                    node.child_by_field_id(field::KEY),
+                    node.child_by_field_id(field::VALUE),
                 ) else {
                     return;
                 };
-                let (Some(given), true) =
-                    (self.value_kind(value), key.kind() == "identifier")
-                else {
+                let (Some(given), true) = (
+                    self.value_kind(value),
+                    key.kind_id() == kind::IDENTIFIER,
+                ) else {
                     return;
                 };
                 let declared = self.member_types(key).unwrap_or_default();
@@ -2809,10 +2798,9 @@ impl<'s> Checker<'s, '_> {
         }
     }
 
-    /// `RETURN value` needs a RETURNS clause, and a string cannot be returned
-    /// as a number or BOOL.
+    /// `RETURN` needs RETURNS, and a string is no number or BOOL.
     fn return_value(&mut self, node: Node, context: &Context) {
-        let Some(value) = node.child_by_field_name("value") else {
+        let Some(value) = node.child_by_field_id(field::VALUE) else {
             return;
         };
         match context.returns {
@@ -2841,31 +2829,33 @@ impl<'s> Checker<'s, '_> {
         }
     }
 
-    /// Accumulator methods that modify the accumulator are restricted by clause.
+    /// Methods that modify an accumulator are restricted by clause.
     fn mutator(&mut self, node: Node, context: &Context) {
         let Some(function) = node
-            .child_by_field_name("function")
-            .filter(|f| f.kind() == "member_expression")
+            .child_by_field_id(field::FUNCTION)
+            .filter(|f| f.kind_id() == kind::MEMBER_EXPRESSION)
         else {
             return;
         };
         let (Some(object), Some(method)) = (
-            function.child_by_field_name("object"),
-            function.child_by_field_name("property"),
+            function.child_by_field_id(field::OBJECT),
+            function.child_by_field_id(field::PROPERTY),
         ) else {
             return;
         };
         // `@@acc.method()` or `v.@acc.method()`
-        let accumulator = match object.kind() {
-            "global_accumulator" => object,
-            "member_expression" => match object
-                .child_by_field_name("property")
-            {
-                Some(property) if property.kind() == "local_accumulator" => {
-                    property
+        let accumulator = match object.kind_id() {
+            kind::GLOBAL_ACCUMULATOR => object,
+            kind::MEMBER_EXPRESSION => {
+                match object.child_by_field_id(field::PROPERTY) {
+                    Some(property)
+                        if property.kind_id() == kind::LOCAL_ACCUMULATOR =>
+                    {
+                        property
+                    }
+                    _ => return,
                 }
-                _ => return,
-            },
+            }
             _ => return,
         };
         if !self.calls_mutator(accumulator, method) {
@@ -2876,13 +2866,13 @@ impl<'s> Checker<'s, '_> {
             Some(format!(
                 "The accumulator mutator `{call}` cannot be used in PRINT"
             ))
-        } else if accumulator.kind() == "global_accumulator"
+        } else if accumulator.kind_id() == kind::GLOBAL_ACCUMULATOR
             && (context.accum || context.post_accum)
         {
             Some(format!(
                 "Mutators of global accumulators such as `{call}` can only be called at the query-body level, not inside ACCUM or POST-ACCUM"
             ))
-        } else if accumulator.kind() == "local_accumulator"
+        } else if accumulator.kind_id() == kind::LOCAL_ACCUMULATOR
             && !context.post_accum
         {
             Some(format!(
@@ -2902,24 +2892,24 @@ impl<'s> Checker<'s, '_> {
     }
 
     /// Features the reference marks as deprecated.
-    fn deprecated(&mut self, node: Node) {
-        let message = match node.kind() {
-            "COMPRESS" => {
+    fn deprecated(&mut self, node: Node, kind: u16) {
+        let message = match kind {
+            keyword::COMPRESS => {
                 "`STRING COMPRESS` is deprecated since TigerGraph 3.0 and cannot be used in new schemas"
             }
-            "tag_statement" | "tags_clause" => {
+            kind::TAG_STATEMENT | kind::TAGS_CLAUSE => {
                 "Tag-based access control is deprecated"
             }
-            "TAGS"
-                if node
-                    .parent()
-                    .is_some_and(|p| p.kind() == "print_statement") =>
+            keyword::TAGS
+                if node.parent().is_some_and(|p| {
+                    p.kind_id() == kind::PRINT_STATEMENT
+                }) =>
             {
                 "`PRINT ... WITH TAGS` belongs to tag-based graphs, which are deprecated"
             }
             _ => return,
         };
-        let span_node = if node.kind() == "COMPRESS" {
+        let span_node = if node.kind_id() == keyword::COMPRESS {
             node
         } else {
             node.child(0).unwrap_or(node)
@@ -2936,7 +2926,7 @@ impl<'s> Checker<'s, '_> {
     }
 
     fn reserved_tags(&mut self, node: Node) {
-        let field = if node.kind() == "tag_statement" {
+        let field = if node.kind_id() == kind::TAG_STATEMENT {
             "name"
         } else {
             "tag"
@@ -2953,57 +2943,62 @@ impl<'s> Checker<'s, '_> {
     }
 
     /// Features the GSQL interpreter does not support (`INTERPRET QUERY`).
-    fn interpreted(&mut self, node: Node, context: &Context) {
-        let what: Option<String> = match node.kind() {
-            "file_declaration" => Some("FILE objects".into()),
-            "parameter" => node
-                .child_by_field_name("type")
-                .and_then(|t| match t.kind() {
-                    "file_type" => Some("FILE parameters".to_string()),
-                    "collection_type" => {
-                        let bag = t
-                            .child_by_field_name("kind")
-                            .is_some_and(|k| k.kind() == "BAG");
-                        bag.then(|| "BAG parameters".to_string())
-                    }
-                    _ => None,
-                }),
-            "print_statement" => syntax::has_child(node, "TO_CSV")
+    fn interpreted(&mut self, node: Node, kind: u16, context: &Context) {
+        let what: Option<String> = match kind {
+            kind::FILE_DECLARATION => Some("FILE objects".into()),
+            kind::PARAMETER => {
+                node.child_by_field_id(field::TYPE)
+                    .and_then(|t| match t.kind_id() {
+                        kind::FILE_TYPE => {
+                            Some("FILE parameters".to_string())
+                        }
+                        kind::COLLECTION_TYPE => {
+                            let bag = t
+                                .child_by_field_id(field::KIND)
+                                .is_some_and(|k| k.kind_id() == keyword::BAG);
+                            bag.then(|| "BAG parameters".to_string())
+                        }
+                        _ => None,
+                    })
+            }
+            kind::PRINT_STATEMENT => syntax::has_child(node, "TO_CSV")
                 .then(|| "PRINT ... TO_CSV".to_string()),
-            "raise_statement" => Some("RAISE".into()),
-            "try_statement" => Some("TRY ... EXCEPTION".into()),
-            "return_statement" => Some("RETURN".into()),
-            "accumulator_kind"
+            kind::RAISE_STATEMENT => Some("RAISE".into()),
+            kind::TRY_STATEMENT => Some("TRY ... EXCEPTION".into()),
+            kind::RETURN_STATEMENT => Some("RETURN".into()),
+            kind::ACCUMULATOR_KIND
                 if self
                     .text(node)
                     .eq_ignore_ascii_case("arrayaccum") =>
             {
                 Some("ArrayAccum".into())
             }
-            "member_expression"
-                if node.child_by_field_name("prime").is_some() =>
+            kind::MEMBER_EXPRESSION
+                if node
+                    .child_by_field_id(field::PRIME)
+                    .is_some() =>
             {
                 Some("the previous-value operator `'`".into())
             }
-            "is_expression"
+            kind::IS_EXPRESSION
                 if node
-                    .child_by_field_name("right")
-                    .is_some_and(|r| r.kind() == "null") =>
+                    .child_by_field_id(field::RIGHT)
+                    .is_some_and(|r| r.kind_id() == kind::NULL) =>
             {
                 Some("IS NULL".into())
             }
-            "primitive_type" => {
+            kind::PRIMITIVE_TYPE => {
                 let text = self.text(node).to_ascii_uppercase();
                 matches!(text.as_str(), "JSONOBJECT" | "JSONARRAY")
                     .then_some(text)
             }
-            "typed_value" if context.insert => {
+            kind::TYPED_VALUE if context.insert => {
                 Some("vertex types in INSERT values".into())
             }
-            "call_expression" => node
-                .child_by_field_name("function")
-                .and_then(|f| match f.kind() {
-                    "identifier" => {
+            kind::CALL_EXPRESSION => node
+                .child_by_field_id(field::FUNCTION)
+                .and_then(|f| match f.kind_id() {
+                    kind::IDENTIFIER => {
                         let name = self.text(f).to_ascii_lowercase();
                         let unsupported = [
                             "loadaccum",
@@ -3018,8 +3013,8 @@ impl<'s> Checker<'s, '_> {
                             .contains(&name.as_str())
                             .then(|| format!("`{}()`", self.text(f)))
                     }
-                    "member_expression" => f
-                        .child_by_field_name("property")
+                    kind::MEMBER_EXPRESSION => f
+                        .child_by_field_id(field::PROPERTY)
                         .and_then(|p| {
                             let name = self.text(p);
                             ["neighbors", "neighborAttribute"]
@@ -3029,19 +3024,19 @@ impl<'s> Checker<'s, '_> {
                         }),
                     _ => None,
                 }),
-            "path_pattern" => syntax::first_code_child(node)
-                .filter(|v| v.kind() == "vertex_pattern")
+            kind::PATH_PATTERN => syntax::first_code_child(node)
+                .filter(|v| v.kind_id() == kind::VERTEX_PATTERN)
                 .and_then(|source| {
                     let any = source
-                        .child_by_field_name("type")
+                        .child_by_field_id(field::TYPE)
                         .is_some_and(|t| {
-                            matches!(t.kind(), "wildcard" | "any")
+                            matches!(t.kind_id(), kind::WILDCARD | kind::ANY)
                         });
                     any.then(|| {
                         "`_` or `ANY` as the source vertex type".to_string()
                     })
                 }),
-            "interpret_query_statement" => {
+            kind::INTERPRET_QUERY_STATEMENT => {
                 self.shared_names(node);
                 None
             }
@@ -3051,11 +3046,12 @@ impl<'s> Checker<'s, '_> {
             let message = format!(
                 "Interpreted queries do not support {what}; create and install the query instead"
             );
-            let span_node = match node.kind() {
-                "print_statement" | "try_statement" | "raise_statement"
-                | "return_statement" | "file_declaration" => {
-                    node.child(0).unwrap_or(node)
-                }
+            let span_node = match node.kind_id() {
+                kind::PRINT_STATEMENT
+                | kind::TRY_STATEMENT
+                | kind::RAISE_STATEMENT
+                | kind::RETURN_STATEMENT
+                | kind::FILE_DECLARATION => node.child(0).unwrap_or(node),
                 _ => node,
             };
             self.report(
@@ -3067,9 +3063,9 @@ impl<'s> Checker<'s, '_> {
         }
     }
 
-    /// In interpreted queries a parameter and a global accumulator cannot share a name.
+    /// Interpreted queries: parameters and global accumulators share no name.
     fn shared_names(&mut self, query: Node) {
-        let Some(body) = query.child_by_field_name("body") else {
+        let Some(body) = query.child_by_field_id(field::BODY) else {
             return;
         };
         let analysis = self.snapshot.analysis;
@@ -3103,17 +3099,22 @@ impl<'s> Checker<'s, '_> {
         }
     }
 
-    /// Features unsupported in distributed queries, and calls between
-    /// distributed and other queries.
-    fn distributed(&mut self, node: Node, mode: Mode, context: &Context) {
-        if node.kind() != "call_expression" {
+    /// Distributed query limits, and calls to and from them.
+    fn distributed(
+        &mut self,
+        node: Node,
+        kind: u16,
+        mode: Mode,
+        context: &Context,
+    ) {
+        if kind != kind::CALL_EXPRESSION {
             return;
         }
-        let Some(function) = node.child_by_field_name("function") else {
+        let Some(function) = node.child_by_field_id(field::FUNCTION) else {
             return;
         };
-        let message = match function.kind() {
-            "identifier" => {
+        let message = match function.kind_id() {
+            kind::IDENTIFIER => {
                 let name = self.text(function).to_string();
                 if mode.distributed && name.eq_ignore_ascii_case("evaluate") {
                     Some("Distributed queries do not support `evaluate()`".to_string())
@@ -3133,8 +3134,8 @@ impl<'s> Checker<'s, '_> {
                     None
                 }
             }
-            "member_expression" if mode.distributed => {
-                function.child_by_field_name("property").and_then(|p| {
+            kind::MEMBER_EXPRESSION if mode.distributed => {
+                function.child_by_field_id(field::PROPERTY).and_then(|p| {
                     let name = self.text(p);
                     ["neighbors", "neighborAttribute", "edgeAttribute"]
                         .iter()
@@ -3174,7 +3175,7 @@ impl<'s> Checker<'s, '_> {
 fn pattern_vertices(pattern: Node) -> Vec<Node> {
     let mut found = Vec::new();
     syntax::walk(pattern, |n| {
-        if matches!(n.kind(), "vertex_pattern" | "node_pattern") {
+        if matches!(n.kind_id(), kind::VERTEX_PATTERN | kind::NODE_PATTERN) {
             found.push(n);
         }
     });
@@ -3184,7 +3185,7 @@ fn pattern_vertices(pattern: Node) -> Vec<Node> {
 /// The expression inside any parentheses around `node`.
 fn unparenthesized(node: Node) -> Node {
     let mut node = node;
-    while node.kind() == "parenthesized_expression" {
+    while node.kind_id() == kind::PARENTHESIZED_EXPRESSION {
         match syntax::first_code_child(node) {
             Some(inner) => node = inner,
             None => break,
@@ -3193,25 +3194,25 @@ fn unparenthesized(node: Node) -> Node {
     node
 }
 
-/// The accumulator a write or read is about: the object of a subscript (`@@m[k]`, `t.@m[k]`).
+/// The accumulator a subscript is on (`@@m[k]`, `t.@m[k]`).
 fn accumulator_target(node: Node) -> Node {
-    match node.kind() {
-        "subscript_expression" => node
-            .child_by_field_name("object")
+    match node.kind_id() {
+        kind::SUBSCRIPT_EXPRESSION => node
+            .child_by_field_id(field::OBJECT)
             .map(accumulator_target)
             .unwrap_or(node),
         _ => node,
     }
 }
 
-/// The identifiers that are the object of a member access (`t.name`, `t.@acc`) below `root`.
+/// Identifiers used as member-access objects (`t.name`, `t.@acc`).
 fn member_objects(root: Node) -> Vec<Node> {
     let mut found = Vec::new();
     syntax::walk(root, |n| {
-        if n.kind() == "member_expression" {
+        if n.kind_id() == kind::MEMBER_EXPRESSION {
             found.extend(
-                n.child_by_field_name("object")
-                    .filter(|o| o.kind() == "identifier"),
+                n.child_by_field_id(field::OBJECT)
+                    .filter(|o| o.kind_id() == kind::IDENTIFIER),
             );
         }
     });
@@ -3226,8 +3227,7 @@ fn capitalized(text: &str) -> String {
         .unwrap_or_default()
 }
 
-/// `vertex type` -> `a vertex type`, `attribute` -> `an attribute`, `AvgAccum` -> `an AvgAccum`
-/// (but `a UINT`).
+/// `vertex type` -> `a vertex type`, `attribute` -> `an attribute`.
 fn with_article(label: &str) -> String {
     let article =
         if label.starts_with(['a', 'e', 'i', 'o', 'u', 'A', 'E', 'I', 'O']) {
@@ -3238,7 +3238,7 @@ fn with_article(label: &str) -> String {
     format!("{article} {label}")
 }
 
-/// How far up the tree a call is checked for being inside code the parser gave up on.
+/// How far up a call is checked for being in error code.
 const MAX_CALL_DEPTH: usize = 64;
 
 /// The kind of value a variable, attribute or accumulator holds.
@@ -3262,7 +3262,7 @@ impl ValueKind {
 /// What a value given to an accumulator certainly is.
 enum Given {
     Kind(ValueKind),
-    /// A vertex, an edge, a collection or an accumulator of several values, described.
+    /// Something of several values, described.
     Other(String),
 }
 
@@ -3276,7 +3276,7 @@ fn described_type(ty: &Ty) -> String {
     }
 }
 
-/// The kind of value an accumulator that is not a map accumulates, when certain.
+/// What a non-map accumulator accumulates, when certain.
 fn accumulator_input_kind(ty: &Ty) -> Option<ValueKind> {
     let Ty::Accumulator(kind, args) = ty else {
         return None;
@@ -3291,8 +3291,7 @@ fn accumulator_input_kind(ty: &Ty) -> Option<ValueKind> {
     }
 }
 
-/// An accumulator that certainly holds several values (`MaxAccum<VERTEX>` reads as one
-/// vertex, `SumAccum<INT>` or `BitwiseOrAccum` as one number).
+/// An accumulator that certainly holds several values.
 fn holds_several_values(ty: &Ty) -> bool {
     matches!(ty, Ty::Accumulator(kind, _) if matches!(
         kind.as_str(),
@@ -3308,7 +3307,7 @@ fn value_kind_of(ty: &Ty) -> Option<ValueKind> {
             "BOOL" => Some(ValueKind::Bool),
             _ => None,
         },
-        // Reading a Deviation accumulator gives a DOUBLE, a bitwise one an INT.
+        // A Deviation accumulator reads as DOUBLE, a bitwise one as INT.
         Ty::Accumulator(kind, args) => match kind.as_str() {
             "AvgAccum" | "DeviationAccum" | "DeviationPAccum"
             | "BitwiseOrAccum" | "BitwiseAndAccum" => Some(ValueKind::Number),
@@ -3322,8 +3321,7 @@ fn value_kind_of(ty: &Ty) -> Option<ValueKind> {
     }
 }
 
-/// How a variable of this type reads in "a string cannot be stored in ...",
-/// when it is numeric or BOOL.
+/// How a numeric or BOOL variable of `ty` reads in messages.
 fn stores_string_badly(ty: &Ty) -> Option<&'static str> {
     match value_kind_of(ty)? {
         ValueKind::Number => Some("a number"),
@@ -3351,16 +3349,15 @@ fn is_list_accum(node: Node, checker: &Checker) -> bool {
         .is_some_and(|k| k.eq_ignore_ascii_case("listaccum"))
 }
 
-/// How many ListAccums are nested starting at `node` (a ListAccum has one
-/// type argument).
+/// How many ListAccums are nested from `node`.
 fn list_depth(node: Node, checker: &Checker) -> usize {
     let mut depth = 0;
     let mut current = Some(node);
     while let Some(list) = current.filter(|n| {
-        n.kind() == "accumulator_type" && is_list_accum(*n, checker)
+        n.kind_id() == kind::ACCUMULATOR_TYPE && is_list_accum(*n, checker)
     }) {
         depth += 1;
-        current = list.child_by_field_name("argument");
+        current = list.child_by_field_id(field::ARGUMENT);
     }
     depth
 }
@@ -3642,7 +3639,7 @@ mod tests {
         let snapshot = fixture.snapshot();
         let all = diagnostics(&snapshot);
         let line = Range::new(Position::new(1, 0), Position::new(1, 20));
-        let actions = code_actions(&snapshot, line, &all, None, &all);
+        let actions = code_actions(&snapshot, line, &all, None, &all, false);
         assert!(
             actions
                 .iter()
@@ -3797,6 +3794,7 @@ mod tests {
             std::slice::from_ref(&found[0]),
             None,
             &found,
+            false,
         );
         let titles: Vec<&str> = actions
             .iter()
@@ -3992,7 +3990,7 @@ mod tests {
         let snapshot = fixture.snapshot();
         let all = diagnostics(&snapshot);
         let line = Range::new(Position::new(1, 0), Position::new(1, 30));
-        let actions = code_actions(&snapshot, line, &all, None, &all);
+        let actions = code_actions(&snapshot, line, &all, None, &all, false);
         assert!(
             actions
                 .iter()
@@ -4556,7 +4554,7 @@ mod tests {
         let snapshot = fixture.snapshot();
         let all = diagnostics(&snapshot);
         let whole = Range::new(Position::new(0, 0), Position::new(6, 0));
-        let actions = code_actions(&snapshot, whole, &all, None, &all);
+        let actions = code_actions(&snapshot, whole, &all, None, &all, false);
         let edits = |title: &str| {
             let action = actions
                 .iter()
@@ -4831,7 +4829,7 @@ mod tests {
             ]
         );
         let whole = Range::new(Position::new(0, 0), Position::new(7, 0));
-        let actions = code_actions(&snapshot, whole, &all, None, &all);
+        let actions = code_actions(&snapshot, whole, &all, None, &all, false);
         let action = actions
             .iter()
             .find(|a| a.title == "Write `AvgAccum` without a type argument")

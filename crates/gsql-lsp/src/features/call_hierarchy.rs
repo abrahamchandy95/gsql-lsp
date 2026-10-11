@@ -60,29 +60,27 @@ pub fn incoming(
     callee: &CallHierarchyItem,
 ) -> Vec<CallHierarchyIncomingCall> {
     let mut calls: BTreeMap<
-        (String, String, Position),
+        (&str, &str, Position),
         (&GlobalSymbol, Vec<Range>),
     > = BTreeMap::new();
     for file in workspace.files() {
-        let queries: Vec<&GlobalSymbol> = file
-            .symbols
-            .iter()
-            .filter(|s| s.kind == SymbolKind::Query)
-            .collect();
         for reference in file
             .references
             .iter()
             .filter(|r| r.name == callee.name && names_a_query(workspace, r))
         {
             // Calls outside a query (RUN QUERY, INSTALL QUERY) have no caller.
-            let Some(caller) = queries
-                .iter()
-                .find(|q| q.range.contains_range(reference.range))
-            else {
+            let Some(caller) = file.symbols.iter().find(|s| {
+                s.kind == SymbolKind::Query
+                    && s.range.contains_range(reference.range)
+            }) else {
                 continue;
             };
-            let key =
-                (caller.name.clone(), caller.uri.clone(), caller.range.start);
+            let key = (
+                caller.name.as_str(),
+                caller.uri.as_str(),
+                caller.range.start,
+            );
             calls
                 .entry(key)
                 .or_insert_with(|| (caller, Vec::new()))
@@ -109,7 +107,7 @@ pub fn outgoing(
     };
     let mut calls: BTreeMap<&str, Vec<Range>> = BTreeMap::new();
     for reference in file.references.iter().filter(|r| {
-        names_a_query(workspace, r) && caller.range.contains_range(r.range)
+        caller.range.contains_range(r.range) && names_a_query(workspace, r)
     }) {
         calls
             .entry(reference.name.as_str())

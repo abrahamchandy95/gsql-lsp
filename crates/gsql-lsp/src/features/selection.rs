@@ -3,6 +3,7 @@
 use crate::features::Snapshot;
 use crate::lsp::types::{Position, Range, SelectionRange};
 use crate::syntax;
+use crate::text::Span;
 
 pub fn selection_ranges(
     snapshot: &Snapshot,
@@ -10,31 +11,37 @@ pub fn selection_ranges(
 ) -> Vec<SelectionRange> {
     positions
         .iter()
-        .map(|&position| {
-            let offset = snapshot.offset(position);
-            let mut ranges: Vec<Range> = Vec::new();
-            if let Some(node) = syntax::leaf_at(snapshot.root(), offset) {
-                for ancestor in syntax::lineage(snapshot.root(), node) {
-                    let range =
-                        snapshot.range(crate::text::Span::of(ancestor));
-                    if ranges.last() != Some(&range) {
-                        ranges.push(range);
-                    }
-                }
-            }
-            if ranges.is_empty() {
-                ranges.push(Range::new(position, position));
-            }
-            let mut selection: Option<SelectionRange> = None;
-            for range in ranges.into_iter().rev() {
-                selection = Some(SelectionRange {
-                    range,
-                    parent: selection.map(Box::new),
-                });
-            }
-            selection.expect("at least one range")
-        })
+        .map(|&position| selection_range_at(snapshot, position))
         .collect()
+}
+
+/// The node at `position`, then each larger node up to the root.
+fn selection_range_at(
+    snapshot: &Snapshot,
+    position: Position,
+) -> SelectionRange {
+    let root = snapshot.root();
+    let Some(leaf) = syntax::leaf_at(root, snapshot.offset(position)) else {
+        return SelectionRange {
+            range: Range::new(position, position),
+            parent: None,
+        };
+    };
+    let mut spans: Vec<Span> = syntax::lineage(root, leaf)
+        .into_iter()
+        .map(Span::of)
+        .collect();
+    // A wrapper node has its child's span.
+    spans.dedup();
+    spans
+        .into_iter()
+        .rfold(None, |parent, span| {
+            Some(SelectionRange {
+                range: snapshot.range(span),
+                parent: parent.map(Box::new),
+            })
+        })
+        .expect("the lineage includes the root")
 }
 
 #[cfg(test)]

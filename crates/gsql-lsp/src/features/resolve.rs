@@ -56,7 +56,7 @@ pub fn methods_for(ty: &Ty) -> &'static [Method] {
         Ty::Edge(_) => builtins::EDGE_METHODS,
         Ty::VertexSet(_) => builtins::VERTEX_SET_METHODS,
         Ty::File => builtins::FILE_METHODS,
-        Ty::Collection(name, _) => match name.to_ascii_uppercase().as_str() {
+        Ty::Collection(name, _) => match name.as_str() {
             "LIST" => builtins::LIST_METHODS,
             "SET" | "BAG" => builtins::SET_METHODS,
             "MAP" => builtins::MAP_METHODS,
@@ -158,16 +158,14 @@ pub fn target(snapshot: &Snapshot, reference: &Reference) -> Option<Target> {
         Role::Function => first_declared()
             .map(|kind| global(callee(kind), name, None))
             .or_else(|| builtins::function(name).map(Target::Function)),
-        Role::Method(ty) => builtins::find_method(methods_for(ty), name)
-            .or_else(|| {
-                matches!(ty, Ty::Unknown)
-                    .then(|| find_method_anywhere(name))
-                    .flatten()
-            })
-            .map(Target::Method),
+        Role::Method(ty) => match ty {
+            Ty::Unknown => find_method_anywhere(name),
+            _ => builtins::find_method(methods_for(ty), name),
+        }
+        .map(Target::Method),
         Role::Attribute(ty) => {
             let owners = ty.attribute_owners()?;
-            let candidates: Vec<&GlobalSymbol> = workspace
+            let mut candidates = workspace
                 .find(SymbolKind::Attribute, name)
                 .into_iter()
                 .filter(|a| {
@@ -175,24 +173,20 @@ pub fn target(snapshot: &Snapshot, reference: &Reference) -> Option<Target> {
                         || owners
                             .iter()
                             .any(|o| a.owner.as_deref() == Some(o))
-                })
-                .collect();
-            match candidates.as_slice() {
-                [] => None,
-                [single] => Some(global(
-                    SymbolKind::Attribute,
-                    name,
-                    single.owner.clone(),
-                )),
-                _ => Some(global(SymbolKind::Attribute, name, None)),
-            }
+                });
+            let first = candidates.next()?;
+            // Owned by one type, unless another declares it too.
+            let owner = match candidates.next() {
+                None => first.owner.clone(),
+                Some(_) => None,
+            };
+            Some(global(SymbolKind::Attribute, name, owner))
         }
         Role::Value => {
-            if let Some(doc) = builtins::constant(name) {
-                let constant = builtins::CONSTANTS
-                    .iter()
-                    .find(|(k, _)| *k == name)?
-                    .0;
+            if let Some(&(constant, doc)) = builtins::CONSTANTS
+                .iter()
+                .find(|(k, _)| *k == name)
+            {
                 return Some(Target::Constant(constant, doc));
             }
             first_declared().map(|kind| global(kind, name, None))
@@ -314,8 +308,8 @@ pub fn param_type(param: &Param) -> String {
         .ty
         .chars()
         .filter(|c| !c.is_whitespace())
-        .collect::<String>()
-        .to_ascii_uppercase()
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
 }
 
 #[cfg(test)]

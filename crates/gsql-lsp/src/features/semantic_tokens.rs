@@ -4,8 +4,8 @@ use crate::analysis::{Reference, Role, SymbolKind};
 use crate::features::Snapshot;
 use crate::features::resolve::{self, Target};
 use crate::lsp::types::Range;
-use crate::syntax;
-use crate::text::Span;
+use crate::syntax::{self, kind};
+use crate::text::{PositionEncoding, Span};
 
 pub const TOKEN_TYPES: &[&str] = &[
     "namespace",
@@ -140,41 +140,32 @@ fn reference_token(snapshot: &Snapshot, reference: &Reference) -> Token {
 
 fn lexical_tokens(snapshot: &Snapshot, out: &mut Vec<Token>) {
     let mut cursor = snapshot.root().walk();
-    let mut stack = vec![snapshot.root()];
-    while let Some(node) = stack.pop() {
-        let token = match node.kind() {
-            "comment" => Some((ty::COMMENT, 0)),
-            "string" | "column_reference" | "file_include" => {
+    // Each node, and whether its parent is a type.
+    let mut stack = vec![(snapshot.root(), false)];
+    while let Some((node, in_type)) = stack.pop() {
+        let kind = node.kind_id();
+        let token = match kind {
+            kind::COMMENT => Some((ty::COMMENT, 0)),
+            kind::STRING | kind::COLUMN_REFERENCE | kind::FILE_INCLUDE => {
                 Some((ty::STRING, 0))
             }
-            "integer" | "float" => Some((ty::NUMBER, 0)),
-            "boolean" | "null" => Some((ty::KEYWORD, 0)),
-            "accumulator_kind" => Some((ty::TYPE, modifier::DEFAULT_LIBRARY)),
-            kind if syntax::is_name_kind(kind) => continue,
-            _ if syntax::is_keyword(node) => {
-                let in_type = node.parent().is_some_and(|p| {
-                    matches!(
-                        p.kind(),
-                        "primitive_type"
-                            | "vertex_type"
-                            | "edge_type"
-                            | "collection_type"
-                            | "tuple_type"
-                            | "file_type"
-                    )
-                });
-                if in_type {
-                    Some((ty::TYPE, modifier::DEFAULT_LIBRARY))
-                } else {
-                    Some((ty::KEYWORD, 0))
-                }
+            kind::INTEGER | kind::FLOAT => Some((ty::NUMBER, 0)),
+            kind::BOOLEAN | kind::NULL => Some((ty::KEYWORD, 0)),
+            kind::ACCUMULATOR_KIND => {
+                Some((ty::TYPE, modifier::DEFAULT_LIBRARY))
             }
+            kind if syntax::is_name_kind(kind) => continue,
+            _ if syntax::is_keyword(node) => Some(if in_type {
+                (ty::TYPE, modifier::DEFAULT_LIBRARY)
+            } else {
+                (ty::KEYWORD, 0)
+            }),
             _ if !node.is_named() && node.child_count() == 0 => {
                 let text = node.kind();
                 let is_operator = !text.is_empty()
                     && text
-                        .chars()
-                        .all(|c| "=+-*/%<>!&|^~'".contains(c));
+                        .bytes()
+                        .all(|b| b"=+-*/%<>!&|^~'".contains(&b));
                 is_operator.then_some((ty::OPERATOR, 0))
             }
             _ => None,
@@ -186,8 +177,20 @@ fn lexical_tokens(snapshot: &Snapshot, out: &mut Vec<Token>) {
                 modifiers,
             }),
             None => {
-                let children: Vec<_> = node.children(&mut cursor).collect();
-                stack.extend(children.into_iter().rev());
+                let is_type = matches!(
+                    kind,
+                    kind::PRIMITIVE_TYPE
+                        | kind::VERTEX_TYPE
+                        | kind::EDGE_TYPE
+                        | kind::COLLECTION_TYPE
+                        | kind::TUPLE_TYPE
+                        | kind::FILE_TYPE
+                );
+                // Reversed, so the first child is popped first.
+                let at = stack.len();
+                let children = node.children(&mut cursor);
+                stack.extend(children.map(|child| (child, is_type)));
+                stack[at..].reverse();
             }
         }
     }
@@ -203,21 +206,16 @@ fn collect(snapshot: &Snapshot) -> Vec<Token> {
         lexical_tokens(snapshot, &mut tokens);
     }
     tokens.sort_by_key(|t| (t.span.start, t.span.end));
-    // Drop overlaps (e.g. a reverse edge name inside its string literal).
-    let mut result: Vec<Token> = Vec::with_capacity(tokens.len());
-    for token in tokens {
-        match result.last() {
-            Some(last) if token.span.start < last.span.end => {
-                // Prefer the narrower (more specific) token.
-                if token.span.len() < last.span.len() {
-                    result.pop();
-                    result.push(token);
-                }
-            }
-            _ => result.push(token),
+    // Drop overlaps (e.g. a reverse edge name inside its string literal),
+    // keeping the narrower (more specific) token.
+    tokens.dedup_by(|token, kept| {
+        let overlaps = token.span.start < kept.span.end;
+        if overlaps && token.span.len() < kept.span.len() {
+            *kept = *token;
         }
-    }
-    result
+        overlaps
+    });
+    tokens
 }
 
 /// Encodes tokens in the LSP relative format, splitting multi-line tokens.
@@ -230,7 +228,21 @@ fn encode(
     let lines = &snapshot.source.lines;
     let mut data = Vec::with_capacity(tokens.len() * 5);
     let (mut previous_line, mut previous_start) = (0u32, 0u32);
+    // Tokens are sorted and disjoint: skip those before `range`, and stop
+    // at the line after it.
+    let (tokens, after) = match range {
+        Some(range) => {
+            let from = snapshot.offset(range.start);
+            let first = tokens.partition_point(|t| t.span.end <= from);
+            let after = lines.line_start(range.end.line as usize + 1);
+            (&tokens[first..], after)
+        }
+        None => (tokens, usize::MAX),
+    };
     for token in tokens {
+        if token.span.start >= after {
+            break;
+        }
         let mut start = token.span.start;
         while start < token.span.end {
             let line = lines.line_of(start);
@@ -239,12 +251,15 @@ fn encode(
                 .end
                 .min(lines.line_end(text, line).max(start));
             let start_position = snapshot.position(start);
-            let end_position = snapshot.position(end);
             let next_line_start = lines.line_start(line + 1);
             let within = range.is_none_or(|r| r.contains(start_position));
-            let length = end_position
-                .character
-                .saturating_sub(start_position.character);
+            let piece = &text[start..end];
+            let length = match snapshot.encoding {
+                PositionEncoding::Utf8 => piece.len(),
+                _ if piece.is_ascii() => piece.len(),
+                PositionEncoding::Utf16 => piece.encode_utf16().count(),
+                PositionEncoding::Utf32 => piece.chars().count(),
+            } as u32;
             if within && length > 0 {
                 let delta_line = start_position.line - previous_line;
                 let delta_start = if delta_line == 0 {

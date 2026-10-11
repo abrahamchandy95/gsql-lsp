@@ -239,6 +239,56 @@ fn temp_workspace(name: &str, files: &[(&str, &str)]) -> PathBuf {
     dir
 }
 
+#[test]
+fn a_client_that_resolves_code_actions_gets_the_fix_all_edit_on_request() {
+    let root = temp_workspace("resolve", &[]);
+    let uri = gsql_lsp::uri::from_path(&root.join("q.gsql"));
+    let text = "CREATE QUERY q(INT x) {\n  IF x > 1 THEN PRINT x; ELSEIF x > 2 THEN PRINT x; END;\n}\n";
+    // The fix-all action offered to a client with these capabilities.
+    let fix_all = |capabilities: Value| {
+        let mut client = Client::start_with(&root, capabilities);
+        client.open(&uri, text);
+        client.diagnostics(&uri, |d| !d.is_empty());
+        let start = json!({ "line": 0, "character": 0 });
+        let actions = client.request(
+            "textDocument/codeAction",
+            json!({
+                "textDocument": { "uri": uri },
+                "range": { "start": start, "end": start },
+                "context": { "diagnostics": [] },
+            }),
+        );
+        let action = actions
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["kind"] == "source.fixAll")
+            .cloned()
+            .unwrap();
+        (client, action)
+    };
+    let (client, eager) = fix_all(json!({}));
+    client.shutdown();
+    let (mut client, offered) = fix_all(json!({
+        "textDocument": { "codeAction": {
+            "dataSupport": true,
+            "resolveSupport": { "properties": ["edit"] },
+        } },
+    }));
+    assert!(offered.get("edit").is_none(), "{offered}");
+    let resolved = client.request("codeAction/resolve", offered);
+    assert_eq!(resolved["edit"], eager["edit"]);
+    assert_eq!(resolved["edit"]["changes"][&uri][0]["newText"], "ELSE IF");
+    // Other actions come with their edit and are resolved as they are.
+    let quick_fix =
+        json!({ "title": "t", "kind": "quickfix", "edit": eager["edit"] });
+    assert_eq!(
+        client.request("codeAction/resolve", quick_fix.clone()),
+        quick_fix
+    );
+    client.shutdown();
+}
+
 const SCHEMA: &str = concat!(
     "CREATE VERTEX Person (PRIMARY_ID id STRING, name STRING, age INT)\n",
     "CREATE UNDIRECTED EDGE Friendship (FROM Person, TO Person, since DATETIME)\n",
