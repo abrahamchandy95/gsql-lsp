@@ -1,6 +1,7 @@
 //! Semantic analysis of GSQL files.
 
 mod builder;
+mod flow;
 mod model;
 
 pub use builder::{

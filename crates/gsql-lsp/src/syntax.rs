@@ -384,6 +384,29 @@ pub fn walk<'tree>(root: Node<'tree>, mut visit: impl FnMut(Node<'tree>)) {
     }
 }
 
+/// Like [`walk`], but descends only into nodes that span lines: inside a
+/// one-line node, every node is on one line too.
+pub fn walk_multiline<'tree>(
+    root: Node<'tree>,
+    mut visit: impl FnMut(Node<'tree>),
+) {
+    let mut cursor = root.walk();
+    loop {
+        let node = cursor.node();
+        visit(node);
+        if node.start_position().row < node.end_position().row
+            && cursor.goto_first_child()
+        {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                return;
+            }
+        }
+    }
+}
+
 /// Every node in the subtrees that have syntax errors, in document order:
 /// where all ERROR and MISSING nodes are.
 pub fn walk_errors<'tree>(

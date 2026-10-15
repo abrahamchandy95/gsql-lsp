@@ -43,7 +43,8 @@ pub fn format_text(
     if tree.root_node().has_error() {
         return None;
     }
-    let analysis = analysis::Analysis::from_tree(&tree, text, None);
+    // The formatter reads no analysis.
+    let analysis = analysis::Analysis::default();
     let source = SourceText::new(text.to_string());
     let workspace = Workspace::default();
     let config = Config {

@@ -1,12 +1,12 @@
-//! Resolves an identifier occurrence to what it denotes: a symbol in this
-//! file, a workspace-level declaration, or a built-in.
+//! Resolves references to local symbols, workspace declarations or built-ins.
 
 use tree_sitter::Node;
 
 use crate::analysis::{Param, Reference, Role, SymbolId, SymbolKind, Ty};
 use crate::builtins::{self, Function, Method};
 use crate::features::Snapshot;
-use crate::syntax;
+use crate::syntax::{self, field, kind};
+use crate::util::push_unique;
 use crate::workspace::GlobalSymbol;
 
 /// Identity of a workspace-level declaration.
@@ -16,6 +16,8 @@ pub struct GlobalKey {
     pub name: String,
     /// Owning type of an attribute or tuple field; `None` when unknown.
     pub owner: Option<String>,
+    /// Candidate owner types when `owner` is `None` (empty means any).
+    pub owners: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -92,6 +94,7 @@ fn global(kind: SymbolKind, name: &str, owner: Option<String>) -> Target {
         kind,
         name: name.to_string(),
         owner,
+        owners: Vec::new(),
     })
 }
 
@@ -176,11 +179,27 @@ pub fn target(snapshot: &Snapshot, reference: &Reference) -> Option<Target> {
                 });
             let first = candidates.next()?;
             // Owned by one type, unless another declares it too.
-            let owner = match candidates.next() {
-                None => first.owner.clone(),
-                Some(_) => None,
+            let Some(second) = candidates.next() else {
+                return Some(global(
+                    SymbolKind::Attribute,
+                    name,
+                    first.owner.clone(),
+                ));
             };
-            Some(global(SymbolKind::Attribute, name, owner))
+            let mut declaring = Vec::new();
+            if !owners.is_empty() {
+                for a in [first, second].into_iter().chain(candidates) {
+                    if let Some(owner) = &a.owner {
+                        push_unique(&mut declaring, owner.clone());
+                    }
+                }
+            }
+            Some(Target::Global(GlobalKey {
+                kind: SymbolKind::Attribute,
+                name: name.to_string(),
+                owner: None,
+                owners: declaring,
+            }))
         }
         Role::Value => {
             if let Some(&(constant, doc)) = builtins::CONSTANTS
@@ -210,8 +229,7 @@ pub enum Callee<'w> {
     Builtin(&'static Function),
 }
 
-/// What `name(..)` calls: a tuple type of that name, else a query, else a built-in.
-/// `None` when nothing has the name, or more than one query has it.
+/// What `name(..)` calls: a tuple type, else the one query, else a built-in.
 pub fn callee<'w>(
     snapshot: &'w Snapshot,
     function: Node,
@@ -238,7 +256,7 @@ pub fn callee<'w>(
     }
 }
 
-/// The workspace query that a call by plain name, `name(..)`, calls.
+/// Returns the workspace query called by `function`, if any.
 pub fn called_query<'w>(
     snapshot: &'w Snapshot,
     function: Node,
@@ -249,15 +267,14 @@ pub fn called_query<'w>(
     }
 }
 
-/// The workspace query that `node` calls, with its name and argument list. `None` when
-/// no single query has the name, or a plain call `q(..)` builds a tuple.
+/// The one workspace query `node` calls, with its name and argument nodes.
 pub fn query_called_by<'w, 't>(
     snapshot: &'w Snapshot,
     node: Node<'t>,
 ) -> Option<(&'w GlobalSymbol, Node<'t>, Node<'t>)> {
     let (name, arguments) = syntax::query_call(node)?;
-    let query = match node.kind() {
-        "call_expression" => called_query(snapshot, name)?,
+    let query = match node.kind_id() {
+        kind::CALL_EXPRESSION => called_query(snapshot, name)?,
         _ => snapshot.workspace.find_unique(
             &[SymbolKind::Query],
             syntax::text(name, snapshot.text()),
@@ -275,26 +292,35 @@ pub fn declarations<'w>(
         .workspace
         .find(key.kind, &key.name)
         .into_iter()
-        .filter(|s| key.owner.is_none() || s.owner == key.owner)
+        .filter(|s| {
+            (key.owner.is_none() || s.owner == key.owner)
+                && (key.owners.is_empty()
+                    || s.owner
+                        .as_ref()
+                        .is_some_and(|o| key.owners.contains(o)))
+        })
         .collect()
 }
 
 /// How a message names a literal passed to a query parameter, else `None`.
 pub fn literal_argument(value: Node) -> Option<&'static str> {
-    Some(match value.kind() {
-        "integer" => "an integer",
-        "float" => "a number with a fraction",
-        "string" => "a string",
-        "boolean" => "a boolean",
-        "list_literal" => "a list",
-        "unary_expression"
+    Some(match value.kind_id() {
+        kind::INTEGER => "an integer",
+        kind::FLOAT => "a number with a fraction",
+        kind::STRING => "a string",
+        kind::BOOLEAN => "a boolean",
+        kind::LIST_LITERAL => "a list",
+        kind::UNARY_EXPRESSION
             if value
-                .child_by_field_name("operator")
+                .child_by_field_id(field::OPERATOR)
                 .is_some_and(|o| o.kind() == "-") =>
         {
-            match value.child_by_field_name("operand")?.kind() {
-                "integer" => "a negative integer",
-                "float" => "a number with a fraction",
+            match value
+                .child_by_field_id(field::OPERAND)?
+                .kind_id()
+            {
+                kind::INTEGER => "a negative integer",
+                kind::FLOAT => "a number with a fraction",
                 _ => return None,
             }
         }
@@ -302,7 +328,7 @@ pub fn literal_argument(value: Node) -> Option<&'static str> {
     })
 }
 
-/// The type of a query parameter in upper case without spaces, `SET<INT>`.
+/// Normalizes a parameter's type string (uppercase, no whitespace).
 pub fn param_type(param: &Param) -> String {
     param
         .ty
@@ -361,5 +387,28 @@ mod tests {
         assert_eq!(owner("ListAccum<INT> @@l;\n  PRINT @@l.name;"), None);
         // An object of unknown type may be any vertex or edge.
         assert_eq!(owner("PRINT zz.name;"), Some(Some("Person".to_string())));
+    }
+
+    #[test]
+    fn an_attribute_of_an_edge_held_by_an_accumulator_names_only_its_edges() {
+        let schema = "CREATE VERTEX P (PRIMARY_ID id STRING)\n\
+            CREATE UNDIRECTED EDGE A (FROM P, TO P, DISCRIMINATOR(site STRING))\n\
+            CREATE UNDIRECTED EDGE B (FROM P, TO P, DISCRIMINATOR(site STRING))\n\
+            CREATE UNDIRECTED EDGE C (FROM P, TO P, DISCRIMINATOR(site STRING))\n";
+        let text = "CREATE QUERY q() {\n  STRING K = \"k\";\n  MapAccum<STRING, STRING> @@m;\n  SetAccum<STRING> @@t;\n  @@m += (K -> \"A\");\n  @@t += @@m.get(K);\n  @@t += \"B\";\n  R = SELECT x FROM P:s -(@@t:e)- P:x WHERE e.site == \"\";\n  PRINT R;\n}\n";
+        let fixture = Fixture::with_schema(text, schema);
+        let snapshot = fixture.snapshot();
+        let reference = snapshot
+            .analysis
+            .reference_at(text.rfind("site").unwrap())
+            .unwrap();
+        let Some(Target::Global(key)) = target(&snapshot, reference) else {
+            panic!("no target");
+        };
+        let owners: Vec<_> = declarations(&snapshot, &key)
+            .into_iter()
+            .filter_map(|s| s.owner.clone())
+            .collect();
+        assert_eq!(owners, ["A", "B"]);
     }
 }

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use tree_sitter::{Node, Tree};
 
+use super::flow;
 use super::model::*;
 use crate::syntax::{self, field, keyword, kind};
 use crate::text::{Span, starts_with_ignore_ascii_case};
@@ -26,6 +27,7 @@ impl Analysis {
             analysis: Analysis::default(),
             stack: Vec::new(),
             declarations: HashMap::new(),
+            select_scopes: HashMap::new(),
             names: Vec::new(),
             error_depth: 0,
             depth: 0,
@@ -180,6 +182,8 @@ struct Builder<'s> {
     stack: Vec<ScopeId>,
     /// Name spans of declarations.
     declarations: HashMap<Span, SymbolId>,
+    /// Block scopes of SELECT statements, by statement span.
+    select_scopes: HashMap<Span, ScopeId>,
     /// Per scope: symbols by name, in declaration order.
     names: Vec<HashMap<String, Vec<SymbolId>>>,
     /// Number of ERROR nodes enclosing the node being declared.
@@ -409,7 +413,6 @@ impl<'s> Builder<'s> {
             .strip_prefix(REVERSE_EDGE_PREFIX)
     }
 
-    /// The type of a looked-up symbol, unknown if there is none.
     fn ty_of(&self, id: Option<SymbolId>) -> Ty {
         id.map(|id| self.analysis.symbols[id].ty.clone())
             .unwrap_or_default()
@@ -458,12 +461,10 @@ impl<'s> Builder<'s> {
                 self.declare_query(node)
             }
             kind::INTERPRET_QUERY_STATEMENT => {
-                if node.child_by_field_id(field::BODY).is_some() {
+                if let Some(body) = node.child_by_field_id(field::BODY) {
                     self.push(ScopeKind::Query, node);
                     self.declare_parameters(node);
-                    if let Some(body) = node.child_by_field_id(field::BODY) {
-                        self.declare(body);
-                    }
+                    self.declare(body);
                     self.pop();
                 }
             }
@@ -484,34 +485,31 @@ impl<'s> Builder<'s> {
                 self.declare_job(node, SymbolKind::SchemaChangeJob)
             }
             kind::ALTER_TYPE_STATEMENT => self.declare_added_attributes(node),
-            kind::DATA_SOURCE_DEFINITION | kind::PACKAGE_DEFINITION => {
-                let kind = if node.kind_id() == kind::PACKAGE_DEFINITION {
-                    SymbolKind::Package
-                } else {
-                    SymbolKind::DataSource
-                };
-                if let Some(name) = node.child_by_field_id(field::NAME) {
-                    self.define_declaration(
-                        FILE_SCOPE,
-                        kind,
-                        node,
-                        name,
-                        Ty::Unknown,
-                    );
-                }
-            }
-            kind::DEFINE_FILENAME_STATEMENT
+            kind::DATA_SOURCE_DEFINITION
+            | kind::PACKAGE_DEFINITION
+            | kind::DEFINE_FILENAME_STATEMENT
             | kind::DEFINE_HEADER_STATEMENT
-            | kind::DEFINE_INPUT_LINE_FILTER_STATEMENT => {
-                let kind = match node.kind_id() {
-                    kind::DEFINE_FILENAME_STATEMENT => {
-                        SymbolKind::FilenameVariable
+            | kind::DEFINE_INPUT_LINE_FILTER_STATEMENT
+            | kind::EXCEPTION_DECLARATION => {
+                let (scope, kind) = match node.kind_id() {
+                    kind::DATA_SOURCE_DEFINITION => {
+                        (FILE_SCOPE, SymbolKind::DataSource)
                     }
-                    kind::DEFINE_HEADER_STATEMENT => SymbolKind::Header,
-                    _ => SymbolKind::LineFilter,
+                    kind::PACKAGE_DEFINITION => {
+                        (FILE_SCOPE, SymbolKind::Package)
+                    }
+                    kind::DEFINE_FILENAME_STATEMENT => {
+                        (self.current_scope(), SymbolKind::FilenameVariable)
+                    }
+                    kind::DEFINE_HEADER_STATEMENT => {
+                        (self.current_scope(), SymbolKind::Header)
+                    }
+                    kind::DEFINE_INPUT_LINE_FILTER_STATEMENT => {
+                        (self.current_scope(), SymbolKind::LineFilter)
+                    }
+                    _ => (self.query_or_current(), SymbolKind::Exception),
                 };
                 if let Some(name) = node.child_by_field_id(field::NAME) {
-                    let scope = self.current_scope();
                     self.define_declaration(
                         scope,
                         kind,
@@ -584,18 +582,6 @@ impl<'s> Builder<'s> {
                         name,
                         detail,
                         Ty::File,
-                    );
-                }
-            }
-            kind::EXCEPTION_DECLARATION => {
-                if let Some(name) = node.child_by_field_id(field::NAME) {
-                    let scope = self.query_or_current();
-                    self.define_declaration(
-                        scope,
-                        SymbolKind::Exception,
-                        node,
-                        name,
-                        Ty::Unknown,
                     );
                 }
             }
@@ -1192,7 +1178,10 @@ impl<'s> Builder<'s> {
 
     fn declare_select(&mut self, node: Node) {
         let query_scope = self.query_or_current();
-        self.push(ScopeKind::Block, node);
+        let scope = self.push(ScopeKind::Block, node);
+        self.select_scopes
+            .entry(Span::of(node))
+            .or_insert(scope);
         let children = syntax::code_children(node);
         // Aliases first: the result list and clauses refer to them.
         for child in children
@@ -1543,11 +1532,19 @@ impl<'s> Builder<'s> {
                             let text = self.text(name);
                             if self
                                 .lookup(text, scope, EDGE_SOURCE_VALUES)
-                                .is_some()
+                                .is_none()
+                            {
+                                push_unique(&mut types, text.to_string());
+                            } else if !self.held_edge_types(name, &mut types)
                             {
                                 any = true;
-                            } else {
-                                push_unique(&mut types, text.to_string());
+                            }
+                        }
+                        Some(name)
+                            if name.kind_id() == kind::GLOBAL_ACCUMULATOR =>
+                        {
+                            if !self.held_edge_types(name, &mut types) {
+                                any = true;
                             }
                         }
                         _ => any = true,
@@ -1561,6 +1558,19 @@ impl<'s> Builder<'s> {
         self.declare_alias(node, alias, Ty::Edge(types));
     }
 
+    /// Appends resolved string literals for `name`; returns false if unknown.
+    fn held_edge_types(&self, name: Node, types: &mut Vec<String>) -> bool {
+        match flow::string_values(self.text(name), name, self.source) {
+            Some(held) => {
+                for edge in held {
+                    push_unique(types, edge);
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
     fn declare_node_alias(&mut self, node: Node) {
         let Some(alias) = node.child_by_field_id(field::ALIAS) else {
             return;
@@ -1569,8 +1579,8 @@ impl<'s> Builder<'s> {
         self.declare_alias(node, alias, Ty::Vertex(types));
     }
 
-    /// Vertex types of a `(t:A|B)` node pattern; an unlabeled `(t)` takes the far
-    /// end of the edge before it. The type may name a vertex set variable: `(t:workers)`.
+    /// Vertex types of a node pattern: its labels, else the far end of the
+    /// edge before it.
     fn node_pattern_types(&self, node: Node, scope: ScopeId) -> Vec<String> {
         if node.child_by_field_id(field::TYPE).is_none() {
             return self
@@ -1699,12 +1709,9 @@ impl<'s> Builder<'s> {
                 .unwrap_or_default(),
             kind::SELECT_STATEMENT => {
                 let select_scope = self
-                    .analysis
-                    .scopes
-                    .iter()
-                    .position(|s| {
-                        s.span == Span::of(node) && s.kind == ScopeKind::Block
-                    })
+                    .select_scopes
+                    .get(&Span::of(node))
+                    .copied()
                     .unwrap_or(scope);
                 let result = syntax::children_by_field(node, "result");
                 match result.as_slice() {
@@ -2690,6 +2697,51 @@ mod tests {
         );
         let (_, analysis) = Analysis::parse(&text);
         assert_eq!(alias_type(&analysis, "e"), Ty::Edge(Vec::new()));
+    }
+
+    #[test]
+    fn an_accumulator_filled_from_a_map_of_literals_types_the_edge_alias() {
+        let text = format!(
+            "{SCHEMA}CREATE QUERY q() {{\n  STRING KEY = \"k\";\n  STRING OTHER = \"o\";\n  MapAccum<STRING, STRING> @@m;\n  SetAccum<STRING> @@types;\n  @@m += (KEY -> \"follows\");\n  @@m += (OTHER -> \"likes\");\n  @@types += @@m.get(KEY);\n  R = SELECT t FROM Person:s -(@@types:e)- Person:t;\n  PRINT R;\n}}\n"
+        );
+        let (_, analysis) = Analysis::parse(&text);
+        assert_eq!(
+            alias_type(&analysis, "e"),
+            Ty::Edge(vec!["follows".into()])
+        );
+    }
+
+    #[test]
+    fn a_nested_map_read_with_an_unknown_key_types_the_edge_alias() {
+        let text = format!(
+            "{SCHEMA}CREATE QUERY q(STRING kind) {{\n  STRING EDGE_KEY = \"e\";\n  MapAccum<STRING, MapAccum<STRING, STRING>> @@m;\n  SetAccum<STRING> @@types;\n  @@m += (\"a\" -> (EDGE_KEY -> \"follows\"));\n  @@m += (\"b\" -> (EDGE_KEY -> \"likes\"));\n  @@types += @@m.get(kind).get(EDGE_KEY);\n  R = SELECT t FROM Person:s -(@@types:e)- Person:t;\n  PRINT R;\n}}\n"
+        );
+        let (_, analysis) = Analysis::parse(&text);
+        assert_eq!(
+            alias_type(&analysis, "e"),
+            Ty::Edge(vec!["follows".into(), "likes".into()])
+        );
+    }
+
+    #[test]
+    fn an_accumulator_with_an_unknown_value_leaves_the_edge_alias_untyped() {
+        let text = format!(
+            "{SCHEMA}CREATE QUERY q(STRING given) {{\n  SetAccum<STRING> @@types;\n  @@types += \"follows\";\n  @@types += given;\n  R = SELECT t FROM Person:s -(@@types:e)- Person:t;\n  PRINT R;\n}}\n"
+        );
+        let (_, analysis) = Analysis::parse(&text);
+        assert_eq!(alias_type(&analysis, "e"), Ty::Edge(Vec::new()));
+    }
+
+    #[test]
+    fn an_interpret_query_ignores_values_assigned_in_other_queries() {
+        let text = format!(
+            "{SCHEMA}CREATE QUERY other() {{\n  SetAccum<STRING> @@types;\n  @@types += \"likes\";\n  PRINT @@types;\n}}\nINTERPRET QUERY () {{\n  SetAccum<STRING> @@types;\n  @@types += \"follows\";\n  R = SELECT t FROM Person:s -(@@types:e)- Person:t;\n  PRINT R;\n}}\n"
+        );
+        let (_, analysis) = Analysis::parse(&text);
+        assert_eq!(
+            alias_type(&analysis, "e"),
+            Ty::Edge(vec!["follows".into()])
+        );
     }
 
     #[test]

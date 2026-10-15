@@ -39,7 +39,10 @@ CREATE OR REPLACE OPENCYPHER QUERY adults(INT min_age) FOR GRAPH Social {
 
 // Multi-line mode in the interactive shell
 BEGIN
-CREATE VERTEX Scratch (PRIMARY_ID id INT, note STRING)
+CREATE VERTEX Scratch (
+    PRIMARY_ID id INT,
+    note STRING
+)
 END
 
 EXPORT GRAPH ALL TO "/tmp/social-export"

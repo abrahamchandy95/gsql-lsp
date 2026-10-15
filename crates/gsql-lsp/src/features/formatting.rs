@@ -1,5 +1,5 @@
-//! Re-indents by block structure, keeping hand-aligned continuations, and
-//! splits long parameter and TUPLE lists. Broken files are left alone.
+//! Re-indents by block structure, keeps hand-aligned continuations and
+//! splits long lists. Broken files are left alone.
 
 use std::borrow::Cow;
 
@@ -20,21 +20,6 @@ enum Rule {
     SameAs { row: usize },
     Keep,
 }
-
-/// Clauses of a SELECT block, which may line up with the SELECT keyword.
-const SELECT_CLAUSES: &[&str] = &[
-    "into_clause",
-    "from_clause",
-    "sample_clause",
-    "where_clause",
-    "accum_clause",
-    "per_clause",
-    "post_accum_clause",
-    "group_by_clause",
-    "having_clause",
-    "order_by_clause",
-    "limit_clause",
-];
 
 struct Planner<'a> {
     source: &'a str,
@@ -63,7 +48,7 @@ impl Planner<'_> {
         }
     }
 
-    /// Later rows keep their indent relative to `anchor`, unless already set.
+    /// Marks unset rows in `from_row..=end_row` as continuations of `anchor`.
     fn continuation(
         &mut self,
         anchor: usize,
@@ -96,9 +81,7 @@ impl Planner<'_> {
             return;
         };
         for clause in syntax::named_children(select) {
-            if SELECT_CLAUSES.contains(&clause.kind())
-                && self.starts_line(clause)
-            {
+            if is_select_clause(clause) && self.starts_line(clause) {
                 let row = clause.start_position().row;
                 if let Some(Some(Rule::Continuation { aligned, .. })) =
                     self.rules.get_mut(row)
@@ -236,7 +219,7 @@ impl Planner<'_> {
         // List items (from their list: `parent()` searches from the root).
         let mut listed = std::collections::HashSet::new();
         let mut constructs = Vec::new();
-        syntax::walk(node, |n| {
+        syntax::walk_multiline(node, |n| {
             let multiline = n.start_position().row < n.end_position().row;
             if n != node
                 && multiline
@@ -412,8 +395,8 @@ fn cypher_protected_rows(
     (kept, open)
 }
 
-/// Lines longer than this are split (the GSQL Style Guide).
-const MAX_LINE: usize = 80;
+/// Lines longer than this are split (the Style Guide says 80; 78 leaves room).
+const MAX_LINE: usize = 78;
 
 /// A parameter or TUPLE field list that may be laid out one item per line.
 struct List {
@@ -425,19 +408,31 @@ struct List {
     close_start: usize,
     items: Vec<(usize, usize)>,
     strings: Vec<(usize, usize)>,
+    /// Always wrap one item per line (e.g., vertex/edge definitions).
+    always: bool,
 }
 
 /// The lists that may be laid out, in order: those whose statement starts its
 /// line or follows a sibling's list, without comments or multi-line strings.
 fn breakable_lists(root: Node, source: &str) -> Vec<List> {
     let mut lists: Vec<List> = Vec::new();
-    // By id: by name, every node would scan the grammar's field names.
-    let parameters = syntax::language().field_id_for_name("parameters");
     syntax::walk(root, |node| {
         let (list, open, close, item_kind) = match node.kind_id() {
             kind::TYPEDEF_STATEMENT => (node, "<", ">", "tuple_field"),
-            _ => match parameters
-                .and_then(|id| node.child_by_field_id(id.get()))
+            kind::VERTEX_DEFINITION | kind::EDGE_DEFINITION => {
+                match syntax::children(node).into_iter().find(|c| {
+                    matches!(
+                        c.kind_id(),
+                        kind::VERTEX_ATTRIBUTE_LIST
+                            | kind::EDGE_ATTRIBUTE_LIST
+                    )
+                }) {
+                    Some(attributes) => (attributes, "(", ")", ""),
+                    None => return,
+                }
+            }
+            _ => match node
+                .child_by_field_id(field::PARAMETERS)
                 .filter(|p| p.kind_id() == kind::PARAMETER_LIST)
             {
                 Some(parameters) => (parameters, "(", ")", "parameter"),
@@ -454,11 +449,19 @@ fn breakable_lists(root: Node, source: &str) -> Vec<List> {
         ) else {
             return;
         };
-        let items: Vec<(usize, usize)> = tokens
-            .iter()
-            .filter(|t| t.kind() == item_kind)
-            .map(|t| (t.start_byte(), t.end_byte()))
-            .collect();
+        let items: Vec<(usize, usize)> = if item_kind.is_empty() {
+            schema_items(&tokens)
+        } else {
+            tokens
+                .iter()
+                .filter(|t| t.kind() == item_kind)
+                .map(|t| (t.start_byte(), t.end_byte()))
+                .collect()
+        };
+        // An edge with only its FROM/TO pair stays on one line if it fits.
+        let always = item_kind.is_empty()
+            && (list.kind_id() == kind::VERTEX_ATTRIBUTE_LIST
+                || items.len() > 1);
         let mut strings = Vec::new();
         let mut safe = !items.is_empty();
         syntax::walk(list, |n| match n.kind_id() {
@@ -515,11 +518,94 @@ fn breakable_lists(root: Node, source: &str) -> Vec<List> {
             close_row,
             open_end: open.end_byte(),
             close_start: close.start_byte(),
+            always,
             items,
             strings,
         });
     });
     lists
+}
+
+/// Attribute spans of a schema list, `|`-joined EDGE_PAIRs as one item.
+fn schema_items(tokens: &[Node]) -> Vec<(usize, usize)> {
+    let mut items: Vec<(usize, usize)> = Vec::new();
+    let mut pairs = false;
+    for token in tokens.iter().filter(|t| t.is_named()) {
+        let span = (token.start_byte(), token.end_byte());
+        match (token.kind_id(), pairs, items.last_mut()) {
+            (kind::EDGE_PAIR, true, Some(last)) => last.1 = span.1,
+            (kind::EDGE_PAIR, ..) => {
+                pairs = true;
+                items.push(span);
+            }
+            _ => {
+                pairs = false;
+                items.push(span);
+            }
+        }
+    }
+    items
+}
+
+/// `DISCRIMINATOR(...)` on one line if it fits, else one attribute per line.
+fn layout_discriminator(
+    item: &str,
+    indent: usize,
+    unit: usize,
+    options: &FormattingOptions,
+    newline: &str,
+) -> Option<String> {
+    let (open, close) = (item.find('(')?, item.rfind(')')?);
+    if !item[..open]
+        .trim()
+        .eq_ignore_ascii_case("DISCRIMINATOR")
+        || close < open
+    {
+        return None;
+    }
+    let mut parts = Vec::new();
+    let (mut depth, mut quote, mut start) = (0usize, None, open + 1);
+    let mut chars = item[open + 1..close].char_indices();
+    while let Some((i, c)) = chars.next() {
+        match (quote, c) {
+            (Some(_), '\\') => {
+                chars.next();
+            }
+            (Some(q), _) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '(' | '<') => depth += 1,
+            (None, ')' | '>') => depth = depth.saturating_sub(1),
+            (None, ',') if depth == 0 => {
+                parts.push(&item[start..open + 1 + i]);
+                start = open + 2 + i;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&item[start..close]);
+    let parts: Vec<&str> = parts.iter().map(|p| p.trim()).collect();
+    if quote.is_some() || parts.iter().any(|p| p.is_empty()) {
+        return None;
+    }
+    let head = item[..open].trim_end();
+    let tail = &item[close + 1..];
+    let flat = format!("{head}({}){tail}", parts.join(", "));
+    // Room for the comma that follows the item.
+    if indent + flat.chars().count() < MAX_LINE {
+        return Some(flat);
+    }
+    let inner = render_indent(indent + unit, options);
+    let mut text = format!("{head}(");
+    for (i, part) in parts.iter().enumerate() {
+        let comma = if i + 1 < parts.len() { "," } else { "" };
+        text.push_str(&format!("{newline}{inner}{part}{comma}"));
+    }
+    text.push_str(&format!(
+        "{newline}{}){tail}",
+        render_indent(indent, options)
+    ));
+    Some(text)
 }
 
 /// Whitespace runs outside the strings become single spaces.
@@ -554,6 +640,23 @@ fn is_control_flow(node: Node) -> bool {
             | kind::CASE_STATEMENT
             | kind::WHILE_STATEMENT
             | kind::FOREACH_STATEMENT
+    )
+}
+
+fn is_select_clause(node: Node) -> bool {
+    matches!(
+        node.kind_id(),
+        kind::INTO_CLAUSE
+            | kind::FROM_CLAUSE
+            | kind::SAMPLE_CLAUSE
+            | kind::WHERE_CLAUSE
+            | kind::ACCUM_CLAUSE
+            | kind::PER_CLAUSE
+            | kind::POST_ACCUM_CLAUSE
+            | kind::GROUP_BY_CLAUSE
+            | kind::HAVING_CLAUSE
+            | kind::ORDER_BY_CLAUSE
+            | kind::LIMIT_CLAUSE
     )
 }
 
@@ -612,7 +715,7 @@ pub fn format(
     let mut open_string = vec![false; line_count];
 
     // Lines inside strings are kept; block comments keep their layout.
-    syntax::walk(root, |node| {
+    syntax::walk_multiline(root, |node| {
         let (first, last) =
             (node.start_position().row, node.end_position().row);
         if first == last {
@@ -740,7 +843,7 @@ pub fn format(
         // The first list on this line that spans lines, or any if the line is long.
         let mut first = None;
         while let Some(list) = lists.next_if(|l| l.open_row == row) {
-            if list.close_row > row || long {
+            if list.close_row > row || list.always || long {
                 first = Some(list);
                 break;
             }
@@ -764,6 +867,15 @@ pub fn format(
                             &list.strings,
                         ));
                     }
+                    if let Some(laid_out) = layout_discriminator(
+                        &item,
+                        indent + unit,
+                        unit,
+                        options,
+                        newline,
+                    ) {
+                        item = Cow::Owned(laid_out);
+                    }
                     let comma = if i < last { "," } else { "" };
                     text.push_str(&format!(
                         "{newline}{}{item}{comma}",
@@ -782,7 +894,12 @@ pub fn format(
                 } else {
                     rest.trim()
                 };
-                let separator = if rest.is_empty() { "" } else { " " };
+                let separator =
+                    if rest.is_empty() || rest.starts_with([';', ',']) {
+                        ""
+                    } else {
+                        " "
+                    };
                 let close = format!(
                     "{}{separator}",
                     &source[list.close_start..list.close_start + 1]
@@ -793,7 +910,10 @@ pub fn format(
                 while let Some(candidate) =
                     lists.next_if(|l| l.open_row == list.close_row)
                 {
-                    if candidate.close_row > candidate.open_row || long {
+                    if candidate.close_row > candidate.open_row
+                        || candidate.always
+                        || long
+                    {
                         next = Some(candidate);
                         break;
                     }
@@ -1365,5 +1485,37 @@ mod tests {
     fn formatting_is_idempotent() {
         let input = "CREATE QUERY q() {\n  FOREACH x IN @@s DO\n    CASE\n      WHEN x > 1 THEN\n        PRINT x;\n      ELSE\n        PRINT 0;\n    END;\n  END;\n}\n";
         assert_eq!(format_text(input, KeywordCase::Preserve), input);
+    }
+
+    #[test]
+    fn long_vertex_and_edge_definitions_get_one_attribute_per_line() {
+        // Vertex definitions always get one attribute per line, edges when they
+        // have more than their FROM/TO pair, as in the TigerGraph documentation.
+        let input = "CREATE SCHEMA_CHANGE JOB j FOR GRAPH G {\nADD VERTEX Part(PRIMARY_ID part_id STRING, description STRING, is_085 BOOL DEFAULT \"false\") WITH STATS=\"OUTDEGREE_BY_EDGETYPE\", PRIMARY_ID_AS_ATTRIBUTE=\"true\";\nADD UNDIRECTED EDGE Link(FROM A, TO B | FROM C, TO D, DISCRIMINATOR( find_no STRING, valid_from INT), qty DOUBLE DEFAULT \"1\", note STRING);\nADD VERTEX Short(PRIMARY_ID id STRING);\n}\n";
+        let expected = "CREATE SCHEMA_CHANGE JOB j FOR GRAPH G {\n  ADD VERTEX Part(\n    PRIMARY_ID part_id STRING,\n    description STRING,\n    is_085 BOOL DEFAULT \"false\"\n  ) WITH STATS=\"OUTDEGREE_BY_EDGETYPE\", PRIMARY_ID_AS_ATTRIBUTE=\"true\";\n  ADD UNDIRECTED EDGE Link(\n    FROM A, TO B | FROM C, TO D,\n    DISCRIMINATOR(find_no STRING, valid_from INT),\n    qty DOUBLE DEFAULT \"1\",\n    note STRING\n  );\n  ADD VERTEX Short(\n    PRIMARY_ID id STRING\n  );\n}\n";
+        let once = format_text(input, KeywordCase::Preserve);
+        assert_eq!(once, expected);
+        assert_eq!(format_text(&once, KeywordCase::Preserve), once);
+    }
+
+    #[test]
+    fn multi_line_vertex_definitions_with_comments_are_left_alone() {
+        let input = "CREATE VERTEX Person (\n  PRIMARY_ID id STRING, // key\n  name STRING\n);\n";
+        assert_eq!(format_text(input, KeywordCase::Preserve), input);
+    }
+
+    #[test]
+    fn pair_only_edges_stay_on_one_line_and_long_discriminators_split() {
+        let input = "CREATE SCHEMA_CHANGE JOB j FOR GRAPH G {\nADD UNDIRECTED EDGE E(FROM A, TO B);\nADD DIRECTED EDGE LongOne(FROM Part, TO Part, DISCRIMINATOR( bom_set STRING, program STRING, find_no STRING, staged_ts INT), qty INT);\n}\n";
+        let expected = "CREATE SCHEMA_CHANGE JOB j FOR GRAPH G {\n    ADD UNDIRECTED EDGE E(FROM A, TO B);\n    ADD DIRECTED EDGE LongOne(\n        FROM Part, TO Part,\n        DISCRIMINATOR(\n            bom_set STRING,\n            program STRING,\n            find_no STRING,\n            staged_ts INT\n        ),\n        qty INT\n    );\n}\n";
+        let fixture = Fixture::new(input);
+        let edits =
+            format(&fixture.snapshot(), &FormattingOptions::default(), None);
+        let once = apply(input, &edits);
+        assert_eq!(once, expected);
+        let again = Fixture::new(&once);
+        let edits =
+            format(&again.snapshot(), &FormattingOptions::default(), None);
+        assert!(edits.is_empty(), "{edits:?}");
     }
 }
