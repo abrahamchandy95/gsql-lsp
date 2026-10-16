@@ -328,7 +328,7 @@ pub mod keyword {
     pub const QUEUE: u16 = 214;
     pub const QUIT: u16 = 221;
     pub const RAISE: u16 = 111;
-    pub const RANGE: u16 = 546;
+    pub const RANGE: u16 = 547;
     pub const REPLACE: u16 = 66;
     pub const RESUME: u16 = 218;
     pub const RETURN: u16 = 100;

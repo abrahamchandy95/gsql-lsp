@@ -38,7 +38,12 @@ fn corpus_sources(out: &mut Vec<(String, String)>) {
             .split(&format!("{separator}\n"))
             .collect();
         for pair in parts[1..].chunks(2) {
-            if let [title, body] = pair {
+            // `:error` cases are meant not to parse.
+            if let [title, body] = pair
+                && !title
+                    .lines()
+                    .any(|line| line.trim() == ":error")
+            {
                 let source = body
                     .split(&format!("\n{divider}\n"))
                     .next()

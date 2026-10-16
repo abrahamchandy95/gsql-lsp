@@ -5,7 +5,7 @@ CREATE OR REPLACE QUERY money_trail(
     VERTEX<Account> source,
     DOUBLE min_amount = 1000.0
 )
-  FOR GRAPH Finance SYNTAX v2 {
+    FOR GRAPH Finance SYNTAX v2 {
     SetAccum<VERTEX<Account>> @@reached;
     SumAccum<DOUBLE> @received;
 
@@ -22,7 +22,7 @@ CREATE OR REPLACE QUERY money_trail(
 
 // Customers sharing a device with a known-risky customer.
 CREATE QUERY shared_devices(VERTEX<Customer> suspect, DOUBLE threshold = 0.8)
-  FOR GRAPH Finance SYNTAX v2 {
+    FOR GRAPH Finance SYNTAX v2 {
     MapAccum<VERTEX<Customer>, SetAccum<STRING>> @@devices_by_customer;
     OrAccum @risky;
 
@@ -42,7 +42,7 @@ CREATE QUERY large_transfers(
     INT top_n = 20,
     STRING out_file = ""
 )
-  FOR GRAPH Finance {
+    FOR GRAPH Finance {
     TYPEDEF TUPLE <
         VERTEX<Account> sender,
         VERTEX<Account> receiver,
@@ -86,14 +86,14 @@ CREATE QUERY review_accounts(DOUBLE daily_limit = 50000.0) FOR GRAPH Finance {
                POST-ACCUM
                  CASE
                      WHEN a.@last_day > daily_limit AND NOT a.is_blocked THEN
-                       a.is_blocked = TRUE,
-                       @@blocked_ids += a.id
+                         a.is_blocked = TRUE,
+                         @@blocked_ids += a.id
                  END;
 
     // Unblock accounts that are empty and saw no transfers in the last day.
     UPDATE a FROM Accounts:a
-      SET a.is_blocked = FALSE
-      WHERE a.balance <= 0 AND a.@last_day < 0.01;
+        SET a.is_blocked = FALSE
+        WHERE a.balance <= 0 AND a.@last_day < 0.01;
 
     Tiers = SELECT a FROM Accounts:a
             POST-ACCUM

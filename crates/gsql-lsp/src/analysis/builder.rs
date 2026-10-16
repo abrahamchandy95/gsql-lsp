@@ -590,17 +590,23 @@ impl<'s> Builder<'s> {
                     self.declare(value);
                 }
                 if let Some(name) = node.child_by_field_id(field::NAME) {
-                    let types = match node.child_by_field_id(field::TYPE) {
-                        Some(t) if t.kind_id() == kind::IDENTIFIER => {
-                            vec![self.text(t).to_string()]
+                    // `Seeds (A|B) = ...` has several `type` children.
+                    let mut types = Vec::new();
+                    let mut ty_name = String::new();
+                    for t in syntax::children_by_field(node, "type") {
+                        let text = self.text(t);
+                        if !ty_name.is_empty() {
+                            ty_name.push('|');
                         }
-                        _ => Vec::new(),
-                    };
+                        ty_name.push_str(text);
+                        if t.kind_id() == kind::IDENTIFIER {
+                            types.push(text.to_string());
+                        }
+                    }
+                    if ty_name.is_empty() {
+                        ty_name.push_str("ANY");
+                    }
                     let scope = self.query_or_current();
-                    let ty_name = node
-                        .child_by_field_id(field::TYPE)
-                        .map(|t| self.text(t))
-                        .unwrap_or("ANY");
                     let detail = format!("{} ({ty_name})", self.text(name));
                     self.define_named(
                         scope,
@@ -1375,13 +1381,16 @@ impl<'s> Builder<'s> {
             {
                 return None;
             }
-            let sides: Vec<&Vec<String>> =
+            let sides: &[&[String]] =
                 match (ends.directed, outgoing, incoming) {
-                    (true, true, false) => vec![&ends.to],
-                    (true, false, true) => vec![&ends.from],
-                    _ => vec![&ends.from, &ends.to],
+                    (true, true, false) => &[&ends.to],
+                    (true, false, true) => &[&ends.from],
+                    _ => &[&ends.from, &ends.to],
                 };
-            extend_unique(&mut types, sides.into_iter().flatten().cloned());
+            extend_unique(
+                &mut types,
+                sides.iter().copied().flatten().cloned(),
+            );
         }
         Some(types)
     }
@@ -1604,14 +1613,14 @@ impl<'s> Builder<'s> {
     /// Edge types of a `[e:A|B]` relationship: empty (any edge) when a label
     /// is `_` or an accumulator.
     fn relationship_types(&self, detail: Node) -> Vec<String> {
-        let labels = syntax::children_by_field(detail, "type");
-        if labels
-            .iter()
-            .any(|t| t.kind_id() != kind::IDENTIFIER)
-        {
-            return Vec::new();
-        }
-        field_list(detail, "type", self.source)
+        syntax::children_by_field(detail, "type")
+            .into_iter()
+            .map(|t| {
+                (t.kind_id() == kind::IDENTIFIER)
+                    .then(|| self.text(t).to_string())
+            })
+            .collect::<Option<Vec<_>>>()
+            .unwrap_or_default()
     }
 
     /// Best-effort static type of an expression (pass 1 and 2 share it).

@@ -781,7 +781,15 @@ export default grammar({
     vertex_set_declaration: $ => seq(
       field('name', $.identifier),
       '(',
-      field('type', choice($.identifier, alias(kw('ANY'), $.any), $.wildcard)),
+      // ANY and `_` stand alone; only named types join with `|`.
+      choice(
+        seq(
+          field('type', $.identifier),
+          repeat(seq('|', field('type', $.identifier))),
+        ),
+        field('type', alias(kw('ANY'), $.any)),
+        field('type', $.wildcard),
+      ),
       ')',
       '=',
       field('value', $._assignment_value),

@@ -245,3 +245,42 @@ CREATE QUERY decls() {
         right: (vertex_set_literal
           (identifier)
           (global_accumulator))))))
+
+================================================================================
+Vertex set declared with several vertex types
+================================================================================
+
+CREATE QUERY typed_sets() {
+  Sources (MPN|GB) = {};
+  Other (Part) = {Part.*};
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    body: (query_body
+      (vertex_set_declaration
+        name: (identifier)
+        type: (identifier)
+        type: (identifier)
+        value: (vertex_set_literal))
+      (vertex_set_declaration
+        name: (identifier)
+        type: (identifier)
+        value: (vertex_set_literal
+          (type_wildcard
+            type: (identifier)))))))
+
+================================================================================
+ANY does not join other vertex types
+:error
+================================================================================
+
+CREATE QUERY any_union() {
+  Sources (ANY|GB) = {};
+}
+
+--------------------------------------------------------------------------------

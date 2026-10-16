@@ -33,8 +33,8 @@ CREATE TEMPLATE QUERY social_lib.degree(VERTEX v, STRING e_type) {
 
 // openCypher queries (TigerGraph 4.x)
 CREATE OR REPLACE OPENCYPHER QUERY adults(INT min_age) FOR GRAPH Social {
-  MATCH (p:Person) WHERE p.age >= $min_age
-  RETURN p.name AS name, p.age AS age
+    MATCH (p:Person) WHERE p.age >= $min_age
+    RETURN p.name AS name, p.age AS age
 }
 
 // Multi-line mode in the interactive shell

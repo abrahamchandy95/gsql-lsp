@@ -2587,6 +2587,55 @@ impl<'s> Checker<'s, '_> {
         }
     }
 
+    /// A vertex set keeps the vertex types of its declaration or first
+    /// assignment; assigning it a set of other types is rejected by GSQL.
+    fn vertex_set_types(&mut self, left: Node, right: Node) {
+        let Some((name, declared)) = self
+            .symbol_of(left)
+            .filter(|s| {
+                s.kind == SymbolKind::VertexSet
+                    && s.name_span != Span::of(left)
+            })
+            .and_then(|s| match &s.ty {
+                Ty::VertexSet(types) if !types.is_empty() => {
+                    Some((s.name.clone(), types.clone()))
+                }
+                _ => None,
+            })
+        else {
+            return;
+        };
+        let Some(Ty::VertexSet(given) | Ty::Vertex(given)) =
+            self.operand_type(unparenthesized(right))
+        else {
+            return;
+        };
+        let stray: Vec<&String> = given
+            .iter()
+            .filter(|t| !declared.contains(*t))
+            .collect();
+        if stray.is_empty() {
+            return;
+        }
+        let all: Vec<&str> = declared
+            .iter()
+            .chain(stray.iter().copied())
+            .map(String::as_str)
+            .collect();
+        let message = format!(
+            "Vertex set `{name}` holds {} vertices (its types are fixed by its first assignment), \
+             but this assigns {}; declare it with all its types first, e.g. `{name} ({}) = {{}};`",
+            declared.join("|"),
+            stray
+                .iter()
+                .map(|t| t.as_str())
+                .collect::<Vec<_>>()
+                .join("|"),
+            all.join("|")
+        );
+        self.report(right, severity::ERROR, "vertex-set-type", message);
+    }
+
     /// Certain type mismatches: strings in numeric or BOOL places.
     fn type_checks(&mut self, node: Node, kind: u16, context: &Context) {
         match kind {
@@ -2598,6 +2647,11 @@ impl<'s> Checker<'s, '_> {
                 ) else {
                     return;
                 };
+                if operator.kind() == "="
+                    && left.kind_id() == kind::IDENTIFIER
+                {
+                    self.vertex_set_types(left, right);
+                }
                 if self.value_kind(right) != Some(ValueKind::Text) {
                     return;
                 }
@@ -3370,6 +3424,38 @@ mod tests {
         Fixture, SCHEMA_URI, findings, with_code,
     };
     use crate::lsp::types::{Position, Range};
+
+    #[test]
+    fn a_vertex_set_cannot_be_assigned_other_vertex_types() {
+        // The set keeps the types it was declared with (GSQL rejects the
+        // assignment), and the two forms the compiler suggests are accepted.
+        let query = |declaration: &str| {
+            format!(
+                "CREATE QUERY q() FOR GRAPH g {{\n  {declaration}\n  Mpns (MPN) = {{MPN.*}};\n  Sources = Mpns;\n}}\n"
+            )
+        };
+        let found = findings(&query("Sources (Part) = {Part.*};"), &[]);
+        let errors = with_code(&found, "vertex-set-type");
+        assert_eq!(errors.len(), 1, "{found:?}");
+        assert!(errors[0].contains("`Sources` holds Part vertices"));
+        assert!(errors[0].contains("assigns MPN"));
+        assert!(errors[0].contains("`Sources (Part|MPN) = {};`"));
+        for fixed in [
+            "Sources (Part|MPN) = {};",
+            "Sources (MPN) = {};",
+            "Sources (ANY) = {};",
+        ] {
+            let found = findings(&query(fixed), &[]);
+            assert!(
+                with_code(&found, "vertex-set-type").is_empty(),
+                "{fixed}"
+            );
+            assert!(
+                with_code(&found, "syntax-error").is_empty(),
+                "{fixed}: {found:?}"
+            );
+        }
+    }
 
     #[test]
     fn reserved_words_cannot_be_names() {

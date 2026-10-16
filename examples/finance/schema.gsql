@@ -46,7 +46,7 @@ CREATE DIRECTED EDGE Transfer (
     amount DOUBLE,
     channel STRING
 )
-  WITH REVERSE_EDGE="received"
+    WITH REVERSE_EDGE="received"
 
 // Payments go to merchants or to other accounts.
 CREATE DIRECTED EDGE Pays (

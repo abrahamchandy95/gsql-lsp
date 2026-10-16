@@ -4159,16 +4159,45 @@
           "value": "("
         },
         {
-          "type": "FIELD",
-          "name": "type",
-          "content": {
-            "type": "CHOICE",
-            "members": [
-              {
-                "type": "SYMBOL",
-                "name": "identifier"
-              },
-              {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "FIELD",
+                  "name": "type",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "identifier"
+                  }
+                },
+                {
+                  "type": "REPEAT",
+                  "content": {
+                    "type": "SEQ",
+                    "members": [
+                      {
+                        "type": "STRING",
+                        "value": "|"
+                      },
+                      {
+                        "type": "FIELD",
+                        "name": "type",
+                        "content": {
+                          "type": "SYMBOL",
+                          "name": "identifier"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "FIELD",
+              "name": "type",
+              "content": {
                 "type": "ALIAS",
                 "content": {
                   "type": "ALIAS",
@@ -4182,13 +4211,17 @@
                 },
                 "named": true,
                 "value": "any"
-              },
-              {
+              }
+            },
+            {
+              "type": "FIELD",
+              "name": "type",
+              "content": {
                 "type": "SYMBOL",
                 "name": "wildcard"
               }
-            ]
-          }
+            }
+          ]
         },
         {
           "type": "STRING",
