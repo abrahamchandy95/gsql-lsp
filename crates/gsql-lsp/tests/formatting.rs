@@ -161,3 +161,66 @@ CREATE OR REPLACE QUERY retrieve_staleflag_as_of(
     );
     assert!(two.contains("\n    stale INT\n  > GridCell;\n"), "{two}");
 }
+
+/// `PRINT` items and SELECT clauses written 2 spaces in, and the `;` that ends
+/// a SELECT, get the same 4-space levels as the rest of the file.
+#[test]
+fn print_items_and_select_clauses_are_indented_by_the_width() {
+    let input = "\
+CREATE QUERY fetch_descendants(VERTEX<Part> part_id) FOR GRAPH BOM {
+    SetAccum<VERTEX<Part>> @@vertices;
+    SetAccum<EDGE> @@edges;
+    input_part = {part_id};
+    IF TRUE THEN
+        children = SELECT t
+          FROM input_part:s - (E:e) - Part:t
+          WHERE e.live == TRUE
+            AND e.valid == TRUE
+          ACCUM @@vertices += t, @@edges += e
+        ;
+        WHILE children.size() > 0 DO
+            children = SELECT t
+              FROM children:s - (E:e) - Part:t
+              ACCUM @@vertices += t, @@edges += e
+          ;
+        END;
+        PRINT
+          @@vertices AS vertices,
+          @@edges AS edges
+        ;
+    END;
+}
+";
+    let expected = "\
+CREATE QUERY fetch_descendants(VERTEX<Part> part_id) FOR GRAPH BOM {
+    SetAccum<VERTEX<Part>> @@vertices;
+    SetAccum<EDGE> @@edges;
+    input_part = {part_id};
+    IF TRUE THEN
+        children = SELECT t
+            FROM input_part:s - (E:e) - Part:t
+            WHERE e.live == TRUE
+            AND e.valid == TRUE
+            ACCUM @@vertices += t, @@edges += e
+        ;
+        WHILE children.size() > 0 DO
+            children = SELECT t
+                FROM children:s - (E:e) - Part:t
+                ACCUM @@vertices += t, @@edges += e
+            ;
+        END;
+        PRINT
+            @@vertices AS vertices,
+            @@edges AS edges
+        ;
+    END;
+}
+";
+    let once = format_text(input, KeywordCase::Preserve, 4).unwrap();
+    assert_eq!(once, expected);
+    assert_eq!(format_text(&once, KeywordCase::Preserve, 4).unwrap(), once);
+    for line in once.lines() {
+        let indent = line.len() - line.trim_start().len();
+        assert_eq!(indent % 4, 0, "{line:?}");
+    }
+}

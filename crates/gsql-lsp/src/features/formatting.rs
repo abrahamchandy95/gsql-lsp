@@ -1,5 +1,5 @@
-//! Re-indents by block structure, keeps hand-aligned continuations and
-//! splits long lists. Broken files are left alone.
+//! Re-indents by block structure, keeps hand-aligned continuations (at least
+//! one level in) and splits long lists. Broken files are left alone.
 
 use std::borrow::Cow;
 
@@ -117,11 +117,33 @@ impl Planner<'_> {
     fn container(&mut self, node: Node, level: usize) {
         for child in syntax::children(node) {
             match child.kind() {
-                "{" | ";" | "," => {}
+                "{" | "," => {}
+                ";" => self.terminator(child),
                 "}" => {
                     self.set_if_starts_line(child, level.saturating_sub(1))
                 }
                 _ => self.statement(child, level),
+            }
+        }
+    }
+
+    /// A `;` alone on its line lines up with the first line of the statement
+    /// it ends, not with the control flow around it or where it was written.
+    fn terminator(&mut self, semicolon: Node) {
+        if !self.starts_line(semicolon) {
+            return;
+        }
+        let mut statement = semicolon.prev_sibling();
+        while let Some(comment) =
+            statement.filter(|c| c.kind_id() == kind::COMMENT)
+        {
+            statement = comment.prev_sibling();
+        }
+        let row = semicolon.start_position().row;
+        if let Some(statement) = statement.filter(|s| s.is_named()) {
+            let anchor = statement.start_position().row;
+            if anchor < row {
+                self.set(row, Rule::Under { anchor, depth: 0 });
             }
         }
     }
@@ -329,7 +351,9 @@ impl Planner<'_> {
 
     fn block(&mut self, node: Node, level: usize) {
         for child in syntax::children(node) {
-            if child.kind() != ";" {
+            if child.kind() == ";" {
+                self.terminator(child);
+            } else {
                 self.statement(child, level);
             }
         }
@@ -816,12 +840,13 @@ pub fn format(
                 let closes = shown
                     .trim_start_matches([' ', '\t'])
                     .starts_with([')', ']', '}']);
+                // At least one level in (so `PRINT` items and clauses
+                // written 2 spaces in get 4); hand-aligned lines further in
+                // keep their alignment.
                 let relative = if closes || (aligned && relative == 0) {
                     relative.max(0)
-                } else if relative <= 0 {
-                    unit as isize
                 } else {
-                    relative
+                    relative.max(unit as isize)
                 };
                 (new_indent[anchor] as isize + relative).max(0) as usize
             }
@@ -1256,6 +1281,51 @@ mod tests {
             once,
             "second pass"
         );
+    }
+
+    /// Like `assert_formats`, with the default width of 4 spaces.
+    fn assert_formats_default(input: &str, expected: &str) {
+        let format_once = |text: &str| {
+            let fixture = Fixture::new(text);
+            let edits = format(
+                &fixture.snapshot(),
+                &FormattingOptions::default(),
+                None,
+            );
+            apply(text, &edits)
+        };
+        let once = format_once(input);
+        assert_eq!(once, expected);
+        assert_eq!(format_once(&once), once, "second pass");
+    }
+
+    #[test]
+    fn continuations_less_than_a_level_in_get_a_full_level() {
+        // `PRINT` items and SELECT clauses written 2 spaces in get 4, so the
+        // file does not mix widths; alignments further in stay as written.
+        let input = "CREATE QUERY q() FOR GRAPH g {\n  R = SELECT t\n    FROM S:s -(E:e)- T:t\n    WHERE e.x == 1\n      AND e.y == 2\n    ACCUM @@a += 1;\n  PRINT\n    @@a AS a,\n    @@b AS b;\n  PRINT R,\n        @@a;\n}\n";
+        let expected = "CREATE QUERY q() FOR GRAPH g {\n    R = SELECT t\n        FROM S:s -(E:e)- T:t\n        WHERE e.x == 1\n        AND e.y == 2\n        ACCUM @@a += 1;\n    PRINT\n        @@a AS a,\n        @@b AS b;\n    PRINT R,\n          @@a;\n}\n";
+        assert_formats_default(input, expected);
+        // One space in is also less than a level.
+        let input = "CREATE QUERY q() FOR GRAPH g {\n    PRINT\n     1,\n       2;\n}\n";
+        let expected = "CREATE QUERY q() FOR GRAPH g {\n    PRINT\n        1,\n        2;\n}\n";
+        assert_formats_default(input, expected);
+    }
+
+    #[test]
+    fn a_lone_semicolon_lines_up_with_its_statement() {
+        // At the top of the body it was never re-indented; inside control
+        // flow it followed the `IF` (and its own offset from it), not the
+        // statement it ends.
+        let input = "CREATE QUERY q() FOR GRAPH g {\n  R = SELECT t\n      FROM S:s -(E:e)- T:t\n  ;\n  IF TRUE THEN\n      R = SELECT t\n          FROM S:s -(E:e)- T:t\n      // last clause\n        ;\n  END;\n}\n";
+        let expected = "CREATE QUERY q() FOR GRAPH g {\n    R = SELECT t\n        FROM S:s -(E:e)- T:t\n    ;\n    IF TRUE THEN\n        R = SELECT t\n            FROM S:s -(E:e)- T:t\n        // last clause\n        ;\n    END;\n}\n";
+        assert_formats_default(input, expected);
+    }
+
+    #[test]
+    fn four_space_select_and_print_layouts_are_left_alone() {
+        let text = "CREATE QUERY q() FOR GRAPH g {\n    R = SELECT t\n        FROM S:s -(E:e)- T:t\n        WHERE e.x == 1\n        AND e.y == 2\n        ACCUM @@a += 1\n    ;\n    WHILE TRUE DO\n        R = SELECT t\n            FROM S:s -(E:e)- T:t\n        ;\n        PRINT\n            R AS r,\n            @@a AS a\n        ;\n    END;\n}\n";
+        assert_formats_default(text, text);
     }
 
     #[test]
