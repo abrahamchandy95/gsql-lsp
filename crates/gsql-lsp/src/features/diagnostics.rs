@@ -3203,6 +3203,20 @@ mod tests {
     }
 
     #[test]
+    fn a_keyword_that_would_be_read_as_a_name_is_not_suggested() {
+        // `{AND.*}` only parses as a vertex type named AND: no fix for `ANY`.
+        let text = "CREATE QUERY q() {\n  S = {ANY.*};\n  PRINT S;\n}\n";
+        let found = messages(text);
+        assert!(!found.is_empty(), "the mistake is still reported");
+        assert!(
+            !found
+                .iter()
+                .any(|m| m.contains("did you mean `AND`")),
+            "{found:?}"
+        );
+    }
+
+    #[test]
     fn finds_typos_in_loosely_read_commands() {
         let text = "GRANT ROLE analyst ON GRAPRH Social TO alice, bob\nREVOKE ROLE r ON GRAPH Social FROM bob\nEXPORT GRAH ALL TO \"/tmp/x\"\nEXPORT GRAPH ALL TO \"/tmp/x\"\n";
         assert_eq!(

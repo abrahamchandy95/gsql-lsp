@@ -1561,8 +1561,8 @@ mod tests {
     fn long_vertex_and_edge_definitions_get_one_attribute_per_line() {
         // Vertex definitions always get one attribute per line, edges when they
         // have more than their FROM/TO pair, as in the TigerGraph documentation.
-        let input = "CREATE SCHEMA_CHANGE JOB j FOR GRAPH G {\nADD VERTEX Part(PRIMARY_ID part_id STRING, description STRING, is_085 BOOL DEFAULT \"false\") WITH STATS=\"OUTDEGREE_BY_EDGETYPE\", PRIMARY_ID_AS_ATTRIBUTE=\"true\";\nADD UNDIRECTED EDGE Link(FROM A, TO B | FROM C, TO D, DISCRIMINATOR( find_no STRING, valid_from INT), qty DOUBLE DEFAULT \"1\", note STRING);\nADD VERTEX Short(PRIMARY_ID id STRING);\n}\n";
-        let expected = "CREATE SCHEMA_CHANGE JOB j FOR GRAPH G {\n  ADD VERTEX Part(\n    PRIMARY_ID part_id STRING,\n    description STRING,\n    is_085 BOOL DEFAULT \"false\"\n  ) WITH STATS=\"OUTDEGREE_BY_EDGETYPE\", PRIMARY_ID_AS_ATTRIBUTE=\"true\";\n  ADD UNDIRECTED EDGE Link(\n    FROM A, TO B | FROM C, TO D,\n    DISCRIMINATOR(find_no STRING, valid_from INT),\n    qty DOUBLE DEFAULT \"1\",\n    note STRING\n  );\n  ADD VERTEX Short(\n    PRIMARY_ID id STRING\n  );\n}\n";
+        let input = "CREATE SCHEMA_CHANGE JOB j FOR GRAPH G {\nADD VERTEX Item(PRIMARY_ID item_id STRING, description STRING, in_use BOOL DEFAULT \"false\") WITH STATS=\"OUTDEGREE_BY_EDGETYPE\", PRIMARY_ID_AS_ATTRIBUTE=\"true\";\nADD UNDIRECTED EDGE Link(FROM A, TO B | FROM C, TO D, DISCRIMINATOR( line_no STRING, valid_from INT), qty DOUBLE DEFAULT \"1\", note STRING);\nADD VERTEX Short(PRIMARY_ID id STRING);\n}\n";
+        let expected = "CREATE SCHEMA_CHANGE JOB j FOR GRAPH G {\n  ADD VERTEX Item(\n    PRIMARY_ID item_id STRING,\n    description STRING,\n    in_use BOOL DEFAULT \"false\"\n  ) WITH STATS=\"OUTDEGREE_BY_EDGETYPE\", PRIMARY_ID_AS_ATTRIBUTE=\"true\";\n  ADD UNDIRECTED EDGE Link(\n    FROM A, TO B | FROM C, TO D,\n    DISCRIMINATOR(line_no STRING, valid_from INT),\n    qty DOUBLE DEFAULT \"1\",\n    note STRING\n  );\n  ADD VERTEX Short(\n    PRIMARY_ID id STRING\n  );\n}\n";
         let once = format_text(input, KeywordCase::Preserve);
         assert_eq!(once, expected);
         assert_eq!(format_text(&once, KeywordCase::Preserve), once);
@@ -1576,8 +1576,8 @@ mod tests {
 
     #[test]
     fn pair_only_edges_stay_on_one_line_and_long_discriminators_split() {
-        let input = "CREATE SCHEMA_CHANGE JOB j FOR GRAPH G {\nADD UNDIRECTED EDGE E(FROM A, TO B);\nADD DIRECTED EDGE LongOne(FROM Part, TO Part, DISCRIMINATOR( bom_set STRING, program STRING, find_no STRING, staged_ts INT), qty INT);\n}\n";
-        let expected = "CREATE SCHEMA_CHANGE JOB j FOR GRAPH G {\n    ADD UNDIRECTED EDGE E(FROM A, TO B);\n    ADD DIRECTED EDGE LongOne(\n        FROM Part, TO Part,\n        DISCRIMINATOR(\n            bom_set STRING,\n            program STRING,\n            find_no STRING,\n            staged_ts INT\n        ),\n        qty INT\n    );\n}\n";
+        let input = "CREATE SCHEMA_CHANGE JOB j FOR GRAPH G {\nADD UNDIRECTED EDGE E(FROM A, TO B);\nADD DIRECTED EDGE LongOne(FROM Item, TO Item, DISCRIMINATOR( version STRING, channel STRING, line_no STRING, loaded_ts INT), qty INT);\n}\n";
+        let expected = "CREATE SCHEMA_CHANGE JOB j FOR GRAPH G {\n    ADD UNDIRECTED EDGE E(FROM A, TO B);\n    ADD DIRECTED EDGE LongOne(\n        FROM Item, TO Item,\n        DISCRIMINATOR(\n            version STRING,\n            channel STRING,\n            line_no STRING,\n            loaded_ts INT\n        ),\n        qty INT\n    );\n}\n";
         let fixture = Fixture::new(input);
         let edits =
             format(&fixture.snapshot(), &FormattingOptions::default(), None);

@@ -172,20 +172,20 @@ CREATE OR REPLACE QUERY retrieve_staleflag_as_of(
 #[test]
 fn print_items_and_select_clauses_are_indented_by_the_width() {
     let input = "\
-CREATE QUERY fetch_descendants(VERTEX<Part> part_id) FOR GRAPH BOM {
-    SetAccum<VERTEX<Part>> @@vertices;
+CREATE QUERY fetch_descendants(VERTEX<Item> item_id) FOR GRAPH Store {
+    SetAccum<VERTEX<Item>> @@vertices;
     SetAccum<EDGE> @@edges;
-    input_part = {part_id};
+    input_item = {item_id};
     IF TRUE THEN
         children = SELECT t
-          FROM input_part:s - (E:e) - Part:t
+          FROM input_item:s - (E:e) - Item:t
           WHERE e.live == TRUE
             AND e.valid == TRUE
           ACCUM @@vertices += t, @@edges += e
         ;
         WHILE children.size() > 0 DO
             children = SELECT t
-              FROM children:s - (E:e) - Part:t
+              FROM children:s - (E:e) - Item:t
               ACCUM @@vertices += t, @@edges += e
           ;
         END;
@@ -197,20 +197,20 @@ CREATE QUERY fetch_descendants(VERTEX<Part> part_id) FOR GRAPH BOM {
 }
 ";
     let expected = "\
-CREATE QUERY fetch_descendants(VERTEX<Part> part_id) FOR GRAPH BOM {
-    SetAccum<VERTEX<Part>> @@vertices;
+CREATE QUERY fetch_descendants(VERTEX<Item> item_id) FOR GRAPH Store {
+    SetAccum<VERTEX<Item>> @@vertices;
     SetAccum<EDGE> @@edges;
-    input_part = {part_id};
+    input_item = {item_id};
     IF TRUE THEN
         children = SELECT t
-            FROM input_part:s - (E:e) - Part:t
+            FROM input_item:s - (E:e) - Item:t
             WHERE e.live == TRUE
             AND e.valid == TRUE
             ACCUM @@vertices += t, @@edges += e
         ;
         WHILE children.size() > 0 DO
             children = SELECT t
-                FROM children:s - (E:e) - Part:t
+                FROM children:s - (E:e) - Item:t
                 ACCUM @@vertices += t, @@edges += e
             ;
         END;

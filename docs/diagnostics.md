@@ -83,7 +83,7 @@ Reference for diagnostic codes emitted by `gsql-lsp`.
 | `per-alias`              | Error    | Alias used outside PER clause list                      | `languageRules` |
 | `pattern-join`           | Warning  | Disjoint FROM patterns cannot be joined                 | `languageRules` |
 | `type-mismatch`          | Warning  | Incompatible types in expression, assignment, or return | `languageRules` |
-| `vertex-set-type`        | Error    | Vertex set assigned vertex types it does not hold       | `languageRules` |
+| `vertex-set-type`        | Error    | Invalid vertex set types in declaration or assignment   | `languageRules` |
 | `float-equality`         | Warning  | Exact equality comparison on floating-point values      | `floatEquality` |
 | `virtual-edge`           | Error    | Invalid declaration or placement of virtual edge        | `languageRules` |
 | `interpreted-mode`       | Warning  | Feature not supported in interpreted query execution    | `languageRules` |

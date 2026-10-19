@@ -599,7 +599,7 @@ impl<'s> Search<'s> {
 
     /// Parses `text` with words replaced. `None` when the budget is spent or
     /// the first replacement ends up inside an ERROR node (it does not fit
-    /// there either).
+    /// there either) or is read as a name (`{AND.*}`), not as the keyword.
     fn trial(
         &mut self,
         text: &str,
@@ -619,6 +619,7 @@ impl<'s> Search<'s> {
             .descendant_for_byte_range(start, start + replacement.len())
             .is_some_and(|n| {
                 syntax::self_and_ancestors(n).any(|a| a.is_error())
+                    || syntax::is_name_kind(n.kind_id())
             });
         (!misplaced).then(|| Outcome::of(root))
     }

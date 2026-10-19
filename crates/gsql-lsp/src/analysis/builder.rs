@@ -593,6 +593,7 @@ impl<'s> Builder<'s> {
                     // `Seeds (A|B) = ...` has several `type` children.
                     let mut types = Vec::new();
                     let mut ty_name = String::new();
+                    let mut any = false;
                     for t in syntax::children_by_field(node, "type") {
                         let text = self.text(t);
                         if !ty_name.is_empty() {
@@ -601,7 +602,13 @@ impl<'s> Builder<'s> {
                         ty_name.push_str(text);
                         if t.kind_id() == kind::IDENTIFIER {
                             types.push(text.to_string());
+                        } else {
+                            any = true;
                         }
+                    }
+                    // ANY or `_` among the types: any vertex (an error, reported).
+                    if any {
+                        types.clear();
                     }
                     if ty_name.is_empty() {
                         ty_name.push_str("ANY");
@@ -2751,6 +2758,29 @@ mod tests {
             alias_type(&analysis, "e"),
             Ty::Edge(vec!["follows".into()])
         );
+    }
+
+    #[test]
+    fn a_vertex_set_with_any_among_its_types_holds_any_vertex() {
+        let set_type = |declaration: &str| {
+            let text = format!("CREATE QUERY q() {{\n  {declaration}\n}}\n");
+            let (_, analysis) = Analysis::parse(&text);
+            analysis
+                .symbols
+                .iter()
+                .find(|s| s.name == "S")
+                .map(|s| s.ty.clone())
+                .expect("no S")
+        };
+        assert_eq!(
+            set_type("S (Person|Company) = {};"),
+            Ty::VertexSet(vec!["Person".into(), "Company".into()])
+        );
+        assert_eq!(
+            set_type("S (ANY|Person) = {};"),
+            Ty::VertexSet(Vec::new())
+        );
+        assert_eq!(set_type("S (Person|_) = {};"), Ty::VertexSet(Vec::new()));
     }
 
     #[test]

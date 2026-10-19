@@ -251,8 +251,8 @@ Vertex set declared with several vertex types
 ================================================================================
 
 CREATE QUERY typed_sets() {
-  Sources (MPN|GB) = {};
-  Other (Part) = {Part.*};
+  Sources (Person|Company) = {};
+  Other (Item) = {Item.*};
 }
 
 --------------------------------------------------------------------------------
@@ -275,12 +275,22 @@ CREATE QUERY typed_sets() {
             type: (identifier)))))))
 
 ================================================================================
-ANY does not join other vertex types
-:error
+Vertex set mixing ANY with other types
 ================================================================================
 
 CREATE QUERY any_union() {
-  Sources (ANY|GB) = {};
+  Sources (ANY|Person) = {};
 }
 
 --------------------------------------------------------------------------------
+
+(source_file
+  (query_definition
+    name: (identifier)
+    parameters: (parameter_list)
+    body: (query_body
+      (vertex_set_declaration
+        name: (identifier)
+        type: (any)
+        type: (identifier)
+        value: (vertex_set_literal)))))

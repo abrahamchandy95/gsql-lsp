@@ -386,6 +386,7 @@ impl<'s> Checker<'s, '_> {
                 )
             }
             kind::VIRTUAL_EDGE_DECLARATION => self.virtual_edge(node),
+            kind::VERTEX_SET_DECLARATION => self.vertex_set_any_mix(node),
             kind::FOREACH_STATEMENT if !node.has_error() => {
                 self.foreach_variables(node)
             }
@@ -2587,6 +2588,57 @@ impl<'s> Checker<'s, '_> {
         }
     }
 
+    /// ANY and `_` already mean every vertex type, so `S (ANY|Person)` is wrong.
+    fn vertex_set_any_mix(&mut self, node: Node) {
+        let types = syntax::children_by_field(node, "type");
+        let (Some(&first), Some(&last)) = (types.first(), types.last())
+        else {
+            return;
+        };
+        let Some(&wide) = types
+            .iter()
+            .find(|t| t.kind_id() != kind::IDENTIFIER)
+            .filter(|_| types.len() > 1)
+        else {
+            return;
+        };
+        let wide_text = self.text(wide).to_string();
+        let named: Vec<&str> = types
+            .iter()
+            .filter(|t| t.kind_id() == kind::IDENTIFIER)
+            .map(|t| self.text(*t))
+            .collect();
+        let named = named.join("|");
+        let message = if named.is_empty() {
+            format!(
+                "`{wide_text}` already means every vertex type; write it once"
+            )
+        } else {
+            format!(
+                "`{wide_text}` already means every vertex type, so it cannot be combined with `{named}`"
+            )
+        };
+        let mut d = diagnostic(
+            self.snapshot,
+            Span::of(wide),
+            severity::ERROR,
+            "vertex-set-type",
+            message,
+        );
+        let list = Span::new(first.start_byte(), last.end_byte());
+        for kept in [named.as_str(), wide_text.as_str()] {
+            if !kept.is_empty() {
+                add_fix(
+                    &mut d,
+                    format!("Keep only `{kept}`"),
+                    vec![self.snapshot.edit(list, kept)],
+                    false,
+                );
+            }
+        }
+        self.out.push(d);
+    }
+
     /// A vertex set keeps the vertex types of its declaration or first
     /// assignment; assigning it a set of other types is rejected by GSQL.
     fn vertex_set_types(&mut self, left: Node, right: Node) {
@@ -3421,9 +3473,54 @@ mod tests {
     use crate::features::code_actions::code_actions;
     use crate::features::diagnostics::diagnostics;
     use crate::features::test_support::{
-        Fixture, SCHEMA_URI, findings, with_code,
+        Fixture, SCHEMA_URI, actions, findings, with_code,
     };
     use crate::lsp::types::{Position, Range};
+
+    #[test]
+    fn any_cannot_join_other_vertex_set_types() {
+        let query = |declaration: &str| {
+            format!("CREATE QUERY q() {{\n  {declaration}\n  PRINT S;\n}}\n")
+        };
+        let found = findings(&query("S (ANY|Person) = {};"), &[]);
+        assert_eq!(
+            with_code(&found, "vertex-set-type"),
+            [
+                "`ANY` already means every vertex type, so it cannot be combined with `Person`"
+            ]
+        );
+        assert!(with_code(&found, "syntax-error").is_empty(), "{found:?}");
+        let found = findings(&query("S (Person|_|Company) = {};"), &[]);
+        assert_eq!(
+            with_code(&found, "vertex-set-type"),
+            [
+                "`_` already means every vertex type, so it cannot be combined with `Person|Company`"
+            ]
+        );
+        let found = findings(&query("S (ANY|_) = {};"), &[]);
+        assert_eq!(
+            with_code(&found, "vertex-set-type"),
+            ["`ANY` already means every vertex type; write it once"]
+        );
+        for fine in
+            ["S (ANY) = {};", "S (_) = {};", "S (Person|Company) = {};"]
+        {
+            let found = findings(&query(fine), &[]);
+            assert!(
+                with_code(&found, "vertex-set-type").is_empty(),
+                "{fine}"
+            );
+        }
+        // The quick fixes keep either side.
+        let titles: Vec<String> =
+            actions(&query("S (ANY|Person) = {};"), &[])
+                .into_iter()
+                .map(|a| a.title)
+                .collect();
+        for title in ["Keep only `Person`", "Keep only `ANY`"] {
+            assert!(titles.iter().any(|t| t == title), "{titles:?}");
+        }
+    }
 
     #[test]
     fn a_vertex_set_cannot_be_assigned_other_vertex_types() {
@@ -3431,18 +3528,18 @@ mod tests {
         // assignment), and the two forms the compiler suggests are accepted.
         let query = |declaration: &str| {
             format!(
-                "CREATE QUERY q() FOR GRAPH g {{\n  {declaration}\n  Mpns (MPN) = {{MPN.*}};\n  Sources = Mpns;\n}}\n"
+                "CREATE QUERY q() FOR GRAPH g {{\n  {declaration}\n  Firms (Company) = {{Company.*}};\n  Sources = Firms;\n}}\n"
             )
         };
-        let found = findings(&query("Sources (Part) = {Part.*};"), &[]);
+        let found = findings(&query("Sources (Person) = {Person.*};"), &[]);
         let errors = with_code(&found, "vertex-set-type");
         assert_eq!(errors.len(), 1, "{found:?}");
-        assert!(errors[0].contains("`Sources` holds Part vertices"));
-        assert!(errors[0].contains("assigns MPN"));
-        assert!(errors[0].contains("`Sources (Part|MPN) = {};`"));
+        assert!(errors[0].contains("`Sources` holds Person vertices"));
+        assert!(errors[0].contains("assigns Company"));
+        assert!(errors[0].contains("`Sources (Person|Company) = {};`"));
         for fixed in [
-            "Sources (Part|MPN) = {};",
-            "Sources (MPN) = {};",
+            "Sources (Person|Company) = {};",
+            "Sources (Company) = {};",
             "Sources (ANY) = {};",
         ] {
             let found = findings(&query(fixed), &[]);

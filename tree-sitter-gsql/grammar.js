@@ -781,19 +781,15 @@ export default grammar({
     vertex_set_declaration: $ => seq(
       field('name', $.identifier),
       '(',
-      // ANY and `_` stand alone; only named types join with `|`.
-      choice(
-        seq(
-          field('type', $.identifier),
-          repeat(seq('|', field('type', $.identifier))),
-        ),
-        field('type', alias(kw('ANY'), $.any)),
-        field('type', $.wildcard),
-      ),
+      // Parsed in any mix; the server reports ANY or `_` joined with others.
+      field('type', $._vertex_set_type),
+      repeat(seq('|', field('type', $._vertex_set_type))),
       ')',
       '=',
       field('value', $._assignment_value),
     ),
+
+    _vertex_set_type: $ => choice($.identifier, alias(kw('ANY'), $.any), $.wildcard),
 
     assignment_statement: $ => seq(
       field('left', $._assignable),
