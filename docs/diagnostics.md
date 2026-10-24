@@ -90,6 +90,7 @@ Reference for diagnostic codes emitted by `gsql-lsp`.
 | `distributed-mode`       | Warning  | Feature not supported in distributed query execution    | `languageRules` |
 | `deprecated`             | Hint     | Deprecated syntax or feature usage                      | `languageRules` |
 | `compared-condition`     | Error    | Parenthesized condition compared with `==`, `!=`, `<`   | `languageRules` |
+| `null-comparison`        | Error    | `== NULL` / `!= NULL`; use `IS NULL` / `IS NOT NULL`    | `languageRules` |
 | `set-expression-method`  | Error    | Method called on a parenthesized UNION/INTERSECT/MINUS  | `languageRules` |
 | `non-binding-post-accum` | Warning  | POST-ACCUM clause binds no vertex alias (WARN-7)        | `languageRules` |
 
