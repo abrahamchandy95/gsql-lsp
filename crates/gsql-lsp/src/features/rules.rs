@@ -430,9 +430,15 @@ impl<'s> Checker<'s, '_> {
                 self.accumulator_type(node, context)
             }
             kind::ACCUMULATOR_KIND => self.accumulator_case(node),
+            kind::CASE_EXPRESSION | kind::CASE_STATEMENT => {
+                if let Some(mode) = context.query {
+                    self.null_case(node, mode);
+                }
+            }
             kind::BINARY_EXPRESSION => {
-                if context.query.is_some() {
+                if let Some(mode) = context.query {
                     self.compared_condition(node);
+                    self.null_comparison(node, mode);
                 }
                 if let Some(mode) = context.query.filter(|_| {
                     self.snapshot
@@ -2182,6 +2188,148 @@ impl<'s> Checker<'s, '_> {
         }
     }
 
+    /// `x == NULL`: NULL is no value, so only `IS NULL` asks about it; the
+    /// compiled C++ compares a value with null and fails late in the install.
+    fn null_comparison(&mut self, node: Node, mode: Mode) {
+        let Some(operator) = node.child_by_field_id(field::OPERATOR) else {
+            return;
+        };
+        let negated = match operator.kind() {
+            "==" | "=" => false,
+            "!=" | "<>" => true,
+            _ => return,
+        };
+        let (Some(left), Some(right)) = (
+            node.child_by_field_id(field::LEFT),
+            node.child_by_field_id(field::RIGHT),
+        ) else {
+            return;
+        };
+        let (value, null) = match (is_null(left), is_null(right)) {
+            (false, true) => (left, right),
+            (true, false) => (right, left),
+            (true, true) => {
+                let message = format!(
+                    "GSQL cannot compare NULL with NULL using `{}`: NULL is not a value",
+                    self.text(operator)
+                );
+                self.report(
+                    node,
+                    severity::ERROR,
+                    "null-comparison",
+                    message,
+                );
+                return;
+            }
+            (false, false) => return,
+        };
+        let test = if negated { "IS NOT NULL" } else { "IS NULL" };
+        let (advice, fixable) = self.null_advice(value, test, mode);
+        let mut d = diagnostic(
+            self.snapshot,
+            Span::of(node),
+            severity::ERROR,
+            "null-comparison",
+            format!(
+                "GSQL cannot compare with NULL using `{}`: NULL is not a value, so `{}` has no true or false answer. {advice}",
+                self.text(operator),
+                self.text(node),
+            ),
+        );
+        if fixable {
+            // Only the operator and NULL change: comments in the operand stay.
+            let mut edits = Vec::new();
+            if wraps_for_is(value, self) {
+                edits.push(self.snapshot.insert(value.start_byte(), "("));
+            }
+            if null.start_byte() > value.start_byte() {
+                if wraps_for_is(value, self) {
+                    edits.push(self.snapshot.insert(value.end_byte(), ")"));
+                }
+                let span = Span::new(operator.start_byte(), null.end_byte());
+                edits.push(self.snapshot.edit(span, test));
+            } else {
+                let span = Span::new(null.start_byte(), value.start_byte());
+                edits.insert(0, self.snapshot.edit(span, ""));
+                let close = if wraps_for_is(value, self) { ")" } else { "" };
+                edits.push(
+                    self.snapshot
+                        .insert(value.end_byte(), format!("{close} {test}")),
+                );
+            }
+            let shown = if wraps_for_is(value, self) {
+                format!("({}) {test}", self.text(value))
+            } else {
+                format!("{} {test}", self.text(value))
+            };
+            add_fix(&mut d, format!("Replace with `{shown}`"), edits, true);
+        }
+        self.out.push(d);
+    }
+
+    /// `CASE x WHEN NULL`: a simple CASE compares with `==`.
+    fn null_case(&mut self, node: Node, mode: Mode) {
+        let Some(value) = node.child_by_field_id(field::VALUE) else {
+            return;
+        };
+        let mut cursor = node.walk();
+        let nulls: Vec<Node> = node
+            .named_children(&mut cursor)
+            .filter(|c| c.kind_id() == kind::WHEN_CLAUSE)
+            .filter_map(|c| c.child_by_field_id(field::CONDITION))
+            .filter(|c| is_null(*c))
+            .collect();
+        for null in nulls {
+            let (advice, fixable) = self.null_advice(value, "IS NULL", mode);
+            let advice = if fixable {
+                format!(
+                    "Write `CASE WHEN {} IS NULL THEN ...` to ask whether a value was given",
+                    self.text(value)
+                )
+            } else {
+                advice
+            };
+            let message = format!(
+                "A simple CASE compares `{}` with each WHEN value using `==`, and NULL is not a value, so `WHEN NULL` never applies. {advice}",
+                self.text(value)
+            );
+            self.report(null, severity::ERROR, "null-comparison", message);
+        }
+    }
+
+    /// What to do instead of comparing `value` with NULL, and whether
+    /// `value IS NULL` is a sound replacement.
+    fn null_advice(
+        &self,
+        value: Node,
+        test: &str,
+        mode: Mode,
+    ) -> (String, bool) {
+        let inner = unparenthesized(value);
+        // Only a query parameter without a default can be NULL.
+        let parameter = inner.kind_id() == kind::IDENTIFIER
+            && self
+                .symbol_of(inner)
+                .is_none_or(|s| s.kind == SymbolKind::Parameter);
+        let name = self.text(value);
+        if !parameter {
+            let advice = format!(
+                "Only a query parameter without a default can be NULL; `{name}` always has a value (at least its default), so compare it with a value, such as a stand-in default like 0 or \"\" (`IS NULL` / `IS NOT NULL` ask whether a parameter was given)"
+            );
+            return (advice, false);
+        }
+        if mode.interpreted {
+            let advice = format!(
+                "`{name} {test}` asks whether a value was given, but interpreted queries do not support IS NULL: install the query, or give `{name}` a stand-in default (such as 0 or \"\") and compare with that"
+            );
+            return (advice, false);
+        }
+        let advice = format!(
+            "Use `{name} {test}` to ask whether a value was given (`==` and `!=` only compare values)"
+        );
+        (advice, true)
+    }
+
     /// No method on a parenthesized set expression, `(@@a MINUS @@b).size()`.
     fn set_expression_method(&mut self, node: Node) {
         let Some(function) = node
@@ -2238,6 +2386,10 @@ impl<'s> Checker<'s, '_> {
         ) else {
             return;
         };
+        // `x == NULL` is a null-comparison error, not a float comparison.
+        if is_null(left) || is_null(right) {
+            return;
+        }
         // Whole numbers are exact: `x == 0` and `x == floor(x)` are reliable.
         let exact = self.is_whole_literal(left)
             || self.is_whole_literal(right)
@@ -3289,6 +3441,37 @@ fn pattern_vertices(pattern: Node) -> Vec<Node> {
 }
 
 /// The expression inside any parentheses around `node`.
+/// `NULL`, possibly in parentheses.
+fn is_null(node: Node) -> bool {
+    unparenthesized(node).kind_id() == kind::NULL
+}
+
+/// Whether `value IS NULL` needs `value` in parentheses: `IS` binds like a
+/// comparison, so a comparison or lower-precedence operand would change.
+fn wraps_for_is(value: Node, checker: &Checker) -> bool {
+    match value.kind_id() {
+        kind::BINARY_EXPRESSION => value
+            .child_by_field_id(field::OPERATOR)
+            .is_some_and(|o| {
+                matches!(
+                    o.kind(),
+                    "==" | "!=" | "<>" | "=" | "<" | "<=" | ">" | ">="
+                ) || matches!(
+                    checker.text(o).to_ascii_uppercase().as_str(),
+                    "AND" | "OR"
+                )
+            }),
+        kind::UNARY_EXPRESSION => value
+            .child_by_field_id(field::OPERATOR)
+            .is_some_and(|o| checker.text(o).eq_ignore_ascii_case("NOT")),
+        kind::IN_EXPRESSION
+        | kind::LIKE_EXPRESSION
+        | kind::IS_EXPRESSION
+        | kind::BETWEEN_EXPRESSION => true,
+        _ => false,
+    }
+}
+
 fn unparenthesized(node: Node) -> Node {
     let mut node = node;
     while node.kind_id() == kind::PARENTHESIZED_EXPRESSION {
@@ -3928,6 +4111,60 @@ mod tests {
             messages[0].starts_with(
                 "GSQL cannot compare a parenthesized condition with `!=`"
             ),
+            "{messages:?}"
+        );
+    }
+
+    #[test]
+    fn null_is_tested_with_is_null() {
+        let query = "CREATE QUERY q(INT a, STRING s, VERTEX v) {\n  IF a == NULL OR s != null OR NULL == v OR (NULL) != a THEN PRINT a; END;\n  IF a IS NULL OR s IS NOT NULL OR a == 0 OR s != \"\" THEN PRINT a; END;\n}\n";
+        let found = findings(query, &[]);
+        let messages = with_code(&found, "null-comparison");
+        // Not: IS NULL, IS NOT NULL, or a comparison with a value.
+        assert_eq!(messages.len(), 4, "{found:?}");
+        assert_eq!(
+            messages[0],
+            "GSQL cannot compare with NULL using `==`: NULL is not a value, so `a == NULL` has no true or false answer. Use `a IS NULL` to ask whether a value was given (`==` and `!=` only compare values)"
+        );
+        assert!(messages[1].contains("Use `s IS NOT NULL`"), "{messages:?}");
+        let v3 = "CREATE QUERY q(INT a) SYNTAX V3 {\n  IF a = NULL OR a <> NULL THEN PRINT a; END;\n}\n";
+        assert_eq!(with_code(&findings(v3, &[]), "null-comparison").len(), 2);
+    }
+
+    #[test]
+    fn stored_values_are_never_null() {
+        let schema =
+            "CREATE VERTEX Person (PRIMARY_ID id STRING, name STRING)\n";
+        let query = "CREATE QUERY q(DOUBLE d) {\n  SumAccum<INT> @@n;\n  S = {Person.*};\n  R = SELECT t FROM S:t WHERE t.name == NULL;\n  IF @@n != NULL OR d == NULL THEN PRINT d; END;\n  @@n += CASE d WHEN NULL THEN 1 ELSE 0 END;\n}\n";
+        let found = findings(query, &[(SCHEMA_URI, schema)]);
+        let messages = with_code(&found, "null-comparison");
+        assert_eq!(messages.len(), 4, "{found:?}");
+        assert!(
+            messages[0].contains("`t.name` always has a value"),
+            "{messages:?}"
+        );
+        assert!(
+            messages[1].contains("`@@n` always has a value"),
+            "{messages:?}"
+        );
+        assert!(messages[2].contains("Use `d IS NULL`"), "{messages:?}");
+        assert!(
+            messages[3].contains("Write `CASE WHEN d IS NULL THEN ...`"),
+            "{messages:?}"
+        );
+        // `d == NULL` compares no floating-point values.
+        assert!(with_code(&found, "float-equality").is_empty(), "{found:?}");
+    }
+
+    #[test]
+    fn interpreted_queries_have_no_is_null() {
+        let query = "INTERPRET QUERY (INT a) {\n  IF a == NULL THEN PRINT a; END;\n}\n";
+        let found = findings(query, &[]);
+        let messages = with_code(&found, "null-comparison");
+        assert_eq!(messages.len(), 1, "{found:?}");
+        assert!(
+            messages[0]
+                .contains("interpreted queries do not support IS NULL"),
             "{messages:?}"
         );
     }

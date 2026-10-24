@@ -722,6 +722,36 @@ mod tests {
     }
 
     #[test]
+    fn tests_null_with_is_null() {
+        let text = "CREATE QUERY q(INT a, INT b) {\n  IF a /* kept */ == NULL OR NULL != b THEN PRINT a; END;\n}\n";
+        assert_eq!(
+            apply_fix(text, "Replace with `a IS NULL`"),
+            "CREATE QUERY q(INT a, INT b) {\n  IF a /* kept */ IS NULL OR NULL != b THEN PRINT a; END;\n}\n"
+        );
+        assert_eq!(
+            apply_fix(text, "Replace with `b IS NOT NULL`"),
+            "CREATE QUERY q(INT a, INT b) {\n  IF a /* kept */ == NULL OR b IS NOT NULL THEN PRINT a; END;\n}\n"
+        );
+        let negated = "CREATE QUERY q(BOOL x) {\n  IF NOT x == NULL THEN PRINT x; END;\n}\n";
+        assert_eq!(
+            apply_fix(negated, "Replace with `x IS NULL`"),
+            "CREATE QUERY q(BOOL x) {\n  IF NOT x IS NULL THEN PRINT x; END;\n}\n"
+        );
+        // Not without IS NULL, or for a value that is never NULL.
+        let interpreted = "INTERPRET QUERY (INT a) {\n  IF a == NULL THEN PRINT a; END;\n}\n";
+        let stored = "CREATE QUERY q(INT a) {\n  SumAccum<INT> @@n;\n  IF @@n == NULL THEN PRINT a; END;\n}\n";
+        for text in [interpreted, stored] {
+            let found = actions(text, &[]);
+            assert!(
+                !found
+                    .iter()
+                    .any(|a| a.title.starts_with("Replace with")),
+                "{found:?}"
+            );
+        }
+    }
+
+    #[test]
     fn declares_syntax_v3_for_equality_operators() {
         let text =
             "CREATE QUERY q(INT x) {\n  IF x = 1 THEN PRINT x; END;\n}\n";
