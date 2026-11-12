@@ -1540,23 +1540,36 @@ fn duplicate_declarations(snapshot: &Snapshot, out: &mut Vec<Diagnostic>) {
     let analysis = snapshot.analysis;
     for (scope_id, scope) in analysis.scopes.iter().enumerate() {
         let mut seen: HashSet<(&str, u8)> = HashSet::new();
+        // Names a first assignment declared: a later assignment only
+        // reassigns them, but no declaration may reuse them.
+        let mut assigned: HashSet<&str> = HashSet::new();
         for symbol in analysis.scope_symbols(scope_id) {
             if symbol.in_error {
                 continue;
             }
+            // A query's tuple and accumulator types share their names with
+            // its variables: `t = SELECT ...` cannot reuse a TYPEDEF's name.
             let namespace = match symbol.kind {
                 K::Parameter | K::Variable | K::File | K::Exception => 0,
-                K::VertexSet if !symbol.implicit => 0,
-                k if k.is_accumulator() => 1,
+                K::VertexSet => 0,
                 K::TupleType | K::AccumulatorType
                     if scope.kind != ScopeKind::File =>
                 {
-                    2
+                    0
                 }
+                k if k.is_accumulator() => 1,
                 K::FilenameVariable | K::Header | K::LineFilter => 3,
                 _ => continue,
             };
-            if !seen.insert((&symbol.name, namespace)) {
+            let clash = if symbol.implicit {
+                assigned.insert(&symbol.name);
+                seen.contains(&(symbol.name.as_str(), namespace))
+            } else {
+                !seen.insert((&symbol.name, namespace))
+                    || (namespace == 0
+                        && assigned.contains(symbol.name.as_str()))
+            };
+            if clash {
                 out.push(diagnostic(
                     snapshot,
                     symbol.name_span,
@@ -3961,6 +3974,27 @@ mod tests {
                 .any(|m| m.contains("`kk` is not defined")),
             "{found:?}"
         );
+    }
+
+    #[test]
+    fn a_typedef_name_cannot_be_reused_by_an_assignment() {
+        let duplicates = |query: &str| {
+            messages(query)
+                .into_iter()
+                .filter(|m| m.contains("is already declared"))
+                .collect::<Vec<_>>()
+        };
+        for query in [
+            "CREATE QUERY q() {\n  TYPEDEF TUPLE<a INT> row;\n  S = {ANY};\n  IF TRUE THEN\n    row = SELECT s FROM S:s;\n  END;\n}\n",
+            "CREATE QUERY q() {\n  TYPEDEF HeapAccum<INT>(3, ASC) Top;\n  Top = {ANY};\n}\n",
+            "CREATE QUERY q() {\n  row = {ANY};\n  TYPEDEF TUPLE<a INT> row;\n}\n",
+            "CREATE QUERY q(INT row) {\n  TYPEDEF TUPLE<a INT> row;\n}\n",
+        ] {
+            assert_eq!(duplicates(query).len(), 1, "{query}");
+        }
+        // Reassigning a vertex set declares nothing new.
+        let query = "CREATE QUERY q() {\n  TYPEDEF TUPLE<a INT> row;\n  S = {ANY};\n  S = SELECT s FROM S:s;\n}\n";
+        assert!(duplicates(query).is_empty(), "{:?}", duplicates(query));
     }
 
     #[test]
