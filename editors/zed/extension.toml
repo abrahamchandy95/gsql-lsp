@@ -1,7 +1,7 @@
 id = "gsql"
 name = "GSQL"
 description = "TigerGraph GSQL: tree-sitter highlighting and the gsql-lsp language server."
-version = "1.0.2"
+version = "1.0.3"
 schema_version = 1
 authors = ["Abraham Chandy"]
 repository = "https://github.com/abrahamchandy95/gsql-lsp"

@@ -1,6 +1,6 @@
 {
   "name": "tree-sitter-gsql",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "TigerGraph GSQL grammar for tree-sitter",
   "type": "module",
   "repository": {

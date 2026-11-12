@@ -1,7 +1,7 @@
 ;;; gsql-ts-mode.el --- Tree-sitter major mode for TigerGraph GSQL  -*- lexical-binding: t; -*-
 
 ;; Author: Abraham Chandy
-;; Version: 1.0.2
+;; Version: 1.0.3
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: languages, databases
 ;; URL: https://github.com/abrahamchandy95/gsql-lsp
